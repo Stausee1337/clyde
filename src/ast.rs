@@ -40,16 +40,10 @@ impl Hash for Ident {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Definiton {
+pub enum ResulutionKind {
     Local, StaticVar, Const,
     Function,
     Struct, 
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Resolution {
-    Definition(Definiton),
-    Primitive()
 }
 
 #[derive(Debug, Clone)]
@@ -57,27 +51,22 @@ pub enum QName {
     Unresolved(Ident),
     Resolved {
         ident: Ident,
-        res: Resolution,
         node_id: NodeId,
+        res_kind: ResulutionKind
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum QPath {
     Unresolved(Path, Ident),
-    Resolved {
-        path: Path,
-        ident: Ident,
-        res: Resolution,
-        node_id: NodeId,
-    },
+    Resolved,
 }
 
 impl<'a> From<&'a mut QPath> for (&'a Path, Ident) {
     fn from(value: &'a mut QPath) -> Self {
         match value {
             QPath::Unresolved(path, ident) => (path, ident.clone()),
-            QPath::Resolved { path, ident, .. } => (path, ident.clone())
+            QPath::Resolved => todo!("Multiple namespaces")
         }
     }
 }
@@ -413,22 +402,3 @@ pub fn handle_stmt_error<'diag>(
     })
 }
 
-/*pub fn binop_tuples2expr(mut tuples: Vec<(BinaryOperator, Expr)>, eloc: usize) -> Expr {
-    let mut left = tuples.remove(0).1;
-    for (operator, right) in tuples {
-        let sloc = left.span.start;
-        let binop = BinOp {
-            lhs: left,
-            rhs: right,
-            operator
-        };
-        left = Expr {
-            kind: ExprKind::BinOp(Box::new(binop)),
-            span: (sloc..eloc)
-        };
-    }
-    left
-}*/
-
-
-// opaque Window(uint);

@@ -12,9 +12,8 @@ pub trait MutVisitor: Sized {
         noop_visit_item_kind(&mut item.kind, self);
     }
  
-    fn map_stmt(&mut self, mut stmt: Stmt) -> Vec<Stmt> {
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
         noop_visit_stmt_kind(&mut stmt.kind, self);
-        vec![stmt]
     }
 
     fn visit_param(&mut self, param: &mut Param) {
@@ -140,7 +139,7 @@ fn visit_proc<T: MutVisitor>(proc: &mut Proc, vis: &mut T) {
     visit_vec(&mut proc.params, |p| vis.visit_param(p));
     visit_vec(&mut proc.generics, |generic| vis.visit_generic_param(generic));
     visit_option(&mut proc.returns, |ty| vis.visit_ty_expr(ty));
-    visit_option(&mut proc.body, |body| map_vec(body, |stmt| vis.map_stmt(stmt)));
+    visit_option(&mut proc.body, |body| visit_vec(body, |stmt| vis.visit_stmt(stmt)));
 }
 
 pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T) {
@@ -152,24 +151,21 @@ pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T
         }
         StmtKind::If(condition, if_body, else_body) => {
             vis.visit_expr(condition);
-            map_vec(if_body, |stmt| vis.map_stmt(stmt));
-            visit_option(else_body, |else_body| unsafe {
-                let e = ptr::read(else_body.as_ref());            
-                ptr::write(else_body.as_mut(), vis.map_stmt(e).pop().unwrap());
-            });
+            visit_vec(if_body, |stmt| vis.visit_stmt(stmt));
+            visit_option(else_body, |else_body| vis.visit_stmt(else_body));
         }
-        StmtKind::Block(body) => map_vec(body, |stmt| vis.map_stmt(stmt)),
+        StmtKind::Block(body) => visit_vec(body, |stmt| vis.visit_stmt(stmt)),
         StmtKind::While(condition, body) => {
             vis.visit_expr(condition);
-            map_vec(body, |stmt| vis.map_stmt(stmt));
+            visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
         StmtKind::For(var, iterator, body) => {
             vis.visit_pattern(var);
             vis.visit_expr(iterator);
-            map_vec(body, |stmt| vis.map_stmt(stmt));
+            visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
         StmtKind::Loop(body) =>
-            map_vec(body, |stmt| vis.map_stmt(stmt)),
+            visit_vec(body, |stmt| vis.visit_stmt(stmt)),
         StmtKind::Local(var, ty, init) => {
             vis.visit_pattern(var);
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
@@ -221,7 +217,7 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
         ExprKind::ShorthandEnum(_) => (),
         ExprKind::Closure(closure) => {
             visit_vec(&mut closure.params, |pat| vis.visit_pattern(pat));
-            map_vec(&mut closure.body, |stmt| vis.map_stmt(stmt));
+            visit_vec(&mut closure.body, |stmt| vis.visit_stmt(stmt));
         }
         ExprKind::Range(start, end, _) => {
             vis.visit_expr(start);
