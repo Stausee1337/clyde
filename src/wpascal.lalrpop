@@ -1,11 +1,11 @@
 use crate::{
-    lexer,
-    symbol::Symbol,
-    ast::{self, NODE_ID_UNDEF},
-    diagnostics::Diagnostics
+    ast, lexer,
+    symbol::Symbol, 
+    parser::ParseContext as Context,
+    diagnostics::Diagnostics,
 };
 
-grammar(diagnostics: Diagnostics);
+grammar<'a>(ctxt: &'a mut Context);
 
 pub TopLevel: ast::TopLevel = {
     <start:@L> <unit_decl:Unit?> <imports:Import*> <items:Items> <end:@R> => ast::TopLevel {
@@ -13,7 +13,7 @@ pub TopLevel: ast::TopLevel = {
         unit_decl,
         items,
         span: (start..end),
-        diagnostics
+        diagnostics: ctxt.diagnostics
     }
 };
 
@@ -42,7 +42,7 @@ UseImport: ast::Import = {
     <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Import {
         kind: ast::ImportKind::Use(path),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -50,7 +50,7 @@ WithImport: ast::Import = {
     <sloc:@L> "with" <path:Path> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Import {
         kind: ast::ImportKind::With(path, mangled),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -59,7 +59,7 @@ ConstDef: ast::Item = {
         ident,
         kind: ast::ItemKind::Constant(Box::new(ty), Box::new(init)),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -68,7 +68,7 @@ GlobalDef<Global>: ast::Item = {
         ident,
         kind: ast::ItemKind::StaticVar(ty.map(|ty| Box::new(ty)), init.map(|b| Box::new(b))),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -84,7 +84,7 @@ RecordDef: ast::Item = {
             ident,
             kind: ast::ItemKind::Record(Box::new(record)),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     }
 };
@@ -115,7 +115,7 @@ ProcDef: ast::Item = {
             ident,
             kind: ast::ItemKind::Proc(Box::new(proc)),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     },
 };
@@ -186,7 +186,7 @@ Paramter: ast::Param = {
             pat,
             ty,
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     }
 };
@@ -200,14 +200,14 @@ Statement: ast::Stmt = {
     ItemStmt,
     ExpressionStmt,
     ReturnStmt,
-    ! =>? ast::handle_stmt_error(<>, diagnostics)
+    ! =>? ast::handle_stmt_error(<>, ctxt.diagnostics)
 };
 
 LocalStatement: ast::Stmt = {
     <sloc:@L> "var" <pat:Pat> <ty:(":" <TypeExpr>)?> <init:(":=" <Expression>)?> ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::Local(pat, ty.map(|ty| Box::new(ty)), init.map(|e| Box::new(e))),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -218,20 +218,20 @@ IfStatement<Keyword>: ast::Stmt = {
             Some(Box::new(ast::Stmt {
                 kind: ast::StmtKind::Block(belse),
                 span: (else_sloc..eloc),
-                node_id: NODE_ID_UNDEF
+                node_id: ctxt.make_node_id()
             }))
         } else { None };
         ast::Stmt {
             kind: ast::StmtKind::If(Box::new(condition), bif, else_block),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     },
     <sloc:@L> (Keyword) <condition:Expression> "then" <bif:Statement*>
     <elif:IfStatement<"elif">> <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::If(Box::new(condition), bif, Some(Box::new(elif))),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -239,7 +239,7 @@ WhileStatement: ast::Stmt = {
     <sloc:@L> "while" <condition:Expression> "do" <body:Statement*> "end" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::While(Box::new(condition), body),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 
@@ -247,7 +247,7 @@ ForStatement: ast::Stmt = {
     <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression> "do" <body:Statement*> "end" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::For(pat, Box::new(iterator), body),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 
@@ -255,12 +255,12 @@ ControlFlowStmt: ast::Stmt = {
     <sloc:@L> "break" ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Break),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> "continue" ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Continue),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 
@@ -268,7 +268,7 @@ ItemStmt: ast::Stmt = {
     <i:Item<"static">> => ast::Stmt {
         span: i.span.clone(),
         kind: ast::StmtKind::Item(Box::new(i)),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 
@@ -278,13 +278,13 @@ ExpressionStmt: ast::Stmt = {
             return ast::Stmt {
                 kind: ast::StmtKind::Assign(Box::new(expr), Box::new(assign)),
                 span: (sloc..eloc),
-                node_id: NODE_ID_UNDEF
+                node_id: ctxt.make_node_id()
             };
         }
         ast::Stmt {
             kind: ast::StmtKind::Expr(Box::new(expr)),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     }
 };
@@ -297,7 +297,7 @@ ReturnStmt: ast::Stmt = {
     <sloc:@L> "return" <expr:Expression?> ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::Return(expr.map(|e| Box::new(e))),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 
@@ -311,7 +311,7 @@ Expression: ast::Expr = {
             Box::new(pat)
         ),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -320,7 +320,7 @@ RangeExpr: ast::Expr = {
         kind: ast::ExprKind::Range(
             Box::new(lhs), Box::new(rhs), inclusive.is_some()),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     OrExpr 
 };
@@ -345,7 +345,7 @@ NotExpr: ast::Expr = {
     <sloc:@L> "not" <expr:NotExpr> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::UnaryOp(Box::new(expr), ast::UnaryOperator::BooleanNot),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     ComparisonExpr
 };
@@ -355,7 +355,7 @@ ComparisonExpr: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     BitwiseOr
 };
@@ -374,7 +374,7 @@ BitwiseOr: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseOr })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }, 
     BitwiseXor 
 };
@@ -384,7 +384,7 @@ BitwiseXor: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseXor })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }, 
     BitwiseAnd 
 };
@@ -394,7 +394,7 @@ BitwiseAnd: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseAnd })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }, 
     ShiftExpr 
 };
@@ -404,7 +404,7 @@ ShiftExpr: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }, 
     Math1Expr 
 };
@@ -419,7 +419,7 @@ Math1Expr: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     Math2Expr
 };
@@ -434,7 +434,7 @@ Math2Expr: ast::Expr = {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     AsExpr
 };
@@ -453,7 +453,7 @@ AsExpr: ast::Expr = {
             is_unsafe: has_bang.is_some()
         }),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     UnaryExpr
 };
@@ -462,7 +462,7 @@ UnaryExpr: ast::Expr = {
     <sloc:@L> <op:UnaryOp> <expr:UnaryExpr> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::UnaryOp(Box::new(expr), op),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     AtomExpr<"all">,
 };
@@ -479,17 +479,17 @@ AtomExpr<What>: ast::Expr = {
     <sloc:@L> <f:AtomExpr<"all">> "(" <args:OneOrMore<FnArgument, ",">?> ")" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::FunctionCall(Box::new(f), args.unwrap_or(Vec::new())),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <base:AtomExpr<"all">> "[" <args:OneOrMore<Expression, ",">> "]" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Subscript(Box::new(base), args),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <base:AtomExpr<"no-name">> "." <name:Ident> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Attribute(Box::new(base), name),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -511,43 +511,43 @@ Atom<What>: ast::Expr = {
     <sloc:@L> <cnst:Constant> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Constant(cnst),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <str:string> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::String(str),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <name:NameInNamespace> <record_init:("{" <OneOrMore<RecField, ",">?> "}")?> <eloc:@R> if What != "no-name" => {
         if let Some(record_init) = record_init {
             return ast::Expr {
                 kind: ast::ExprKind::RecordInit(name, record_init.unwrap_or(Vec::new())),
                 span: (sloc..eloc),
-                node_id: NODE_ID_UNDEF
+                node_id: ctxt.make_node_id()
             };
         }
         match name {
             ast::NameInNamespace::Name(name) => ast::Expr {
                 kind: ast::ExprKind::Name(name),
                 span: (sloc..eloc),
-                node_id: NODE_ID_UNDEF
+                node_id: ctxt.make_node_id()
             },
             ast::NameInNamespace::Path(path) => ast::Expr {
                 kind: ast::ExprKind::Path(path),
                 span: (sloc..eloc),
-                node_id: NODE_ID_UNDEF
+                node_id: ctxt.make_node_id()
             }
         }
     },
     <sloc:@L> "[" <default:Expression> ";" <size:Expression> "]" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::ArraySize(Box::new(default), Box::new(size)),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> "[" <arr:OneOrMore<Expression, ",">?> "]" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::ArrayItems(arr.unwrap_or(Vec::new())),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> "(" <items:OneOrMore<Expression, ",">?> ")" <eloc:@R> => {
         let mut items = items.unwrap_or(Vec::new());
@@ -557,18 +557,18 @@ Atom<What>: ast::Expr = {
         ast::Expr {
             kind: ast::ExprKind::Tuple(items),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     },
     <sloc:@L> "." <variant:Ident> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::ShorthandEnum(variant),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> "proc" "(" <params:OneOrMore<Pat, ",">?> ")" <body:Statement*> "end" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Closure(ast::Closure { body, params: params.unwrap_or(Vec::new()) }),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -588,14 +588,14 @@ TypeExpr: ast::TypeExpr = {
                 is_closure
             },
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     },
     <sloc:@L> "ref" <ty:TypeExpr> <eloc:@R> => {
         ast::TypeExpr {
             kind: ast::TypeExprKind::Ref(Box::new(ty)),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     },
     <sloc:@L> <name:NameInNamespace> <generic_args:("(" <OneOrMore<GenericArgument, ",">> ")")?> <eloc:@R> => {
@@ -603,13 +603,13 @@ TypeExpr: ast::TypeExpr = {
             return ast::TypeExpr {
                 kind: ast::TypeExprKind::Generic(name, generic_args),
                 span: (sloc..eloc),
-                node_id: NODE_ID_UNDEF
+                node_id: ctxt.make_node_id()
             };
         }
         ast::TypeExpr {
             kind: ast::TypeExprKind::Name(name),
             span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
+            node_id: ctxt.make_node_id()
         }
     }
 };
@@ -634,13 +634,13 @@ GenericParam: ast::GenericParam = {
         ident,
         kind: ast::GenericParamKind::Type(re.unwrap_or(Vec::new())),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> "const" <ident:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::GenericParam {
         ident,
         kind: ast::GenericParamKind::Const(ty),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 
@@ -648,12 +648,12 @@ PatLit: ast::Expr = {
     <sloc:@L> <cnst:Constant> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Constant(cnst),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <str:string> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::String(str),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
 };
 
@@ -661,22 +661,22 @@ Pat: ast::Pattern = {
     <ident:Ident> => ast::Pattern {
         span: ident.span.clone(),
         kind: ast::PatternKind::Ident(ident),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> "(" <items:SeperatedList<Pat, ",">> ")" <eloc:@R> => ast::Pattern {
         kind: ast::PatternKind::Tuple(items),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <lit:PatLit> <eloc:@R> => ast::Pattern {
         kind: ast::PatternKind::Literal(Box::new(lit)),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     },
     <sloc:@L> <path:QPath> <eloc:@R> => ast::Pattern {
         kind: ast::PatternKind::Path(path),
         span: (sloc..eloc),
-        node_id: NODE_ID_UNDEF
+        node_id: ctxt.make_node_id()
     }
 };
 

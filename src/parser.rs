@@ -2,6 +2,18 @@ use std::{path::Path, fs::File, io::{Read, self}};
 
 use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, interface::{self, path_to_string}};
 
+struct ParseContext {
+    pub diagnostics: Diagnostics,
+    pub current_node_id: u32
+}
+
+impl ParseContext {
+    pub fn make_node_id(&mut self) -> ast::NodeId {
+        let new_node_id = self.current_node_id + 1;
+        ast::NodeId(std::mem::replace(&mut self.current_node_id, new_node_id))
+    }
+}
+
 fn read_entire_file(filename: &Path) -> io::Result<String> {
     let mut result = String::new();
     File::open(filename)?
@@ -24,13 +36,13 @@ pub fn parse_file<'a>(file: &Path, sess: &interface::Session) -> Result<ast::Top
 
     let diagnostics = sess.create_diagnostics_for_file(&file, &contents);
 
-    Ok(parse(tokens, diagnostics))
+    Ok(parse(tokens, ParseContext { diagnostics, current_node_id: 0 }))
 }
 
-fn parse(tokens: Vec<Token>, diagnostics: Diagnostics) -> ast::TopLevel {
+fn parse(tokens: Vec<Token>, mut ctxt: ParseContext) -> ast::TopLevel {
     wpascal::TopLevelParser::new()
         .parse(
-            diagnostics,
+            &mut ctxt,
             tokens
             .into_iter()
             .map(|tok| (tok.1.start, tok.0, tok.1.end)))

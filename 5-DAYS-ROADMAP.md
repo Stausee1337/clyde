@@ -12,3 +12,12 @@
    -> Focus on writing everything in a single file for now
       (mulitple file support could arise with the linking process)
 6. Create a System where Names are Resolved to thier declaring nodes
+
+
+## TypeResolverPass
+
+### General Task
+- Collect all the TopLevel Structs, Functions, etc ...
+- Associate `Ident` <-> `NodeId` of declaration
+- Build a HashMap for every `Subspace` (types, functions, globals)
+
