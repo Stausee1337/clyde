@@ -4,7 +4,7 @@ use crate::ast::{TopLevel, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericP
 
 
 pub trait MutVisitor: Sized {
-    fn visit_unit(&mut self, unit: &mut TopLevel) {
+    fn visit(&mut self, unit: &mut TopLevel) {
         visit_vec(&mut unit.items, |item| self.visit_item(item));
     }
 
@@ -129,6 +129,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(expr, |expr| vis.visit_expr(expr));
         }
+        ItemKind::Err => ()
     }
 }
 
@@ -161,8 +162,6 @@ pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T
             vis.visit_expr(iterator);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
-        StmtKind::Loop(body) =>
-            visit_vec(body, |stmt| vis.visit_stmt(stmt)),
         StmtKind::Local(var, ty, init) => {
             vis.visit_pattern(var);
             visit_option(ty, |ty| vis.visit_ty_expr(ty));

@@ -29,29 +29,24 @@ Items: Vec<ast::Item> = {
     }
 };
 
-Import: ast::Import = { UseImport, WithImport };
+Import: ast::Import = {
+    <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Import {
+        kind: ast::ImportKind::Use(path),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    },
+    <sloc:@L> "with" <path:Path> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Import {
+        kind: ast::ImportKind::With(path, mangled),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    }
+};
 
 Item<Global>: ast::Item = {
     ConstDef,
     GlobalDef<Global>,
     RecordDef,
     ProcDef,
-};
-
-UseImport: ast::Import = {
-    <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Import {
-        kind: ast::ImportKind::Use(path),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-};
-
-WithImport: ast::Import = {
-    <sloc:@L> "with" <path:Path> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Import {
-        kind: ast::ImportKind::With(path, mangled),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
 };
 
 ConstDef: ast::Item = { 

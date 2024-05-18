@@ -128,6 +128,7 @@ pub enum ItemKind {
     Record(Box<Record>),
     Constant(Box<TypeExpr>, Box<Expr>),
     StaticVar(Option<Box<TypeExpr>>, Option<Box<Expr>>),
+    Err
 }
 
 #[derive(Debug)]
@@ -183,7 +184,6 @@ pub enum StmtKind {
     Block(Vec<Stmt>),
     While(Box<Expr>, Vec<Stmt>),
     For(Pattern, Box<Expr>, Vec<Stmt>),
-    Loop(Vec<Stmt>),
     Local(Pattern, Option<Box<TypeExpr>>, Option<Box<Expr>>),
     Return(Option<Box<Expr>>),
     ControlFlow(ControlFlow),
