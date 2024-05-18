@@ -2,7 +2,6 @@
 use std::{mem::transmute, path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, collections::HashMap, cell::RefCell, ffi::OsStr};
 
 use crate::{
-    ast_analysis as analysis,
     diagnostics::{Diagnostics, DiagnosticsData},
     parser, ast
 };
@@ -190,8 +189,8 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    pub fn parse(&mut self) -> Result<ast::Unit, ()> {
-        parser::parse_unit_from_file(&self.sess.input, &self.sess)
+    pub fn parse(&mut self) -> Result<ast::TopLevel, ()> {
+        parser::parse_file(&self.sess.input, &self.sess)
     }
 }
 
@@ -201,8 +200,6 @@ pub fn build_compiler<T, F: FnOnce(&mut Compiler) -> T>(sess: Session, f: F) -> 
     f(&mut compiler)
 }
 
-pub fn fully_resolve_unit(mut unit: ast::Unit) {
-    let mut resolver = analysis::Resolver::new();
-    resolver.resolve_unit(&mut unit);
+pub fn fully_resolve_unit(mut unit: ast::TopLevel) {
 }
 

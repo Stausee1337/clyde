@@ -7,7 +7,6 @@ mod ast;
 mod lexer;
 mod parser;
 mod symbol;
-mod ast_analysis;
 mod node_visitor;
 mod diagnostics;
 mod interface;
@@ -22,9 +21,10 @@ fn main() -> ExitCode {
     let sess = options.create_compile_session();
     
     build_compiler(sess, |compiler| {
-        let root_unit = compiler.parse()?;
+        let ast = compiler.parse()?;
+        println!("{ast:#?}");
     
-        interface::fully_resolve_unit(root_unit);
+        interface::fully_resolve_unit(ast);
         // lower()
 
         // type collection

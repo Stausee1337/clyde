@@ -93,7 +93,22 @@ pub enum PatternKind {
 }
 
 #[derive(Debug)]
-pub struct Unit {
+pub struct Import {
+    pub kind: ImportKind,
+    pub span: Range<usize>,
+    pub node_id: NodeId
+}
+
+#[derive(Debug)]
+pub enum ImportKind {
+    Use(Path),
+    With(Path, Option<Ident>)
+}
+
+#[derive(Debug)]
+pub struct TopLevel {
+    pub imports: Vec<Import>,
+    pub unit_decl: Option<Path>,
     pub items: Vec<Item>,
     pub span: Range<usize>,
     pub diagnostics: Diagnostics
@@ -113,9 +128,6 @@ pub enum ItemKind {
     Record(Box<Record>),
     Constant(Box<TypeExpr>, Box<Expr>),
     StaticVar(Option<Box<TypeExpr>>, Option<Box<Expr>>),
-    UseImport(Path),
-    WithImport(QPath, Option<Ident>),
-    LangItem
 }
 
 #[derive(Debug)]

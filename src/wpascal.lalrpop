@@ -7,12 +7,18 @@ use crate::{
 
 grammar(diagnostics: Diagnostics);
 
-pub Unit: ast::Unit = {
-    <start:@L> <items:Items> <end:@R> => ast::Unit {
+pub TopLevel: ast::TopLevel = {
+    <start:@L> <unit_decl:Unit?> <imports:Import*> <items:Items> <end:@R> => ast::TopLevel {
+        imports,
+        unit_decl,
         items,
         span: (start..end),
         diagnostics
     }
+};
+
+Unit: ast::Path = {
+    "unit" <path:Path> ";" => path
 };
 
 Items: Vec<ast::Item> = {
@@ -23,29 +29,26 @@ Items: Vec<ast::Item> = {
     }
 };
 
+Import: ast::Import = { UseImport, WithImport };
+
 Item<Global>: ast::Item = {
-    UseDecl,
-    WithDecl,
     ConstDef,
     GlobalDef<Global>,
     RecordDef,
     ProcDef,
-    LangItem
 };
 
-UseDecl: ast::Item = {
-    <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Item {
-        ident: ast::Ident::empty(),
-        kind: ast::ItemKind::UseImport(path),
+UseImport: ast::Import = {
+    <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Import {
+        kind: ast::ImportKind::Use(path),
         span: (sloc..eloc),
         node_id: NODE_ID_UNDEF
     },
 };
 
-WithDecl: ast::Item = {
-    <sloc:@L> "with" <path:QPath> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Item {
-        ident: ast::Ident::empty(),
-        kind: ast::ItemKind::WithImport(path, mangled),
+WithImport: ast::Import = {
+    <sloc:@L> "with" <path:Path> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Import {
+        kind: ast::ImportKind::With(path, mangled),
         span: (sloc..eloc),
         node_id: NODE_ID_UNDEF
     },
@@ -197,7 +200,7 @@ Statement: ast::Stmt = {
     ItemStmt,
     ExpressionStmt,
     ReturnStmt,
-    ! =>? ast::handle_stmt_error((<>), diagnostics)
+    ! =>? ast::handle_stmt_error(<>, diagnostics)
 };
 
 LocalStatement: ast::Stmt = {
@@ -693,15 +696,6 @@ NameInNamespace: ast::NameInNamespace = {
     }
 };
 
-LangItem: ast::Item = {
-    <sloc:@L> "{" (<Ident> "=")? "$" <ident:Ident> "}" <eloc:@R> => ast::Item {
-        ident,
-        kind: ast::ItemKind::LangItem,
-        span: ast::DUMMY_SPAN,
-        node_id: ast::NODE_ID_UNDEF
-    }
-};
-
 QPath: ast::QPath = {
     <path:Path> "." <ident:Ident>
         => ast::QPath::Unresolved(path, ident),
@@ -793,6 +787,7 @@ extern {
         "const" => lexer::TokenKind::Const,
         "use" => lexer::TokenKind::Use,
         "with" => lexer::TokenKind::With,
+        "unit" => lexer::TokenKind::Unit,
         "var" => lexer::TokenKind::Var,
         "static" => lexer::TokenKind::Static,
         "as" => lexer::TokenKind::As,

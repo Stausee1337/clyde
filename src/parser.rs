@@ -9,7 +9,7 @@ fn read_entire_file(filename: &Path) -> io::Result<String> {
     Ok(result)
 }
 
-pub fn parse_unit_from_file<'a>(file: &Path, sess: &interface::Session) -> Result<ast::Unit, ()> {
+pub fn parse_file<'a>(file: &Path, sess: &interface::Session) -> Result<ast::TopLevel, ()> {
     let contents = read_entire_file(file)
         .map_err(|err| {
             let file = unsafe { path_to_string(file) };
@@ -27,8 +27,8 @@ pub fn parse_unit_from_file<'a>(file: &Path, sess: &interface::Session) -> Resul
     Ok(parse(tokens, diagnostics))
 }
 
-fn parse(tokens: Vec<Token>, diagnostics: Diagnostics) -> ast::Unit {
-    wpascal::UnitParser::new()
+fn parse(tokens: Vec<Token>, diagnostics: Diagnostics) -> ast::TopLevel {
+    wpascal::TopLevelParser::new()
         .parse(
             diagnostics,
             tokens

@@ -100,6 +100,8 @@ pub enum TokenKind {
     Const,
     #[token("use")]
     Use,
+    #[token("unit")]
+    Unit,
     #[token("with")]
     With,
     #[token("var")]

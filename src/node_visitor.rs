@@ -1,10 +1,10 @@
 use std::ptr;
 
-use crate::ast::{Unit, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath, NameInNamespace};
+use crate::ast::{TopLevel, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath, NameInNamespace};
 
 
 pub trait MutVisitor: Sized {
-    fn visit_unit(&mut self, unit: &mut Unit) {
+    fn visit_unit(&mut self, unit: &mut TopLevel) {
         visit_vec(&mut unit.items, |item| self.visit_item(item));
     }
 
@@ -129,9 +129,6 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(expr, |expr| vis.visit_expr(expr));
         }
-        ItemKind::UseImport(_) => (),
-        ItemKind::WithImport(qpath, _) => vis.visit_path(qpath),
-        ItemKind::LangItem => ()
     }
 }
 
