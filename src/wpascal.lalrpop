@@ -1,0 +1,828 @@
+use crate::{
+    lexer,
+    symbol::Symbol,
+    ast::{self, NODE_ID_UNDEF},
+    diagnostics::Diagnostics
+};
+
+grammar(diagnostics: Diagnostics);
+
+pub Unit: ast::Unit = {
+    <start:@L> <items:Items> <end:@R> => ast::Unit {
+        items,
+        span: (start..end),
+        diagnostics
+    }
+};
+
+Items: Vec<ast::Item> = {
+    => vec![],
+    <mut items:Items> <next:Item<"var">> => {
+        items.push(next);
+        items
+    }
+};
+
+Item<Global>: ast::Item = {
+    UseDecl,
+    WithDecl,
+    ConstDef,
+    GlobalDef<Global>,
+    RecordDef,
+    ProcDef,
+    LangItem
+};
+
+UseDecl: ast::Item = {
+    <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Item {
+        ident: ast::Ident::empty(),
+        kind: ast::ItemKind::UseImport(path),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+WithDecl: ast::Item = {
+    <sloc:@L> "with" <path:QPath> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Item {
+        ident: ast::Ident::empty(),
+        kind: ast::ItemKind::WithImport(path, mangled),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+ConstDef: ast::Item = { 
+    <sloc:@L> "const" <ident:Ident> ":" <ty:TypeExpr> "=" <init:Expression> ";" <eloc:@R> => ast::Item {
+        ident,
+        kind: ast::ItemKind::Constant(Box::new(ty), Box::new(init)),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+GlobalDef<Global>: ast::Item = {
+    <sloc:@L> (Global) <ident:Ident> <ty:(":" <TypeExpr>)?> <init:(":=" <Expression>)?> ";" <eloc:@R> => ast::Item {
+        ident,
+        kind: ast::ItemKind::StaticVar(ty.map(|ty| Box::new(ty)), init.map(|b| Box::new(b))),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+RecordDef: ast::Item = {
+    <attrs:Attribute*>
+    <sloc:@L> "record" <ident:Ident> <generics:("(" <GenericParams> ")")?> <f:RecordFields?> "end" <eloc:@R> => {
+        let record = ast::Record {
+            generics: generics.unwrap_or(Vec::new()),
+            fields: f.unwrap_or(Vec::new()),
+            attributes: attrs
+        };
+        ast::Item {
+            ident,
+            kind: ast::ItemKind::Record(Box::new(record)),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    }
+};
+
+RecordFields: Vec<ast::FieldDef> = {
+    OneOrMore<RecordField, ",">
+};
+
+RecordField: ast::FieldDef = {
+    <sloc:@L> <name:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::FieldDef {
+        name, ty, span: (sloc..eloc)
+    }
+};
+
+ProcDef: ast::Item = {
+    <attrs:Attribute*>
+    <sloc:@L> "proc" <ident:Ident> <generics:("[" <GenericParams> "]")?> 
+    <p:Parameters> <returns:(":" <TypeExpr>)?> <body:Body> <eloc:@R> => {
+        let proc = ast::Proc {
+            params: p.unwrap_or(Vec::new()),
+            returns,
+            generics: generics.unwrap_or(Vec::new()),
+            span: (sloc..eloc),
+            body,
+            attributes: attrs
+        };
+        ast::Item {
+            ident,
+            kind: ast::ItemKind::Proc(Box::new(proc)),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    },
+};
+
+Body: Option<Vec<ast::Stmt>> = {
+    "=" <Statement*> "end" => Some(<>),
+    ";" => None,
+};
+
+Attribute: ast::Attribute = {
+    <sloc:@L> "!" "[" <tt:TokenTree+> "]" <eloc:@R> => ast::Attribute {
+        span: (sloc..eloc),
+        token_stream: tt
+    }
+};
+
+TokenTree: ast::TokenTree = {
+    <Flat> => ast::TokenTree::Flat(<>),
+    "(" <tt:TokenTree*> ")" => 
+        ast::TokenTree::Nested(ast::NestingKind::Paren, tt),
+    "[" <tt:TokenTree*> "]" =>
+        ast::TokenTree::Nested(ast::NestingKind::Bracket, tt),
+    "{" <tt:TokenTree*> "}" =>
+        ast::TokenTree::Nested(ast::NestingKind::Curly, tt),
+    ! =>? {
+        let (message, span) = match (<>).error {
+            lalrpop_util::ParseError::UnrecognizedToken { token, .. } if token.1.is_keyword()
+                => ("keywords aren't allowed here", token.0..token.2),
+            lalrpop_util::ParseError::UnrecognizedToken { expected, token }
+            if expected.contains(&"\"\x7d\"".to_string()) ||
+                expected.contains(&"\"\x29\"".to_string()) ||
+                expected.contains(&"\"\x5d\"".to_string())
+                => ("forgot closing delimiter (one of `)`, `]` or `}`)", token.0..token.2),
+            _ => return Err((<>).error),
+        };
+
+        Err(lalrpop_util::ParseError::User {
+            error: ast::UserError {
+                message,
+                span
+            }
+        })
+    }
+};
+
+Flat: lexer::TokenKind = {
+    "." , "," , ":" , "::", ";", ":=", "..", "...", "!" ,
+    "->", "$" , "@" , "&" , "|" , "^" , "~" , "+" , "-" ,
+    "*" , "/" , "%" ,  "<<", ">>", "<" , "<=", ">" , ">=",
+    "=" , "<>",
+
+    name => lexer::TokenKind::Name(<>),
+    string => lexer::TokenKind::String(<>),
+    integer => lexer::TokenKind::Intnumber(<>),
+
+    "true" => lexer::TokenKind::True,
+    "false" => lexer::TokenKind::False,
+    "None" => lexer::TokenKind::None,
+};
+
+Parameters: Option<Vec<ast::Param>> = {
+    "(" <p:OneOrMore<Paramter, ",">?> ")" => p
+};
+
+Paramter: ast::Param = {
+    <sloc:@L> <pat:Pat> ":" <ty:TypeExpr> <eloc:@R>  => {
+        ast::Param {
+            pat,
+            ty,
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    }
+};
+
+Statement: ast::Stmt = {
+    LocalStatement,
+    IfStatement<"if">,
+    WhileStatement,
+    ForStatement,
+    ControlFlowStmt,
+    ItemStmt,
+    ExpressionStmt,
+    ReturnStmt,
+    ! =>? ast::handle_stmt_error((<>), diagnostics)
+};
+
+LocalStatement: ast::Stmt = {
+    <sloc:@L> "var" <pat:Pat> <ty:(":" <TypeExpr>)?> <init:(":=" <Expression>)?> ";" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::Local(pat, ty.map(|ty| Box::new(ty)), init.map(|e| Box::new(e))),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+IfStatement<Keyword>: ast::Stmt = {
+    <sloc:@L> (Keyword) <condition:Expression> "then" <bif:Statement*> 
+    <else_block:(<@L> "else" <Statement*>)?> "end" <eloc:@R> => {
+        let else_block = if let Some((else_sloc, belse)) = else_block {
+            Some(Box::new(ast::Stmt {
+                kind: ast::StmtKind::Block(belse),
+                span: (else_sloc..eloc),
+                node_id: NODE_ID_UNDEF
+            }))
+        } else { None };
+        ast::Stmt {
+            kind: ast::StmtKind::If(Box::new(condition), bif, else_block),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    },
+    <sloc:@L> (Keyword) <condition:Expression> "then" <bif:Statement*>
+    <elif:IfStatement<"elif">> <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::If(Box::new(condition), bif, Some(Box::new(elif))),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+WhileStatement: ast::Stmt = {
+    <sloc:@L> "while" <condition:Expression> "do" <body:Statement*> "end" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::While(Box::new(condition), body),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+ForStatement: ast::Stmt = {
+    <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression> "do" <body:Statement*> "end" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::For(pat, Box::new(iterator), body),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+ControlFlowStmt: ast::Stmt = {
+    <sloc:@L> "break" ";" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Break),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> "continue" ";" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Continue),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+ItemStmt: ast::Stmt = {
+    <i:Item<"static">> => ast::Stmt {
+        span: i.span.clone(),
+        kind: ast::StmtKind::Item(Box::new(i)),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+ExpressionStmt: ast::Stmt = {
+    <sloc:@L> <expr:Expression> <assign:AssignSuffix?> ";" <eloc:@R> => {
+        if let Some(assign) = assign {
+            return ast::Stmt {
+                kind: ast::StmtKind::Assign(Box::new(expr), Box::new(assign)),
+                span: (sloc..eloc),
+                node_id: NODE_ID_UNDEF
+            };
+        }
+        ast::Stmt {
+            kind: ast::StmtKind::Expr(Box::new(expr)),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    }
+};
+
+AssignSuffix: ast::Expr = {
+    ":=" <expr:Expression> => expr,
+};
+
+ReturnStmt: ast::Stmt = {
+    <sloc:@L> "return" <expr:Expression?> ";" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::Return(expr.map(|e| Box::new(e))),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+#[inline]
+Expression: ast::Expr = {
+    RangeExpr,
+    <sloc:@L> <expr:OrExpr> "is" <is_negated:"not"?> <pat:Pat> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::PatternMatch(
+            Box::new(expr),
+            if is_negated.is_some() { ast::MatchKind::IsNot } else { ast::MatchKind::Is },
+            Box::new(pat)
+        ),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+RangeExpr: ast::Expr = {
+    <sloc:@L> <lhs:OrExpr> ".." <inclusive:"="?> <rhs:OrExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Range(
+            Box::new(lhs), Box::new(rhs), inclusive.is_some()),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    OrExpr 
+};
+
+OrExpr: ast::Expr = {
+    <mut exprs:(<AndExpr> "or")+> <end:AndExpr> <eloc:@R> => {
+        exprs.push(end);
+        ast::binop_exprs2expr(exprs, ast::BinaryOperator::BooleanOr, eloc)
+    },
+    AndExpr,
+};
+
+AndExpr: ast::Expr = {
+    <mut exprs:(<NotExpr> "and")+> <end:NotExpr> <eloc:@R> => {
+        exprs.push(end);
+        ast::binop_exprs2expr(exprs, ast::BinaryOperator::BooleanAnd, eloc)
+    },
+    NotExpr
+};
+
+NotExpr: ast::Expr = {
+    <sloc:@L> "not" <expr:NotExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::UnaryOp(Box::new(expr), ast::UnaryOperator::BooleanNot),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    ComparisonExpr
+};
+
+ComparisonExpr: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseOr> <op:ComparisonOp> <rhs:BitwiseOr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: op })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    BitwiseOr
+};
+
+ComparisonOp: ast::BinaryOperator = {
+    "=" => ast::BinaryOperator::Equal,
+    "<>" => ast::BinaryOperator::NotEqual,
+    ">" => ast::BinaryOperator::GreaterThan,
+    ">=" => ast::BinaryOperator::GreaterEqual,
+    "<" => ast::BinaryOperator::LessThan,
+    "<=" => ast::BinaryOperator::LessEqual
+};
+
+BitwiseOr: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseOr> "|" <rhs:BitwiseXor> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseOr })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }, 
+    BitwiseXor 
+};
+
+BitwiseXor: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseXor> "^" <rhs:BitwiseAnd> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseXor })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }, 
+    BitwiseAnd 
+};
+
+BitwiseAnd: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseAnd> "&" <rhs:ShiftExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseAnd })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }, 
+    ShiftExpr 
+};
+
+ShiftExpr: ast::Expr = {
+    <sloc:@L> <lhs:ShiftExpr> <op:ShiftOp> <rhs:Math1Expr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: op })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }, 
+    Math1Expr 
+};
+
+ShiftOp: ast::BinaryOperator = {
+    "<<" => ast::BinaryOperator::ShiftLeft,
+    ">>" => ast::BinaryOperator::ShiftRight,
+};
+
+Math1Expr: ast::Expr = {
+    <sloc:@L> <lhs:Math1Expr> <op:Math1Op> <rhs:Math2Expr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: op })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    Math2Expr
+};
+
+Math1Op: ast::BinaryOperator = {
+    "+" => ast::BinaryOperator::Plus,
+    "-" => ast::BinaryOperator::Minus,
+};
+
+Math2Expr: ast::Expr = {
+    <sloc:@L> <lhs:Math2Expr> <op:Math2Op> <rhs:AsExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: op })),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    AsExpr
+};
+
+Math2Op: ast::BinaryOperator = {
+    "*" => ast::BinaryOperator::Mul,
+    "/" => ast::BinaryOperator::Div,
+    "%" => ast::BinaryOperator::Mod,
+};
+
+AsExpr: ast::Expr = {
+    <sloc:@L> <expr:AsExpr> "as" <has_bang:("!"?)> <ty:TypeExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Cast(ast::Cast {
+            ty: Box::new(ty),
+            expr: Box::new(expr),
+            is_unsafe: has_bang.is_some()
+        }),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    UnaryExpr
+};
+
+UnaryExpr: ast::Expr = {
+    <sloc:@L> <op:UnaryOp> <expr:UnaryExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::UnaryOp(Box::new(expr), op),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    AtomExpr<"all">,
+};
+
+UnaryOp: ast::UnaryOperator = {
+    "~" => ast::UnaryOperator::BitwiseInvert,
+    "-" => ast::UnaryOperator::Neg,
+    "+" => ast::UnaryOperator::Pos,
+    "ref" => ast::UnaryOperator::Ref,
+};
+
+AtomExpr<What>: ast::Expr = {
+    Atom<What>,
+    <sloc:@L> <f:AtomExpr<"all">> "(" <args:OneOrMore<FnArgument, ",">?> ")" <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::FunctionCall(Box::new(f), args.unwrap_or(Vec::new())),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <base:AtomExpr<"all">> "[" <args:OneOrMore<Expression, ",">> "]" <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Subscript(Box::new(base), args),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <base:AtomExpr<"no-name">> "." <name:Ident> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Attribute(Box::new(base), name),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+RecField: ast::FieldInit = {
+    <field:Ident> ":=" <init:Expression> => 
+        ast::FieldInit { field, init: Box::new(init) }
+};
+
+FnArgument: ast::FunctionArgument = {
+    <value:Expression> =>
+        ast::FunctionArgument::Direct(Box::new(value)),
+    "out" "var" <pat:Pat> =>
+        ast::FunctionArgument::OutVar(pat),
+    <arg:Ident> ":" <value:Expression> =>
+        ast::FunctionArgument::Keyword(arg, Box::new(value))
+};
+
+Atom<What>: ast::Expr = {
+    <sloc:@L> <cnst:Constant> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Constant(cnst),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <str:string> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::String(str),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <name:NameInNamespace> <record_init:("{" <OneOrMore<RecField, ",">?> "}")?> <eloc:@R> if What != "no-name" => {
+        if let Some(record_init) = record_init {
+            return ast::Expr {
+                kind: ast::ExprKind::RecordInit(name, record_init.unwrap_or(Vec::new())),
+                span: (sloc..eloc),
+                node_id: NODE_ID_UNDEF
+            };
+        }
+        match name {
+            ast::NameInNamespace::Name(name) => ast::Expr {
+                kind: ast::ExprKind::Name(name),
+                span: (sloc..eloc),
+                node_id: NODE_ID_UNDEF
+            },
+            ast::NameInNamespace::Path(path) => ast::Expr {
+                kind: ast::ExprKind::Path(path),
+                span: (sloc..eloc),
+                node_id: NODE_ID_UNDEF
+            }
+        }
+    },
+    <sloc:@L> "[" <default:Expression> ";" <size:Expression> "]" <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::ArraySize(Box::new(default), Box::new(size)),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> "[" <arr:OneOrMore<Expression, ",">?> "]" <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::ArrayItems(arr.unwrap_or(Vec::new())),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> "(" <items:OneOrMore<Expression, ",">?> ")" <eloc:@R> => {
+        let mut items = items.unwrap_or(Vec::new());
+        if items.len() == 1 {
+            return items.pop().unwrap();
+        }
+        ast::Expr {
+            kind: ast::ExprKind::Tuple(items),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    },
+    <sloc:@L> "." <variant:Ident> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::ShorthandEnum(variant),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> "proc" "(" <params:OneOrMore<Pat, ",">?> ")" <body:Statement*> "end" <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Closure(ast::Closure { body, params: params.unwrap_or(Vec::new()) }),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+Constant: ast::Constant = {
+    "true" => ast::Constant::Boolean(true),
+    "false" => ast::Constant::Boolean(false),
+    "None" => ast::Constant::None,
+    <i:integer> => ast::Constant::Integer(i),
+};
+
+TypeExpr: ast::TypeExpr = {
+    <sloc:@L> <is_closure:IsClosure> "(" <params: OneOrMore<TypeExpr, ",">?> ")" <rty:("->" <TypeExpr>)?> <eloc:@R> => {
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Function {
+                param_tys: params.unwrap_or(Vec::new()),
+                return_ty: rty.map(Box::new),
+                is_closure
+            },
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    },
+    <sloc:@L> "ref" <ty:TypeExpr> <eloc:@R> => {
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Ref(Box::new(ty)),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    },
+    <sloc:@L> <name:NameInNamespace> <generic_args:("(" <OneOrMore<GenericArgument, ",">> ")")?> <eloc:@R> => {
+        if let Some(generic_args) = generic_args {
+            return ast::TypeExpr {
+                kind: ast::TypeExprKind::Generic(name, generic_args),
+                span: (sloc..eloc),
+                node_id: NODE_ID_UNDEF
+            };
+        }
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Name(name),
+            span: (sloc..eloc),
+            node_id: NODE_ID_UNDEF
+        }
+    }
+};
+
+IsClosure: bool = {
+    "proc" => false,
+    "closure" => true
+};
+
+GenericArgument: ast::GenericArgument = {
+    <ty:TypeExpr> => ast::GenericArgument::Ty(ty),
+    "{" <expr:Expression> "}" => ast::GenericArgument::Expr(expr),
+    <c:Constant> => ast::GenericArgument::Constant(c)
+};
+
+GenericParams: Vec<ast::GenericParam> = {
+    OneOrMore<GenericParam, ",">
+};
+
+GenericParam: ast::GenericParam = {
+    <sloc:@L> <ident:Ident> <re:("/" <OneOrMore<TypeExpr, "&">>)?> <eloc:@R> => ast::GenericParam {
+        ident,
+        kind: ast::GenericParamKind::Type(re.unwrap_or(Vec::new())),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> "const" <ident:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::GenericParam {
+        ident,
+        kind: ast::GenericParamKind::Const(ty),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+PatLit: ast::Expr = {
+    <sloc:@L> <cnst:Constant> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Constant(cnst),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <str:string> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::String(str),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+};
+
+Pat: ast::Pattern = {
+    <ident:Ident> => ast::Pattern {
+        span: ident.span.clone(),
+        kind: ast::PatternKind::Ident(ident),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> "(" <items:SeperatedList<Pat, ",">> ")" <eloc:@R> => ast::Pattern {
+        kind: ast::PatternKind::Tuple(items),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <lit:PatLit> <eloc:@R> => ast::Pattern {
+        kind: ast::PatternKind::Literal(Box::new(lit)),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    },
+    <sloc:@L> <path:QPath> <eloc:@R> => ast::Pattern {
+        kind: ast::PatternKind::Path(path),
+        span: (sloc..eloc),
+        node_id: NODE_ID_UNDEF
+    }
+};
+
+NameInNamespace: ast::NameInNamespace = {
+    <sloc:@L> <mut segments:OneOrMore<Ident, ".">> <eloc:@R> => {
+        if segments.len() == 1 {
+            return ast::NameInNamespace::Name(ast::QName::Unresolved(segments.remove(0)));
+        }
+        let ident = segments.pop().unwrap();
+        ast::NameInNamespace::Path(ast::QPath::Unresolved(
+            ast::Path {
+                segments,
+                span: (sloc..eloc),
+            },
+            ident
+        ))
+    }
+};
+
+LangItem: ast::Item = {
+    <sloc:@L> "{" (<Ident> "=")? "$" <ident:Ident> "}" <eloc:@R> => ast::Item {
+        ident,
+        kind: ast::ItemKind::LangItem,
+        span: ast::DUMMY_SPAN,
+        node_id: ast::NODE_ID_UNDEF
+    }
+};
+
+QPath: ast::QPath = {
+    <path:Path> "." <ident:Ident>
+        => ast::QPath::Unresolved(path, ident),
+};
+
+#[inline]
+Path: ast::Path = {
+    <sloc:@L> <segments:OneOrMore<Ident, ".">> <eloc:@R> => ast::Path {
+        segments,
+        span: (sloc..eloc),
+    }
+};
+
+Name: ast::QName = {
+    <name:Ident> => ast::QName::Unresolved(name)
+};
+
+Ident: ast::Ident = {
+    <sloc:@L> <s:name> <eloc:@R> => ast::Ident {
+        symbol: Symbol::intern(&s),
+        span: (sloc..eloc)
+    }
+};
+
+OneOrMore<T, Sep>: Vec<T> = {
+    <e:T> => vec![e],
+    <mut v: OneOrMore<T, Sep>> (Sep) <e:T> => {
+        v.push(e);
+        v
+    }
+};
+
+SeperatedList<T, Sep>: Vec<T> = {
+    <mut v: OneOrMore<T, Sep>> (Sep) <e:T> => {
+        v.push(e);
+        v
+    }
+};
+
+extern {
+    type Location = usize;
+    type Error = ast::UserError;
+
+    enum lexer::TokenKind {
+        "." => lexer::TokenKind::Dot,
+        "," => lexer::TokenKind::Comma,
+        ":" => lexer::TokenKind::Colon,
+        "::" => lexer::TokenKind::DoubleColon,
+        ";" => lexer::TokenKind::Semicolon,
+        "[" => lexer::TokenKind::LBracket,
+        "]" => lexer::TokenKind::RBracket,
+        "{" => lexer::TokenKind::LCurly,
+        "}" => lexer::TokenKind::RCurly,
+        "(" => lexer::TokenKind::LParen,
+        ")" => lexer::TokenKind::RParen,
+        ":=" => lexer::TokenKind::Walrus,
+        ".." => lexer::TokenKind::DotDot,
+        "..." => lexer::TokenKind::DotDotDot,
+        "!" => lexer::TokenKind::Bang,
+        "->" => lexer::TokenKind::Arrow,
+        "$" => lexer::TokenKind::Dollar,
+        "@" => lexer::TokenKind::At,
+
+        "&" => lexer::TokenKind::Ampersand,
+        "|" => lexer::TokenKind::VBar,
+        "^" => lexer::TokenKind::Circumflex,
+        "~" => lexer::TokenKind::Tilde,
+
+        "+" => lexer::TokenKind::Plus,
+        "-" => lexer::TokenKind::Minus,
+        "*" => lexer::TokenKind::Star,
+        "/" => lexer::TokenKind::Slash,
+        "%" => lexer::TokenKind::Percent,
+
+        "<<" => lexer::TokenKind::LDoubleChevron,
+        ">>" => lexer::TokenKind::RDoubleChevron,
+
+        "<" => lexer::TokenKind::LChevron,
+        "<=" => lexer::TokenKind::LChevronEq,
+        ">" => lexer::TokenKind::RChevron,
+        ">=" => lexer::TokenKind::RChevronEq,
+        "=" => lexer::TokenKind::Eq,
+        "<>" => lexer::TokenKind::DoubleChevron,
+
+        "or" => lexer::TokenKind::Or,
+        "and" => lexer::TokenKind::And,
+        "not" => lexer::TokenKind::Not,
+
+        "const" => lexer::TokenKind::Const,
+        "use" => lexer::TokenKind::Use,
+        "with" => lexer::TokenKind::With,
+        "var" => lexer::TokenKind::Var,
+        "static" => lexer::TokenKind::Static,
+        "as" => lexer::TokenKind::As,
+        "out" => lexer::TokenKind::Out,
+        "is" => lexer::TokenKind::Is,
+        "extern" => lexer::TokenKind::Extern,
+        "proc" => lexer::TokenKind::Proc,
+        "while" => lexer::TokenKind::While,
+        "for" => lexer::TokenKind::For,
+        "in" => lexer::TokenKind::In,
+        "do" => lexer::TokenKind::Do,
+        "if" => lexer::TokenKind::If,
+        "then" => lexer::TokenKind::Then,
+        "elif" => lexer::TokenKind::ElIf,
+        "else" => lexer::TokenKind::Else,
+        "end" => lexer::TokenKind::End,
+        "record" => lexer::TokenKind::Record,
+        "ref" => lexer::TokenKind::Ref,
+        "return" => lexer::TokenKind::Return,
+        "break" => lexer::TokenKind::Break,
+        "continue" => lexer::TokenKind::Continue,
+        "closure" => lexer::TokenKind::Closure,
+
+        "true" => lexer::TokenKind::True,
+        "false" => lexer::TokenKind::False,
+        "None" => lexer::TokenKind::None,
+
+        name => lexer::TokenKind::Name(<String>),
+        string => lexer::TokenKind::String(<String>),
+        integer => lexer::TokenKind::Intnumber(<u64>),
+    }
+}
+

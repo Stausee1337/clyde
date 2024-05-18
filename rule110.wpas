@@ -1,0 +1,21 @@
+
+const BOARD_CAP: nuint = 100;
+var board: array(int, BOARD_CAP);
+
+
+proc Main()
+    board[BOARD_CAP - 2] := 1;
+    for i in (0..BOARD_CAP - 2) do
+        for j in (0..BOARD_CAP) do
+            Write(" *"[board[j]]);
+        end
+        WriteLn();
+
+        var pattern := (board[0] << 1) | board[1];
+        for j in (1..BOARD_CAP - 1) do
+            pattern := ((pattern << 1) & 7) | board[j + 1];
+            board[j] := (110 >> pattern) & 1;
+        end
+    end
+end
+

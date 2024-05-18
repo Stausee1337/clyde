@@ -1,0 +1,202 @@
+use std::cell::RefCell;
+use std::mem::transmute;
+use std::ops::{Range, Deref};
+use std::fmt::Write;
+use std::os::raw::c_void;
+
+pub trait JoinToHumanReadable {
+    fn join_to_human_readable(&self) -> String;
+}
+
+impl JoinToHumanReadable for Vec<String> {
+    fn join_to_human_readable(&self) -> String {
+        let mut result = String::new();
+        for (idx, item) in self.iter().enumerate() {
+            let needle = self.len().checked_sub(2);
+            let glue = if idx < needle.unwrap_or(0) { ", " }
+            else if Some(idx) == needle { " or " }
+            else { "" };
+            write!(result, "{item}{glue}").unwrap();
+        }
+        result
+    }
+}
+
+pub struct DiagnosticsData {
+    pub source: &'static str,
+    pub filename: &'static str,
+    events: RefCell<Vec<Reported>>
+}
+
+impl DiagnosticsData {
+    pub fn new(filename: &'static str, source: &'static str) -> Self {
+        Self {
+            filename,
+            source,
+            events: RefCell::new(Vec::new())
+        }
+    }
+
+    fn push_event(&self, kind: DiagnosticKind, message: String) -> &mut Reported {
+        let mut events = self.events.borrow_mut();
+        events.push(Reported {
+            kind,
+            message,
+            location: Where::Unspecified 
+        });
+        unsafe { transmute::<&mut Reported, &mut Reported>(events.last_mut().unwrap()) }
+    }
+
+    pub fn error<T: Into<String>>(&self, message: T) -> &mut Reported {
+        self.push_event(DiagnosticKind::Error, message.into())
+    }
+
+    pub fn note<T: Into<String>>(&self, message: T) -> &mut Reported {
+        self.push_event(DiagnosticKind::Note, message.into())
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.events.borrow().is_empty()
+    }
+
+    pub fn print_diagnostics(self) {
+        for event in self.events.into_inner() {
+            let source_pos = event.location.pos_in_source(&self.source);
+            eprintln!("{}: {}:{}: {}",
+                event.kind,
+                self.filename,
+                source_pos.map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
+                    .unwrap_or(String::new()),
+                event.message);
+            if event.location.has_span() {
+                let source_pos = source_pos.unwrap();
+                let lineno = source_pos.position.0.to_string();
+                eprintln!(" {lineno}|{line}", line = source_pos.line(&self.source));
+                eprintln!(" {npad}|{lpad}{span}",
+                    npad = " ".repeat(lineno.len()), lpad = " ".repeat(source_pos.position.1 - 1),
+                    span = "^".repeat(event.location.len().unwrap()));
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Diagnostics(pub &'static DiagnosticsData);
+
+impl std::cmp::PartialEq for Diagnostics {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe {
+            let a = transmute::<Diagnostics, *const c_void>(*self);
+            let b = transmute::<Diagnostics, *const c_void>(*other);
+
+            a == b
+        }
+    }
+}
+
+impl std::cmp::Eq for Diagnostics {}
+
+impl std::fmt::Debug for Diagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Diagnostics({:?})", self.filename)
+    }
+}
+
+impl<'a> Deref for Diagnostics {
+    type Target = DiagnosticsData;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+pub struct Reported {
+    kind: DiagnosticKind,
+    message: String,
+    location: Where
+}
+
+impl Reported {
+    pub fn with_span(&mut self, span: Range<usize>) -> &mut Self {
+        self.location = Where::Span(span);
+        self
+    }
+
+    pub fn with_pos(&mut self, pos: usize) -> &mut Self {
+        self.location = Where::Position(pos);
+        self
+    }
+}
+
+enum DiagnosticKind {
+    Error, Warning, Note
+}
+
+impl std::fmt::Display for DiagnosticKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            DiagnosticKind::Error => "ERROR",
+            DiagnosticKind::Note => "NOTE",
+            DiagnosticKind::Warning => "WARN"
+        })
+    }
+}
+
+enum Where {
+    Unspecified,
+    Position(usize),
+    Span(Range<usize>)
+}
+
+impl Where {
+    fn pos_in_source(&self, source: &str) -> Option<SourcePosition> {
+        let pos = match self {
+            Where::Unspecified => return None,
+            Where::Position(pos) => *pos,
+            Where::Span(Range { start, .. }) => *start
+        };
+
+        let mut bol = 0;
+        let mut line = 1;
+        for (offset, char) in source.chars().enumerate() {
+            if offset == pos {
+                return Some(SourcePosition {
+                    position: (line, offset - bol),
+                    bol
+                });
+            } else if char == '\n' {
+                bol = offset;
+                line += 1;
+            }
+        }
+        None
+    }
+
+    fn has_span(&self) -> bool {
+        match self {
+            Where::Span(..) => true,
+            _ => false
+        }
+    }
+
+    fn len(&self) -> Option<usize> {
+        Some(match self {
+            Where::Span(span) => span.len(),
+            Where::Position(..) => 0,
+            _ => return None
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SourcePosition {
+    position: (usize, usize),
+    bol: usize
+}
+
+impl SourcePosition {
+    fn line<'s>(&self, source: &'s str) -> &'s str {
+        let line = &source[self.bol+1..];
+        &line[..line.find('\n').unwrap_or(line.len() - 1)]
+    }
+}

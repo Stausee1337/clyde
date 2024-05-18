@@ -1,0 +1,12 @@
+Lexing          Source -> Tokens
+Parsing         Tokens -> AST 
+NodeId Generation
+Desugaring
+NameResolution
+TypeCollection
+TypeChecking
+Lowering2       AST -> MIR
+CodeGeneration  MIR -> ASM
+
+Desugaring: For/While Loops, Pattern Assign, 
+
