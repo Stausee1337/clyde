@@ -2,7 +2,6 @@ use crate::{
     ast, lexer,
     symbol::Symbol, 
     parser::ParseContext as Context,
-    diagnostics::Diagnostics,
 };
 
 grammar<'a>(ctxt: &'a mut Context);
