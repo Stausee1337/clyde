@@ -133,7 +133,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
     }
 }
 
-fn visit_proc<T: MutVisitor>(proc: &mut Proc, vis: &mut T) {
+pub fn visit_proc<T: MutVisitor>(proc: &mut Proc, vis: &mut T) {
     visit_vec(&mut proc.params, |p| vis.visit_param(p));
     visit_vec(&mut proc.generics, |generic| vis.visit_generic_param(generic));
     visit_option(&mut proc.returns, |ty| vis.visit_ty_expr(ty));

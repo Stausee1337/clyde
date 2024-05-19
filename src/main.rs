@@ -10,6 +10,7 @@ mod symbol;
 mod node_visitor;
 mod diagnostics;
 mod interface;
+mod resolve;
 
 
 fn main() -> ExitCode {
@@ -21,10 +22,10 @@ fn main() -> ExitCode {
     let sess = options.create_compile_session();
     
     build_compiler(sess, |compiler| {
-        let ast = compiler.parse()?;
+        let mut ast = compiler.parse()?;
         println!("{ast:#?}");
     
-        interface::fully_resolve_unit(ast);
+        resolve::run_resolve(&mut ast);
         // lower()
 
         // type collection

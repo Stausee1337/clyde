@@ -3,7 +3,7 @@ use std::{mem::transmute, path::{PathBuf, Path}, env, process::ExitCode, str::Fr
 
 use crate::{
     diagnostics::{Diagnostics, DiagnosticsData},
-    parser, ast
+    parser, ast, resolve
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -198,8 +198,5 @@ pub fn build_compiler<T, F: FnOnce(&mut Compiler) -> T>(sess: Session, f: F) -> 
     let mut compiler = Compiler { sess };
 
     f(&mut compiler)
-}
-
-pub fn fully_resolve_unit(mut unit: ast::TopLevel) {
 }
 
