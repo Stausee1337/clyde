@@ -43,7 +43,7 @@ impl Hash for Ident {
 pub enum ResulutionKind {
     Local, StaticVar, Const,
     Function,
-    Struct, 
+    Struct,  Err
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +111,7 @@ pub struct TopLevel {
     pub unit_decl: Option<Path>,
     pub items: Vec<Item>,
     pub span: Range<usize>,
+    pub node_id: NodeId,
     pub diagnostics: Diagnostics
 }
 

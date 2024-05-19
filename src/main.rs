@@ -23,9 +23,9 @@ fn main() -> ExitCode {
     
     build_compiler(sess, |compiler| {
         let mut ast = compiler.parse()?;
-        println!("{ast:#?}");
     
         resolve::run_resolve(&mut ast);
+        println!("{ast:#?}");
         // lower()
 
         // type collection

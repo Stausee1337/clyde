@@ -14,10 +14,13 @@
 6. Create a System where Names are Resolved to thier declaring nodes
 
 
-## TypeResolverPass
-
-### General Task
+## TypeResolutionPass
 - Collect all the TopLevel Structs, Functions, etc ...
-- Associate `Ident` <-> `NodeId` of declaration
+- Associate `Ident` <-> `NodeId` of `Declaration`
 - Build a HashMap for every `Subspace` (types, functions, globals)
+
+## NameResolutionPass
+- Visit Items [Globals (Vars, Consts), Types, Functions]
+- Resolve Names depending on thier Enviroment (Types, Functions, Variables)
+- Drive each QName to a Resolved state 
 

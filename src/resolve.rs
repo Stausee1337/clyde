@@ -63,12 +63,23 @@ impl ResolutionState {
 }
 
 struct TypeResolutionPass<'r> {
-    resolution: &'r mut ResolutionState
+    resolution: &'r mut ResolutionState,
+    current_node_id: u32
 }
 
 impl<'r> TypeResolutionPass<'r> {
     pub fn new(resolution: &'r mut ResolutionState) -> Self {
-        Self { resolution }
+        Self { resolution, current_node_id: 0 }
+    }
+
+    pub fn resolve(&mut self, tree: &mut ast::TopLevel) {
+        self.current_node_id = tree.node_id.0 + 1;
+        self.visit(tree);
+    }
+
+    pub fn make_node_id(&mut self) -> ast::NodeId {
+        let new_node_id = self.current_node_id + 1;
+        ast::NodeId(std::mem::replace(&mut self.current_node_id, new_node_id))
     }
 }
 
@@ -87,6 +98,34 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
             _ => node_visitor::noop_visit_item_kind(&mut item.kind, self),
         } 
     }
+
+    fn visit_expr(&mut self, expr: &mut ast::Expr) { 
+        match &mut expr.kind {
+            ast::ExprKind::Path(..) => {
+                let kind = core::mem::replace(&mut expr.kind, ast::ExprKind::Err);
+                let (mut path, ident) = match kind {
+                    ast::ExprKind::Path(ast::QPath::Unresolved(path, ident)) => (path, ident),
+                    _ => panic!("invalid state in path replace resolution"),
+                };
+                path.segments.push(ident);
+                let base = path.segments.remove(0);
+                let mut rexpr = ast::Expr {
+                    span: base.span.clone(),
+                    kind: ast::ExprKind::Name(ast::QName::Unresolved(base)),
+                    node_id: self.make_node_id() 
+                };
+                for ident in path.segments {
+                    rexpr = ast::Expr {
+                        span: (rexpr.span.start..ident.span.end),
+                        kind: ast::ExprKind::Attribute(Box::new(rexpr), ident),
+                        node_id: self.make_node_id()
+                    };
+                }
+                expr.kind = rexpr.kind;
+            },
+            _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self),
+        }
+    }
 }
 
 
@@ -94,6 +133,6 @@ pub fn run_resolve(tree: &mut ast::TopLevel) {
     let mut resolution = ResolutionState::new(tree.diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.visit(tree);
+    rpass.resolve(tree);
 }
 

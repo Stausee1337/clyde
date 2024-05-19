@@ -13,7 +13,8 @@ pub TopLevel: ast::TopLevel = {
         unit_decl,
         items,
         span: (start..end),
-        diagnostics: ctxt.diagnostics
+        diagnostics: ctxt.diagnostics,
+        node_id: ctxt.make_node_id(),
     }
 };
 
