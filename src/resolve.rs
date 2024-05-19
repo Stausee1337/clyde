@@ -204,7 +204,7 @@ impl<'r> NameResolutionPass<'r> {
         None
     }
 
-    fn resolve(&self, space: Symbolspace, name: &mut QName) -> bool {
+    fn resolve(&self, space: Symbolspace, name: &mut QName, report_error: bool) -> bool {
         let ident = match name {
             ast::QName::Unresolved(ident) => ident.clone(),
             ast::QName::Resolved { .. } => return true,
@@ -238,15 +238,17 @@ impl<'r> NameResolutionPass<'r> {
                 node_id: ast::NODE_ID_UNDEF,
                 res_kind: DeclarationKind::Primitive
             };
-        } else { 
-            self.resolution.diagnostics
-                .error(format!("could not find {space} {name}", name = ident.symbol.get()))
-                .with_span(ident.span.clone());
-            *name = ast::QName::Resolved {
-                ident,
-                node_id: ast::NODE_ID_UNDEF,
-                res_kind: DeclarationKind::Err
-            };
+        } else {
+            if report_error {
+                self.resolution.diagnostics
+                    .error(format!("could not find {space} {name}", name = ident.symbol.get()))
+                    .with_span(ident.span.clone());
+                *name = ast::QName::Resolved {
+                    ident,
+                    node_id: ast::NODE_ID_UNDEF,
+                    res_kind: DeclarationKind::Err
+                };
+            }
             return false;
         };
         true
@@ -254,10 +256,17 @@ impl<'r> NameResolutionPass<'r> {
 
     fn resolve_priority(&self, pspaces: &[Symbolspace], name: &mut QName) -> bool {
         for space in pspaces {
-            if self.resolve(*space, name) {
+            if self.resolve(*space, name, false) {
                 return true;
             }
         }
+        let ident = match name {
+            ast::QName::Unresolved(ident) => ident.clone(),
+            ast::QName::Resolved { .. } => panic!(),
+        };
+        self.resolution.diagnostics
+            .error(format!("could not find {space} {name}", space = pspaces[0], name = ident.symbol.get()))
+            .with_span(ident.span.clone());
         false
     }
 }
@@ -372,7 +381,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                 node_visitor::visit_vec(fields, |field| self.visit_field_init(field));
                 match name {
                     NameInNamespace::Name(name) => {
-                        self.resolve(Symbolspace::Type, name);
+                        self.resolve(Symbolspace::Type, name, true);
                     }
                     NameInNamespace::Path(path) => 
                         self.visit_path(path)
@@ -425,7 +434,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
             ast::TypeExprKind::Name(name) => match name {
                 NameInNamespace::Name(name) => { 
-                    self.resolve(Symbolspace::Type, name);
+                    self.resolve(Symbolspace::Type, name, true);
                 },
                 NameInNamespace::Path(path) => self.visit_path(path),
             },
