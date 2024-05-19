@@ -279,7 +279,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     let first = proc.generics.first().unwrap();
                     let last = proc.generics.last().unwrap();
                     self.resolution.diagnostics
-                        .error("procedure generics are not supported yet")
+                        .fatal("procedure generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
                 node_visitor::visit_option(&mut proc.returns, |ty| self.visit_ty_expr(ty));
@@ -299,7 +299,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     let first = rec.generics.first().unwrap();
                     let last = rec.generics.last().unwrap();
                     self.resolution.diagnostics
-                        .error("record generics are not supported yet")
+                        .fatal("record generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
                 node_visitor::visit_vec(&mut rec.fields, |field_def| self.visit_field_def(field_def));
@@ -323,7 +323,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     ast::PatternKind::Ident(ident) => ident.clone(),
                     ast::PatternKind::Tuple(..) => {
                         self.resolution.diagnostics
-                            .error(format!("tuple pattern in function parameters are not supported yet"))
+                            .fatal(format!("tuple pattern in function parameters are not supported yet"))
                             .with_span(pat.span.clone());
                         return;
                     }
@@ -331,7 +331,6 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                         self.resolution.diagnostics
                             .error(format!("unsensible pattern found in var declaration"))
                             .with_span(pat.span.clone());
-                        pat.kind = ast::PatternKind::Ident(ast::Ident::from_str("_"));
                         return;
                     }
                 };
@@ -356,7 +355,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::StmtKind::For(..) => {
                 self.resolution.diagnostics
-                    .error("for loops are not supported yet")
+                    .fatal("for loops are not supported yet")
                     .with_span(stmt.span.clone());
                 self.resolution.diagnostics
                     .note("consider using while loops for now")
@@ -365,7 +364,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::StmtKind::Item(..) => {
                 self.resolution.diagnostics
-                    .error("inner items are not supported yet")
+                    .fatal("inner items are not supported yet")
                     .with_span(stmt.span.clone());
             }
             _ => noop_visit_stmt_kind(&mut stmt.kind, self),
@@ -396,7 +395,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::ExprKind::PatternMatch(..) => {
                 self.resolution.diagnostics
-                    .error("pattern matching is not supported yet")
+                    .fatal("pattern matching is not supported yet")
                     .with_span(expr.span.clone());
             }
             _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self)
@@ -408,7 +407,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             ast::PatternKind::Ident(ident) => ident.clone(),
             ast::PatternKind::Tuple(..) => {
                 self.resolution.diagnostics
-                    .error(format!("tuple pattern in function parameters are not supported yet"))
+                    .fatal(format!("tuple pattern in function parameters are not supported yet"))
                     .with_span(param.pat.span.clone());
                 return;
             }
@@ -416,7 +415,6 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                 self.resolution.diagnostics
                     .error(format!("unsensible pattern found in function parameter"))
                     .with_span(param.pat.span.clone());
-                param.pat.kind = ast::PatternKind::Ident(ast::Ident::from_str("_"));
                 return;
             }
         };
@@ -440,12 +438,12 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             },
             ast::TypeExprKind::Generic(..) => {
                 self.resolution.diagnostics
-                    .error("generic types are not supported yet")
+                    .fatal("generic types are not supported yet")
                     .with_span(ty.span.clone());
             }
             ast::TypeExprKind::Function { .. } => {
                 self.resolution.diagnostics
-                    .error("procedure types are not supported yet")
+                    .fatal("procedure types are not supported yet")
                     .with_span(ty.span.clone());
             }
         }

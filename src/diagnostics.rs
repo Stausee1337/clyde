@@ -1,8 +1,11 @@
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::mem::transmute;
 use std::ops::{Range, Deref};
 use std::fmt::Write;
 use std::os::raw::c_void;
+
+use bitflags::bitflags;
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -22,10 +25,19 @@ impl JoinToHumanReadable for Vec<String> {
     }
 }
 
+bitflags! {
+    pub struct HappenedEvents: u8 {
+        const WARNING = 0b0001;
+        const ERROR = 0b0010;
+        const FATAL = 0b0100;
+    }
+}
+
 pub struct DiagnosticsData {
     pub source: &'static str,
     pub filename: &'static str,
-    events: RefCell<Vec<Reported>>
+    events: RefCell<Vec<Reported>>,
+    flags: RefCell<HappenedEvents>
 }
 
 impl DiagnosticsData {
@@ -33,7 +45,8 @@ impl DiagnosticsData {
         Self {
             filename,
             source,
-            events: RefCell::new(Vec::new())
+            events: RefCell::new(Vec::new()),
+            flags: RefCell::new(HappenedEvents::empty())
         }
     }
 
@@ -48,15 +61,34 @@ impl DiagnosticsData {
     }
 
     pub fn error<T: Into<String>>(&self, message: T) -> &mut Reported {
+        self.flags.borrow_mut().insert(HappenedEvents::ERROR);
         self.push_event(DiagnosticKind::Error, message.into())
+    }
+
+    pub fn fatal<T: Into<String>>(&self, message: T) -> &mut Reported {
+        self.flags.borrow_mut().insert(HappenedEvents::FATAL);
+        self.push_event(DiagnosticKind::Fatal, message.into())
+    }
+
+    pub fn warning<T: Into<String>>(&self, message: T) -> &mut Reported {
+        self.flags.borrow_mut().insert(HappenedEvents::WARNING);
+        self.push_event(DiagnosticKind::Warning, message.into())
     }
 
     pub fn note<T: Into<String>>(&self, message: T) -> &mut Reported {
         self.push_event(DiagnosticKind::Note, message.into())
     }
 
-    pub fn has_errors(&self) -> bool {
-        !self.events.borrow().is_empty()
+    pub fn has_error(&self) -> bool {
+        self.flags.borrow().contains(HappenedEvents::ERROR)
+    }
+
+    pub fn has_warning(&self) -> bool {
+        self.flags.borrow().contains(HappenedEvents::WARNING)
+    }
+
+    pub fn has_fatal(&self) -> bool {
+        self.flags.borrow().contains(HappenedEvents::FATAL)
     }
 
     pub fn print_diagnostics(&self) {
@@ -129,13 +161,14 @@ impl Reported {
 }
 
 enum DiagnosticKind {
-    Error, Warning, Note
+    Error, Fatal, Warning, Note
 }
 
 impl std::fmt::Display for DiagnosticKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", match self {
             DiagnosticKind::Error => "ERROR",
+            DiagnosticKind::Fatal => "FATAL",
             DiagnosticKind::Note => "NOTE",
             DiagnosticKind::Warning => "WARN"
         })
