@@ -15,6 +15,13 @@ struct StringInterner {
 }
 
 impl StringInterner {
+    fn prefill(fill: &[&'static str]) -> Self {
+        Self {
+            arena: ManuallyDrop::new(Bump::new()),
+            strings: fill.iter().copied().collect() 
+        }
+    }
+
     fn add(&mut self, str: &str) -> u32 {
         if let Some(idx) = self.strings.get_index_of(str) {
             return idx as u32;
@@ -31,15 +38,6 @@ impl StringInterner {
 
     fn get(&self, idx: u32) -> &str {
         self.strings.get_index(idx as usize).unwrap()
-    }
-}
-
-impl Default for StringInterner {
-    fn default() -> Self {
-        Self {
-            arena: ManuallyDrop::new(Bump::new()),
-            strings: StringSet::default()
-        }
     }
 }
 
@@ -63,8 +61,14 @@ impl Hasher for GNUHasher {
     }
 }
 
+const PRIMITIVES: &[&'static str] = &[
+    "bool", "void",
+    "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong",
+    "string"
+];
+
 thread_local! {
-    static INTERNED_STRINGS: RefCell<StringInterner> = RefCell::new(StringInterner::default());
+    static INTERNED_STRINGS: RefCell<StringInterner> = RefCell::new(StringInterner::prefill(PRIMITIVES));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,6 +92,6 @@ impl Symbol {
     }
 
     pub fn is_primtive(&self) -> bool {
-        false
+        return self.0 < PRIMITIVES.len() as u32
     }
 }
