@@ -59,8 +59,8 @@ impl DiagnosticsData {
         !self.events.borrow().is_empty()
     }
 
-    pub fn print_diagnostics(self) {
-        for event in self.events.into_inner() {
+    pub fn print_diagnostics(&self) {
+        for event in self.events.borrow().iter() {
             let source_pos = event.location.pos_in_source(&self.source);
             eprintln!("{}: {}:{}: {}",
                 event.kind,

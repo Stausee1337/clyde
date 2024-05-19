@@ -32,6 +32,8 @@ fn main() -> ExitCode {
         // type checking
 
         // IR generation
+        //
+        ast.diagnostics.print_diagnostics();
 
         Ok::<ExitCode, ()>(ExitCode::SUCCESS)
     }).unwrap_or(ExitCode::FAILURE)

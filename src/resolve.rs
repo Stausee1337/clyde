@@ -58,7 +58,7 @@ impl ResolutionState {
         };
         if let Some(prev) = space.insert(name.symbol, declaration) {
             self.diagnostics
-                .error(format!("redeclartion of {space_kind} {name:?}", name = name.symbol.get()))
+                .error(format!("redeclaration of {space_kind} {name:?}", name = name.symbol.get()))
                 .with_span(name.span);
             self.diagnostics
                 .note(format!("previous declaration of {name:?} here", name = name.symbol.get()))
@@ -157,6 +157,32 @@ impl<'r> NameResolutionPass<'r> {
         do_work(self);
         self.ribs.pop();
     }
+
+    fn has_rib(&self) -> bool {
+        self.ribs.len() > 0
+    }
+
+    fn define(&mut self, name: ast::Ident, site: ast::NodeId) {
+        assert!(self.has_rib(), "NameResolutionPass::define() called outside of vaild scope");
+        let symbol = name.symbol;
+        for rib in &self.ribs {
+            if let Some(decl) = rib.symspace.get(&symbol)  {
+                self.resolution.diagnostics
+                    .error(format!("redeclaration of var {name} here", name = symbol.get()))
+                    .with_span(name.span.clone());
+                self.resolution.diagnostics
+                    .note(format!("previous declaration of {name} here", name = symbol.get()))
+                    .with_span(decl.span.clone());
+                return;
+            };
+        }
+        let decl = Declaration {
+            site,
+            span: name.span.clone()
+        };
+        let rib = self.ribs.last_mut().unwrap();
+        rib.symspace.insert(symbol, decl);
+    }
 }
 
 impl<'r> MutVisitor for NameResolutionPass<'r> {
@@ -170,9 +196,17 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                         .error("procedure generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
-                node_visitor::visit_vec(&mut proc.params, |p| self.visit_param(p));
                 node_visitor::visit_option(&mut proc.returns, |ty| self.visit_ty_expr(ty));
-                node_visitor::visit_option(&mut proc.body, |body| node_visitor::visit_vec(body, |stmt| self.visit_stmt(stmt)));
+
+                let Some(ref mut body) = proc.body else {
+                    node_visitor::visit_vec(&mut proc.params, |p| self.visit_param(p));
+                    return;
+                };
+
+                self.with_rib(|this| {
+                    node_visitor::visit_vec(&mut proc.params, |p| this.visit_param(p));
+                    node_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
+                });
             }
             ast::ItemKind::Record(rec) => {
                 if rec.generics.len() > 0 {
@@ -194,6 +228,32 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::ItemKind::Err => ()
         }
+    }
+
+    fn visit_param(&mut self, param: &mut ast::Param) {
+        let ident = match &param.pat.kind {
+            ast::PatternKind::Ident(ident) => ident.clone(),
+            ast::PatternKind::Tuple(..) => {
+                self.resolution.diagnostics
+                    .error(format!("tuple arguments are not supported yet"))
+                    .with_span(param.pat.span.clone());
+                return;
+            }
+            ast::PatternKind::Literal(..) | ast::PatternKind::Path(..) => {
+                self.resolution.diagnostics
+                    .error(format!("unsensible pattern found in function argument"))
+                    .with_span(param.pat.span.clone());
+                param.pat.kind = ast::PatternKind::Ident(ast::Ident::from_str("_"));
+                return;
+            }
+        };
+        self.visit_ty_expr(&mut param.ty);
+
+        if !self.has_rib() {
+            return;
+        }
+
+        self.define(ident, param.node_id);
     }
 
     fn visit_ty_expr(&mut self, ty: &mut ast::TypeExpr) {
