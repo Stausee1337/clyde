@@ -4,8 +4,8 @@ use crate::ast::{TopLevel, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericP
 
 
 pub trait MutVisitor: Sized {
-    fn visit(&mut self, unit: &mut TopLevel) {
-        visit_vec(&mut unit.items, |item| self.visit_item(item));
+    fn visit(&mut self, tree: &mut TopLevel) {
+        visit_vec(&mut tree.items, |item| self.visit_item(item));
     }
 
     fn visit_item(&mut self, item: &mut Item) {

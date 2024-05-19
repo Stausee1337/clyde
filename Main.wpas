@@ -3,6 +3,6 @@ proc exit(code: int);
 
 proc main() =
     var exit_code := 12;
-    exit(a.b.c);
+    exit(exit_code);
 end
 

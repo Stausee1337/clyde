@@ -68,16 +68,17 @@ struct TypeResolutionPass<'r> {
 }
 
 impl<'r> TypeResolutionPass<'r> {
-    pub fn new(resolution: &'r mut ResolutionState) -> Self {
+    fn new(resolution: &'r mut ResolutionState) -> Self {
         Self { resolution, current_node_id: 0 }
     }
 
-    pub fn resolve(&mut self, tree: &mut ast::TopLevel) {
-        self.current_node_id = tree.node_id.0 + 1;
+    fn resolve(&mut self, tree: &mut ast::TopLevel) {
+        self.current_node_id = tree.node_id.0;
         self.visit(tree);
+        tree.node_id.0 = self.current_node_id;
     }
 
-    pub fn make_node_id(&mut self) -> ast::NodeId {
+    fn make_node_id(&mut self) -> ast::NodeId {
         let new_node_id = self.current_node_id + 1;
         ast::NodeId(std::mem::replace(&mut self.current_node_id, new_node_id))
     }
@@ -128,11 +129,41 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
     }
 }
 
+#[derive(Default)]
+struct Rib {
+    symspace: HashMap<Symbol, Declaration>,
+}
+
+struct NameResolutionPass<'r> {
+    resolution: &'r mut ResolutionState,
+    ribs: Vec<Rib>
+}
+
+impl<'r> NameResolutionPass<'r> {
+    fn new(resolution: &'r mut ResolutionState) -> Self {
+        Self {
+            resolution,
+            ribs: Default::default()
+        }
+    }
+
+    fn with_rib<F: FnOnce(&mut Self)>(&mut self, do_work: F) {
+        self.ribs.push(Rib::default());
+        do_work(self);
+        self.ribs.pop();
+    }
+}
+
+impl<'r> MutVisitor for NameResolutionPass<'r> {
+}
 
 pub fn run_resolve(tree: &mut ast::TopLevel) {
     let mut resolution = ResolutionState::new(tree.diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
     rpass.resolve(tree);
+
+    let mut rpass = NameResolutionPass::new(&mut resolution);
+    rpass.visit(tree);
 }
 
