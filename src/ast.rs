@@ -40,10 +40,8 @@ impl Hash for Ident {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ResulutionKind {
-    Local, StaticVar, Const,
-    Function,
-    Struct,  Err
+pub enum DeclarationKind {
+    Local, Global, Function, Type, Primitive, Err
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +50,7 @@ pub enum QName {
     Resolved {
         ident: Ident,
         node_id: NodeId,
-        res_kind: ResulutionKind
+        res_kind: DeclarationKind 
     },
 }
 

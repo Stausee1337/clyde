@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast, node_visitor::{MutVisitor, self}, diagnostics::{Diagnostics, self}, symbol::Symbol};
+use crate::{ast::{self, NameInNamespace, DeclarationKind}, node_visitor::{MutVisitor, self}, diagnostics::{Diagnostics, self}, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -16,7 +16,12 @@ enum Symbolspace {
 
 impl std::fmt::Display for Symbolspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Hello")
+        use Symbolspace as Sym;
+        match self {
+            Sym::Type => write!(f, "type"),
+            Sym::Function => write!(f, "function"),
+            Sym::Global => write!(f, "global"),
+        }
     }
 }
 
@@ -53,10 +58,10 @@ impl ResolutionState {
         };
         if let Some(prev) = space.insert(name.symbol, declaration) {
             self.diagnostics
-                .error(format!("Redeclartion of {space_kind} {name:?}", name = name.symbol.get()))
+                .error(format!("redeclartion of {space_kind} {name:?}", name = name.symbol.get()))
                 .with_span(name.span);
             self.diagnostics
-                .note(format!("Previous declaration of {name:?} here", name = name.symbol.get()))
+                .note(format!("previous declaration of {name:?} here", name = name.symbol.get()))
                 .with_pos(prev.span.start);
         }
     }
@@ -155,6 +160,98 @@ impl<'r> NameResolutionPass<'r> {
 }
 
 impl<'r> MutVisitor for NameResolutionPass<'r> {
+    fn visit_item(&mut self, item: &mut ast::Item) {
+        match &mut item.kind {
+            ast::ItemKind::Proc(proc) => {
+                if proc.generics.len() > 0 {
+                    let first = proc.generics.first().unwrap();
+                    let last = proc.generics.last().unwrap();
+                    self.resolution.diagnostics
+                        .error("procedure generics are not supported yet")
+                        .with_span(first.span.start..last.span.end);
+                }
+                node_visitor::visit_vec(&mut proc.params, |p| self.visit_param(p));
+                node_visitor::visit_option(&mut proc.returns, |ty| self.visit_ty_expr(ty));
+                node_visitor::visit_option(&mut proc.body, |body| node_visitor::visit_vec(body, |stmt| self.visit_stmt(stmt)));
+            }
+            ast::ItemKind::Record(rec) => {
+                if rec.generics.len() > 0 {
+                    let first = rec.generics.first().unwrap();
+                    let last = rec.generics.last().unwrap();
+                    self.resolution.diagnostics
+                        .error("record generics are not supported yet")
+                        .with_span(first.span.start..last.span.end);
+                }
+                node_visitor::visit_vec(&mut rec.fields, |field_def| self.visit_field_def(field_def));
+            }
+            ast::ItemKind::Constant(ty, expr) => {
+                self.visit_ty_expr(ty);
+                self.visit_expr(expr);
+            }
+            ast::ItemKind::StaticVar(ty, expr) => {
+                node_visitor::visit_option(ty, |ty| self.visit_ty_expr(ty));
+                node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
+            }
+            ast::ItemKind::Err => ()
+        }
+    }
+
+    fn visit_ty_expr(&mut self, ty: &mut ast::TypeExpr) {
+        match &mut ty.kind {
+            ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
+            ast::TypeExprKind::Name(name) => match name {
+                NameInNamespace::Name(name) => {
+                    let ident = match name {
+                        ast::QName::Unresolved(ident) => ident.clone(),
+                        ast::QName::Resolved { .. } => return,
+                    };
+                    if let Some(decl) = self.resolution.types.get(&ident.symbol) {
+                        *name = ast::QName::Resolved {
+                            ident,
+                            node_id: decl.site,
+                            res_kind: DeclarationKind::Type
+                        };
+                    } else if ident.symbol.is_primtive() {
+                        *name = ast::QName::Resolved {
+                            ident,
+                            node_id: ast::NODE_ID_UNDEF,
+                            res_kind: DeclarationKind::Primitive
+                        };
+                    } else { 
+                        self.resolution.diagnostics
+                            .error(format!("could not find type {name}", name = ident.symbol.get()))
+                            .with_span(ident.span.clone());
+                        *name = ast::QName::Resolved {
+                            ident,
+                            node_id: ast::NODE_ID_UNDEF,
+                            res_kind: DeclarationKind::Err
+                        };
+                    }
+                },
+                NameInNamespace::Path(path) => self.visit_path(path),
+            },
+            ast::TypeExprKind::Generic(..) => {
+                self.resolution.diagnostics
+                    .error("generic types are not supported yet")
+                    .with_span(ty.span.clone());
+            }
+            ast::TypeExprKind::Function { .. } => {
+                self.resolution.diagnostics
+                    .error("procedure types are not supported yet")
+                    .with_span(ty.span.clone());
+            }
+        }
+    }
+
+    fn visit_path(&mut self, path: &mut ast::QPath) {
+        let (path, ident) = match path {
+            ast::QPath::Unresolved(path, ident) => (path, ident), 
+            ast::QPath::Resolved => panic!("invalid state when emitting path error"),
+        };
+        self.resolution.diagnostics
+            .error("there is no namespace support yet")
+            .with_span(path.span.start..ident.span.end);
+    }
 }
 
 pub fn run_resolve(tree: &mut ast::TopLevel) {

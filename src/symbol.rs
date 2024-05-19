@@ -86,4 +86,8 @@ impl Symbol {
             transmute(interner.borrow().get(self.0))
         })
     }
+
+    pub fn is_primtive(&self) -> bool {
+        false
+    }
 }
