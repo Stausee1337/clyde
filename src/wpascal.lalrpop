@@ -90,7 +90,7 @@ RecordFields: Vec<ast::FieldDef> = {
 
 RecordField: ast::FieldDef = {
     <sloc:@L> <name:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::FieldDef {
-        name, ty, span: (sloc..eloc)
+        name, ty, span: (sloc..eloc), node_id: ctxt.make_node_id(),
     }
 };
 

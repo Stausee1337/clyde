@@ -141,7 +141,8 @@ pub struct Record {
 pub struct FieldDef {
     pub name: Ident,
     pub ty: TypeExpr,
-    pub span: Range<usize>
+    pub span: Range<usize>,
+    pub node_id: NodeId
 }
 
 #[derive(Debug)]

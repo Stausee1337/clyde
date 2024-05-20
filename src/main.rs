@@ -11,7 +11,7 @@ mod node_visitor;
 mod diagnostics;
 mod interface;
 mod resolve;
-
+mod types;
 
 fn main() -> ExitCode {
     let options = match interface::parse_argv_options(env::args()) {
@@ -25,7 +25,12 @@ fn main() -> ExitCode {
         let mut ast = compiler.parse()?;
     
         resolve::run_resolve(&mut ast);
-        println!("{ast:#?}");
+
+        if ast.diagnostics.has_fatal() {
+            ast.diagnostics.print_diagnostics();
+            return Ok::<ExitCode, ()>(ExitCode::FAILURE);
+        }
+
         // lower()
 
         // type collection
