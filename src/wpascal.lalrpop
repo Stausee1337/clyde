@@ -24,35 +24,25 @@ Items: Vec<ast::Item> = {
 };
 
 Item: ast::Item = {
-    ConstDef,
     GlobalDef,
     StructDef,
     FunctionDef,
 };
 
-ConstDef: ast::Item = { 
-    <sloc:@L> "const" <ident:Ident> ":" <ty:TypeExpr> "=" <init:Expression> ";" <eloc:@R> => ast::Item {
-        ident,
-        kind: ast::ItemKind::Constant(Box::new(ty), Box::new(init)),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-};
-
 GlobalDef: ast::Item = {
-    <sloc:@L> "var" <ident:Ident> <ty:(":" <TypeExpr>)?> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Item {
+    <sloc:@L> <is_const:"const"?> <ty:TypeExpr> <ident:Ident> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Item {
         ident,
-        kind: ast::ItemKind::StaticVar(ty.map(|ty| Box::new(ty)), init.map(|b| Box::new(b))),
+        kind: ast::ItemKind::GlobalVar(Box::new(ty), init.map(|b| Box::new(b)), is_const.is_some()),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
 };
 
 StructDef: ast::Item = {
-    <sloc:@L> "struct" <ident:Ident> <generics:("<" <GenericParams> ">")?> "{" <f:StructFields?> "}" <eloc:@R> => {
+    <sloc:@L> "struct" <ident:Ident> <generics:("<" <GenericParams> ">")?> "{" <f:StructField*> "}" <eloc:@R> => {
         let stc = ast::Struct {
             generics: generics.unwrap_or(Vec::new()),
-            fields: f.unwrap_or(Vec::new()),
+            fields: f,
             attributes: vec![]
         };
         ast::Item {
@@ -64,22 +54,18 @@ StructDef: ast::Item = {
     }
 };
 
-StructFields: Vec<ast::FieldDef> = {
-    OneOrMore<StructField, ",">
-};
-
 StructField: ast::FieldDef = {
-    <sloc:@L> <name:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::FieldDef {
+    <sloc:@L> <ty:TypeExpr> <name:Ident> ";" <eloc:@R> => ast::FieldDef {
         name, ty, span: (sloc..eloc), node_id: ctxt.make_node_id(),
     }
 };
 
 FunctionDef: ast::Item = {
-    <sloc:@L> "fn" <ident:Ident> <generics:("<" <GenericParams> ">")?> 
-    <p:Parameters> <returns:(":" <TypeExpr>)?> <body:Body> <eloc:@R> => {
+    <sloc:@L> <ret_ty:TypeExpr> <ident:Ident> <generics:("<" <GenericParams> ">")?> 
+    <p:Parameters> <body:Body> <eloc:@R> => {
         let func = ast::Function {
             params: p.unwrap_or(Vec::new()),
-            returns,
+            returns: Some(ret_ty),
             generics: generics.unwrap_or(Vec::new()),
             span: (sloc..eloc),
             body,
@@ -104,7 +90,7 @@ Parameters: Option<Vec<ast::Param>> = {
 };
 
 Paramter: ast::Param = {
-    <sloc:@L> <pat:Pat> ":" <ty:TypeExpr> <eloc:@R>  => {
+    <sloc:@L> <ty:TypeExpr> <pat:Pat> <eloc:@R>  => {
         ast::Param {
             pat,
             ty,
@@ -126,10 +112,39 @@ Statement: ast::Stmt = {
 };
 
 LocalStatement: ast::Stmt = {
-    <sloc:@L> "var" <pat:Pat> <ty:(":" <TypeExpr>)?> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::Local(pat, ty.map(|ty| Box::new(ty)), init.map(|e| Box::new(e))),
+    <sloc:@L> "var" <pat:Pat> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::Local(pat, None, init.map(|e| Box::new(e))),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
+    },
+    <sloc:@L> <ty:SimpleTypeExpr> <name:Ident> <init:("=" <Expression>)?> ";" <eloc:@R> => {
+        let pat = ast::Pattern {
+            span: name.span.clone(),
+            kind: ast::PatternKind::Ident(name),
+            node_id: ctxt.make_node_id(),
+        };
+        ast::Stmt {
+            kind: ast::StmtKind::Local(pat, Some(Box::new(ty)), init.map(|e| Box::new(e))),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    },
+};
+
+SimpleTypeExpr: ast::TypeExpr = {
+    <sloc:@L> <name:Name> <generic_args:("::" "<" <OneOrMore<GenericArgument, ",">> ">")?> <eloc:@R> => {
+        if let Some(generic_args) = generic_args {
+            return ast::TypeExpr {
+                kind: ast::TypeExprKind::Generic(name, generic_args),
+                span: (sloc..eloc),
+                node_id: ctxt.make_node_id()
+            };
+        }
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Name(name),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
     },
 };
 
@@ -212,15 +227,6 @@ ReturnStmt: ast::Stmt = {
 #[inline]
 Expression: ast::Expr = {
     RangeExpr,
-    <sloc:@L> <expr:OrExpr> <has_bang:"!"?> "is" <pat:Pat> <eloc:@R> => ast::Expr {
-        kind: ast::ExprKind::PatternMatch(
-            Box::new(expr),
-            if has_bang.is_some() { ast::MatchKind::IsNot } else { ast::MatchKind::Is },
-            Box::new(pat)
-        ),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
 };
 
 RangeExpr: ast::Expr = {
@@ -372,11 +378,6 @@ UnaryOp: ast::UnaryOperator = {
 
 AtomExpr: ast::Expr = {
     Atom,
-    <sloc:@L> <f:AtomExpr> "(" <args:OneOrMore<FnArgument, ",">?> ")" <eloc:@R> => ast::Expr {
-        kind: ast::ExprKind::FunctionCall(Box::new(f), args.unwrap_or(Vec::new())),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
     <sloc:@L> <base:AtomExpr> "[" <args:OneOrMore<Expression, ",">> "]" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Subscript(Box::new(base), args),
         span: (sloc..eloc),
@@ -419,23 +420,31 @@ Atom: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> "[" <default:Expression> ";" <size:Expression> "]" <eloc:@R> => ast::Expr {
-        kind: ast::ExprKind::ArraySize(Box::new(default), Box::new(size)),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-    <sloc:@L> "[" <arr:OneOrMore<Expression, ",">?> "]" <eloc:@R> => ast::Expr {
-        kind: ast::ExprKind::ArrayItems(arr.unwrap_or(Vec::new())),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-    <sloc:@L> "(" <items:OneOrMore<Expression, ",">?> ")" <eloc:@R> => {
+    <sloc:@L> "(" <items:OneOrMore<Expression, ",">?> ")" 
+    <expr_call:("(" <OneOrMore<FnArgument, ",">?> ")")?> <eloc:@R> => {
         let mut items = items.unwrap_or(Vec::new());
         if items.len() == 1 {
             return items.pop().unwrap();
         }
         ast::Expr {
             kind: ast::ExprKind::Tuple(items),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    },
+    <sloc:@L> <name:Name> <generic_args:("::" "<" <OneOrMore<GenericArgument, ",">> ">")?>
+    "(" <args:OneOrMore<FnArgument, ",">?> ")" <eloc:@R> => {
+        let ident = match &name {
+            ast::QName::Unresolved(ident) => ident,
+            ast::QName::Resolved { ident, .. } => ident,
+        };
+        let f = ast::Expr {
+            span: ident.span.clone(),
+            kind: ast::ExprKind::Name(name),
+            node_id: ctxt.make_node_id()
+        };
+        ast::Expr {
+            kind: ast::ExprKind::FunctionCall(Box::new(f), args.unwrap_or(Vec::new())),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -523,12 +532,6 @@ GenericParam: ast::GenericParam = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> "const" <ident:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::GenericParam {
-        ident,
-        kind: ast::GenericParamKind::Const(ty),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    }
 };
 
 PatLit: ast::Expr = {

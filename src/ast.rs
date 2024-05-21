@@ -88,8 +88,7 @@ pub struct Item {
 pub enum ItemKind {
     Function(Box<Function>),
     Struct(Box<Struct>),
-    Constant(Box<TypeExpr>, Box<Expr>),
-    StaticVar(Option<Box<TypeExpr>>, Option<Box<Expr>>),
+    GlobalVar(Box<TypeExpr>, Option<Box<Expr>>, bool),
     Err
 }
 

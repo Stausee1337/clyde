@@ -117,12 +117,8 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
             visit_vec(&mut stc.fields, |field_def| vis.visit_field_def(field_def));
             visit_vec(&mut stc.generics, |generic| vis.visit_generic_param(generic));
         }
-        ItemKind::Constant(ty, expr) => {
+        ItemKind::GlobalVar(ty, expr, _) => {
             vis.visit_ty_expr(ty);
-            vis.visit_expr(expr);
-        }
-        ItemKind::StaticVar(ty, expr) => {
-            visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(expr, |expr| vis.visit_expr(expr));
         }
         ItemKind::Err => ()

@@ -72,23 +72,15 @@ impl ResolutionState {
 
 struct TypeResolutionPass<'r> {
     resolution: &'r mut ResolutionState,
-    current_node_id: u32
 }
 
 impl<'r> TypeResolutionPass<'r> {
     fn new(resolution: &'r mut ResolutionState) -> Self {
-        Self { resolution, current_node_id: 0 }
+        Self { resolution }
     }
 
     fn resolve(&mut self, tree: &mut ast::TopLevel) {
-        self.current_node_id = tree.node_id.0;
         self.visit(tree);
-        tree.node_id.0 = self.current_node_id;
-    }
-
-    fn make_node_id(&mut self) -> ast::NodeId {
-        let new_node_id = self.current_node_id + 1;
-        ast::NodeId(std::mem::replace(&mut self.current_node_id, new_node_id))
     }
 }
 
@@ -104,14 +96,9 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
                 self.resolution.define(Symbolspace::Function, item.ident.clone(), item.node_id);
                 node_visitor::visit_fn(function, self);
             },
-            ast::ItemKind::Constant(ty, expr) => {
+            ast::ItemKind::GlobalVar(ty, expr, _) => {
                 self.resolution.define(Symbolspace::Variable, item.ident.clone(), item.node_id);
                 self.visit_ty_expr(ty);
-                self.visit_expr(expr);
-            }
-            ast::ItemKind::StaticVar(ty, expr) => {
-                self.resolution.define(Symbolspace::Variable, item.ident.clone(), item.node_id);
-                node_visitor::visit_option(ty, |ty| self.visit_ty_expr(ty));
                 node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
@@ -276,12 +263,8 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                 }
                 node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
             }
-            ast::ItemKind::Constant(ty, expr) => {
+            ast::ItemKind::GlobalVar(ty, expr, _) => {
                 self.visit_ty_expr(ty);
-                self.visit_expr(expr);
-            }
-            ast::ItemKind::StaticVar(ty, expr) => {
-                node_visitor::visit_option(ty, |ty| self.visit_ty_expr(ty));
                 node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()

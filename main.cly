@@ -1,13 +1,16 @@
 
 struct User {
-    name: string,
-    age: int
+    string name;
+    int age;
 }
 
-fn exit(code: int);
+void exit(int code);
 
-fn main() {
-    var a: User;
+const nuint BOARD_CAP = 100;
+[BOARD_CAP]int board;
+
+void main() {
+    User a;
     exit(a.b.c);
 }
 
