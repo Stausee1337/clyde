@@ -112,7 +112,7 @@ pub struct Function {
     pub body: Option<Vec<Stmt>>,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
-    pub returns: Option<TypeExpr>,
+    pub returns: TypeExpr,
     pub span: Range<usize>,
     pub attributes: Vec<Attribute>
 }
@@ -170,7 +170,7 @@ pub enum ExprKind {
     BinOp(Box<BinOp>),
     UnaryOp(Box<Expr>, UnaryOperator),
     Cast(Cast),
-    FunctionCall(Box<Expr>, Vec<FunctionArgument>),
+    FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
     StructInit(QName, Vec<FieldInit>),
     Subscript(Box<Expr>, Vec<Expr>),
     Attribute(Box<Expr>, Ident),

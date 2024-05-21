@@ -126,9 +126,9 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
 }
 
 pub fn visit_fn<T: MutVisitor>(func: &mut Function, vis: &mut T) {
+    vis.visit_ty_expr(&mut func.returns);
     visit_vec(&mut func.params, |p| vis.visit_param(p));
     visit_vec(&mut func.generics, |generic| vis.visit_generic_param(generic));
-    visit_option(&mut func.returns, |ty| vis.visit_ty_expr(ty));
     visit_option(&mut func.body, |body| visit_vec(body, |stmt| vis.visit_stmt(stmt)));
 }
 
@@ -179,9 +179,10 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             vis.visit_expr(&mut cast.expr);
             vis.visit_ty_expr(&mut cast.ty);
         }
-        ExprKind::FunctionCall(base, args) => {
+        ExprKind::FunctionCall(base, args, generic_args) => {
             vis.visit_expr(base);
             visit_vec(args, |arg| vis.visit_argument(arg));
+            visit_vec(generic_args, |arg| vis.visit_generic_argument(arg));
         }
         ExprKind::StructInit(_, inits) =>
             visit_vec(inits, |init| vis.visit_field_init(init)),

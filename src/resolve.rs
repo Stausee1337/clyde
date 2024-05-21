@@ -238,10 +238,10 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     let first = function.generics.first().unwrap();
                     let last = function.generics.last().unwrap();
                     self.resolution.diagnostics
-                        .fatal("functionedure generics are not supported yet")
+                        .fatal("function generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
-                node_visitor::visit_option(&mut function.returns, |ty| self.visit_ty_expr(ty));
+                self.visit_ty_expr(&mut function.returns);
 
                 let Some(ref mut body) = function.body else {
                     node_visitor::visit_vec(&mut function.params, |p| self.visit_param(p));
@@ -329,16 +329,22 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
     fn visit_expr(&mut self, expr: &mut ast::Expr) {
         match &mut expr.kind {
             ast::ExprKind::Name(name) => {
-                self.resolve_priority(&[Symbolspace::Variable, Symbolspace::Function, Symbolspace::Type], name);
+                self.resolve_priority(&[Symbolspace::Variable, Symbolspace::Function], name);
             }
             ast::ExprKind::StructInit(name, fields) => {
                 node_visitor::visit_vec(fields, |field| self.visit_field_init(field));
                 self.resolve(Symbolspace::Type, name, true);
             }
-            ast::ExprKind::FunctionCall(base, args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
+            ast::ExprKind::FunctionCall(base, args, generic_args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
                 let ast::ExprKind::Name(name) = &mut base.kind else {
                     panic!();
                 };
+                if generic_args.len() > 0 {
+                    self.resolution.diagnostics
+                        .fatal("generic function calls are not supported yet")
+                        .with_span(expr.span.clone());
+                    return;
+                }
                 node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
                 self.resolve_priority(&[Symbolspace::Function, Symbolspace::Variable], name);
             }

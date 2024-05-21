@@ -65,7 +65,7 @@ FunctionDef: ast::Item = {
     <p:Parameters> <body:Body> <eloc:@R> => {
         let func = ast::Function {
             params: p.unwrap_or(Vec::new()),
-            returns: Some(ret_ty),
+            returns: ret_ty,
             generics: generics.unwrap_or(Vec::new()),
             span: (sloc..eloc),
             body,
@@ -421,16 +421,26 @@ Atom: ast::Expr = {
         node_id: ctxt.make_node_id()
     },
     <sloc:@L> "(" <items:OneOrMore<Expression, ",">?> ")" 
-    <expr_call:("(" <OneOrMore<FnArgument, ",">?> ")")?> <eloc:@R> => {
+    <expr_call:("(" <@L> <OneOrMore<FnArgument, ",">?> <@R> ")")?> <eloc:@R> => {
         let mut items = items.unwrap_or(Vec::new());
         if items.len() == 1 {
             return items.pop().unwrap();
         }
-        ast::Expr {
+        let mut expr = ast::Expr {
             kind: ast::ExprKind::Tuple(items),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
-        }
+        };
+
+        if let Some((start, args, end)) = expr_call {
+            expr = ast::Expr {
+                kind: ast::ExprKind::FunctionCall(Box::new(expr), args.unwrap_or(Vec::new()), vec![]),
+                span: (start..end),
+                node_id: ctxt.make_node_id()
+            };
+        };
+
+        expr
     },
     <sloc:@L> <name:Name> <generic_args:("::" "<" <OneOrMore<GenericArgument, ",">> ">")?>
     "(" <args:OneOrMore<FnArgument, ",">?> ")" <eloc:@R> => {
@@ -444,7 +454,8 @@ Atom: ast::Expr = {
             node_id: ctxt.make_node_id()
         };
         ast::Expr {
-            kind: ast::ExprKind::FunctionCall(Box::new(f), args.unwrap_or(Vec::new())),
+            kind: ast::ExprKind::FunctionCall(
+                Box::new(f), args.unwrap_or(Vec::new()), generic_args.unwrap_or(Vec::new())),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
