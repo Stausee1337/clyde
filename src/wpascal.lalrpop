@@ -153,6 +153,13 @@ SimpleTypeExpr: ast::TypeExpr = {
             node_id: ctxt.make_node_id()
         }
     },
+    <sloc:@L> "*" <ty:TypeExpr> <eloc:@R> => {
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Ref(Box::new(ty)),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    },
 };
 
 IfStatement: ast::Stmt = {
@@ -380,7 +387,6 @@ UnaryOp: ast::UnaryOperator = {
     "-" => ast::UnaryOperator::Neg,
     "+" => ast::UnaryOperator::Pos,
     "&" => ast::UnaryOperator::Ref,
-    "*" => ast::UnaryOperator::Deref,
 };
 
 AtomExpr: ast::Expr = {
@@ -494,7 +500,7 @@ TypeExpr: ast::TypeExpr = {
             node_id: ctxt.make_node_id()
         }
     },
-    <sloc:@L> "&" <ty:TypeExpr> <eloc:@R> => {
+    <sloc:@L> "*" <ty:TypeExpr> <eloc:@R> => {
         ast::TypeExpr {
             kind: ast::TypeExprKind::Ref(Box::new(ty)),
             span: (sloc..eloc),
