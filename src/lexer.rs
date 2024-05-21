@@ -183,8 +183,8 @@ pub fn lex_input_string(source: &str) -> Result<Vec<Token>, LexError> {
 }
 
 fn to_character<'a>(lex: &'a mut logos::Lexer<TokenKind>) -> Result<char, <TokenKind as Logos<'a>>::Error> {
-    let span = lex.span();
-    let res = snailquote::unescape(&lex.slice().to_string()).map_err(|err| LexError(span.clone(), err.to_string()))?;
+    let span = lex.span(); 
+    let res = snailquote::unescape(lex.slice()).map_err(|err| LexError(span.clone(), err.to_string()))?;
 
     if res.chars().count() > 1 {
         return Err(LexError(span.clone(), "Found multi-char character literal".to_string()));

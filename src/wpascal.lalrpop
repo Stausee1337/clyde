@@ -579,12 +579,18 @@ GenericParams: Vec<ast::GenericParam> = {
 };
 
 GenericParam: ast::GenericParam = {
-    <sloc:@L> <ident:Ident> <re:("/" <OneOrMore<TypeExpr, "&">>)?> <eloc:@R> => ast::GenericParam {
+    <sloc:@L> <ident:Ident> <eloc:@R> => ast::GenericParam {
         ident,
-        kind: ast::GenericParamKind::Type(re.unwrap_or(Vec::new())),
+        kind: ast::GenericParamKind::Type(vec![]),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
+    <sloc:@L> "const" <ty:TypeExpr> <ident:Ident> <eloc:@R> => ast::GenericParam {
+        ident,
+        kind: ast::GenericParamKind::Const(ty),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    }
 };
 
 PatLit: ast::Expr = {

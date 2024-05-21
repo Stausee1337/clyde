@@ -7,6 +7,6 @@ struct User {
 void exit(int code);
 
 void main() {
-    char first = 'a';
+    char first = 'c';
     exit(1);
 }
