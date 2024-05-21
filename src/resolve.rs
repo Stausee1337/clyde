@@ -409,6 +409,10 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     .fatal("function types are not supported yet")
                     .with_span(ty.span.clone());
             }
+            ast::TypeExprKind::Array(base, cap) => {
+                self.visit_ty_expr(base);
+                node_visitor::visit_option(cap, |cap| self.visit_expr(cap));
+            }
         }
     }
 }

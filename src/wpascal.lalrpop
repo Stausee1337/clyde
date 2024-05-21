@@ -487,7 +487,19 @@ TypeExpr: ast::TypeExpr = {
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
+    },
+    <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Array(Box::new(base), cap.map(Box::new)),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
     }
+};
+
+ArrayCap: Option<ast::Expr> = {
+    "..." => None,
+    <expr:Expression> => Some(expr),
 };
 
 IsClosure: bool = {

@@ -252,6 +252,10 @@ pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &
             visit_vec(param_tys, |param_ty| vis.visit_ty_expr(param_ty));
             visit_option(return_ty, |return_ty| vis.visit_ty_expr(return_ty));
         }
+        TypeExprKind::Array(base, cap) => {
+            vis.visit_ty_expr(base);
+            visit_option(cap, |cap| vis.visit_expr(cap));
+        }
     }
 }
 

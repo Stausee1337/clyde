@@ -264,6 +264,7 @@ pub enum TypeExprKind {
         return_ty: Option<Box<TypeExpr>>,
         is_closure: bool 
     },
+    Array(Box<TypeExpr>, Option<Box<Expr>>),
 }
 
 #[derive(Debug)]
