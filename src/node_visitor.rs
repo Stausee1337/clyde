@@ -175,9 +175,9 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             vis.visit_expr(&mut binop.rhs);
         }
         ExprKind::UnaryOp(base, _) => vis.visit_expr(base),
-        ExprKind::Cast(cast) => {
-            vis.visit_expr(&mut cast.expr);
-            vis.visit_ty_expr(&mut cast.ty);
+        ExprKind::Cast(expr, ty, _) => {
+            vis.visit_expr(expr);
+            visit_option(ty, |ty| vis.visit_ty_expr(ty));
         }
         ExprKind::FunctionCall(base, args, generic_args) => {
             vis.visit_expr(base);

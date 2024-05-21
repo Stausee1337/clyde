@@ -169,7 +169,7 @@ pub struct Expr {
 pub enum ExprKind {
     BinOp(Box<BinOp>),
     UnaryOp(Box<Expr>, UnaryOperator),
-    Cast(Cast),
+    Cast(Box<Expr>, Option<Box<TypeExpr>>, TypeConversion),
     FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
     StructInit(QName, Vec<FieldInit>),
     Subscript(Box<Expr>, Vec<Expr>),
@@ -188,15 +188,13 @@ pub enum ExprKind {
 }
 
 #[derive(Debug)]
-pub enum MatchKind {
-    Is, IsNot
+pub enum TypeConversion {
+    Cast, Pun
 }
 
 #[derive(Debug)]
-pub struct Cast {
-    pub expr: Box<Expr>,
-    pub ty: Box<TypeExpr>, 
-    pub is_unsafe: bool
+pub enum MatchKind {
+    Is, IsNot
 }
 
 #[derive(Debug)]
@@ -241,7 +239,7 @@ pub struct FieldInit {
 
 #[derive(Debug)]
 pub enum Constant {
-    None,
+    Null,
     Integer(u64),
     Boolean(bool)
 }

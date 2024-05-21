@@ -379,7 +379,7 @@ UnaryExpr: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    AtomExpr,
+    CastExpr,
 };
 
 UnaryOp: ast::UnaryOperator = {
@@ -387,6 +387,25 @@ UnaryOp: ast::UnaryOperator = {
     "-" => ast::UnaryOperator::Neg,
     "+" => ast::UnaryOperator::Pos,
     "&" => ast::UnaryOperator::Ref,
+};
+
+CastExpr: ast::Expr = {
+    <sloc:@L> <tc:CastOrPun> "(" <autoty:TypeOrAuto> ")" <expr:CastExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Cast(Box::new(expr), autoty.map(Box::new), tc),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    },
+    AtomExpr,
+};
+
+TypeOrAuto: Option<ast::TypeExpr> = {
+    "?" => None,
+    <ty:TypeExpr> => Some(ty),
+};
+
+CastOrPun: ast::TypeConversion = {
+    "cast" => ast::TypeConversion::Cast,
+    "pun" => ast::TypeConversion::Pun
 };
 
 AtomExpr: ast::Expr = {
@@ -483,7 +502,7 @@ Atom: ast::Expr = {
 Constant: ast::Constant = {
     "true" => ast::Constant::Boolean(true),
     "false" => ast::Constant::Boolean(false),
-    "None" => ast::Constant::None,
+    "null" => ast::Constant::Null,
     <i:integer> => ast::Constant::Integer(i),
 };
 
@@ -531,7 +550,7 @@ TypeExpr: ast::TypeExpr = {
 };
 
 ArrayCap: Option<ast::Expr> = {
-    "..." => None,
+    "?" => None,
     <expr:Expression> => Some(expr),
 };
 
@@ -633,10 +652,9 @@ extern {
         ")" => lexer::TokenKind::RParen,
         "=" => lexer::TokenKind::Assign,
         ".." => lexer::TokenKind::DotDot,
-        "..." => lexer::TokenKind::DotDotDot,
         "->" => lexer::TokenKind::Arrow,
-        "$" => lexer::TokenKind::Dollar,
-        "@" => lexer::TokenKind::At,
+        "^" => lexer::TokenKind::Circumflex,
+        "?" => lexer::TokenKind::Question,
 
         "&" => lexer::TokenKind::Ampersand,
         "|" => lexer::TokenKind::VBar,
@@ -669,7 +687,8 @@ extern {
         "unit" => lexer::TokenKind::Unit,
         "var" => lexer::TokenKind::Var,
         "static" => lexer::TokenKind::Static,
-        "as" => lexer::TokenKind::As,
+        "cast" => lexer::TokenKind::Cast,
+        "pun" => lexer::TokenKind::Pun,
         "out" => lexer::TokenKind::Out,
         "is" => lexer::TokenKind::Is,
         "extern" => lexer::TokenKind::Extern,
@@ -687,7 +706,7 @@ extern {
 
         "true" => lexer::TokenKind::True,
         "false" => lexer::TokenKind::False,
-        "None" => lexer::TokenKind::None,
+        "null" => lexer::TokenKind::Null,
 
         name => lexer::TokenKind::Name(<String>),
         string => lexer::TokenKind::String(<String>),

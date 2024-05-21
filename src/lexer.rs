@@ -31,21 +31,17 @@ pub enum TokenKind {
     Assign,
     #[token("..")]
     DotDot,
-    #[token("...")]
-    DotDotDot,
     #[token("->")]
     Arrow,
-    #[token("$")]
-    Dollar,
-    #[token("@")]
-    At,
+    #[token("^")]
+    Circumflex,
+    #[token("?")]
+    Question,
 
     #[token("&")]
     Ampersand,
     #[token("|")]
     VBar,
-    #[token("^")]
-    Circumflex,
     #[token("~")]
     Tilde,
 
@@ -106,8 +102,10 @@ pub enum TokenKind {
     Var,
     #[token("static")]
     Static,
-    #[token("as")]
-    As,
+    #[token("cast")]
+    Cast,
+    #[token("pun")]
+    Pun,
     #[token("out")]
     Out,
     #[token("is")]
@@ -145,8 +143,8 @@ pub enum TokenKind {
     True,
     #[token("false")]
     False,
-    #[token("None")]
-    None
+    #[token("null")]
+    Null
 }
 
 
