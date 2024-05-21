@@ -6,10 +6,7 @@ struct User {
 
 void exit(int code);
 
-const nuint BOARD_CAP = 100;
-[BOARD_CAP]int board;
-
 void main() {
-    *User a;
-    exit(^a);
+    char first = 'a';
+    exit(1);
 }

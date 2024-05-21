@@ -513,6 +513,7 @@ Constant: ast::Constant = {
     "false" => ast::Constant::Boolean(false),
     "null" => ast::Constant::Null,
     <i:integer> => ast::Constant::Integer(i),
+    <c:char> => ast::Constant::Char(c),
 };
 
 TypeExpr: ast::TypeExpr = {
@@ -720,6 +721,7 @@ extern {
         name => lexer::TokenKind::Name(<String>),
         string => lexer::TokenKind::String(<String>),
         integer => lexer::TokenKind::Intnumber(<u64>),
+        char => lexer::TokenKind::Char(<char>),
     }
 }
 

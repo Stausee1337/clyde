@@ -242,7 +242,8 @@ pub struct FieldInit {
 pub enum Constant {
     Null,
     Integer(u64),
-    Boolean(bool)
+    Boolean(bool),
+    Char(char)
 }
 
 #[derive(Debug)]

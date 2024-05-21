@@ -3,7 +3,7 @@
 pub enum Primitive {
     Bool, Void,
     SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint,
-    String
+    Char, String
 }
 
 
