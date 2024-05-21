@@ -1,0 +1,13 @@
+
+struct User {
+    name: string,
+    age: int
+}
+
+fn exit(code: int);
+
+fn main() {
+    var ptr = &1;
+    *ptr = 12;
+}
+

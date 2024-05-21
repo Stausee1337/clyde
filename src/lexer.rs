@@ -27,14 +27,12 @@ pub enum TokenKind {
     LParen,
     #[token(")")]
     RParen,
-    #[token(":=")]
-    Walrus,
+    #[token("=")]
+    Assign,
     #[token("..")]
     DotDot,
     #[token("...")]
     DotDotDot,
-    #[token("!")]
-    Bang,
     #[token("->")]
     Arrow,
     #[token("$")]
@@ -75,23 +73,23 @@ pub enum TokenKind {
     RChevron,
     #[token(">=")]
     RChevronEq,
-    #[token("=")]
-    Eq,
-    #[token("<>")]
-    DoubleChevron,
+    #[token("==")]
+    DoubleEq,
+    #[token("!=")]
+    BangEq,
 
-    #[token("and")]
-    And,
-    #[token("or")]
-    Or,
-    #[token("not")]
-    Not,
+    #[token("&&")]
+    DoubleAmpersand,
+    #[token("||")]
+    DoubleVBar,
+    #[token("!")]
+    Bang,
 
     #[regex(r"[^\d\W]\w*", |lex| lex.slice().to_string())]
     Name(String),
     #[regex(r"(?:0(?:_?0)*|[1-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
     Intnumber(u64),
-    #[regex(r"#[^\n]*")]
+    #[regex(r"//[^\n]*")]
     Comment,
     #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| lex.slice().to_string())]
     String(String),
@@ -116,30 +114,20 @@ pub enum TokenKind {
     Is,
     #[token("extern")]
     Extern,
-    #[token("proc")]
-    Proc,
+    #[token("fn")]
+    Fn,
     #[token("while")]
     While,
     #[token("for")]
     For,
     #[token("in")]
     In,
-    #[token("do")]
-    Do,
     #[token("if")]
     If,
-    #[token("then")]
-    Then,
-    #[token("elif")]
-    ElIf,
     #[token("else")]
     Else,
-    #[token("end")]
-    End,
-    #[token("record")]
-    Record,
-    #[token("ref")]
-    Ref,
+    #[token("struct")]
+    Struct,
     #[token("return")]
     Return,
     #[token("break")]
@@ -161,15 +149,6 @@ pub enum TokenKind {
     None
 }
 
-impl TokenKind {
-    pub fn is_keyword(&self) -> bool {
-        match self {
-            TokenKind::Const | TokenKind::Use | TokenKind::With | TokenKind::Var | TokenKind::Static | TokenKind::As | TokenKind::Out | TokenKind::Is | TokenKind::Extern | TokenKind::Proc | TokenKind::While | TokenKind::For | TokenKind::In | TokenKind::Do | TokenKind::If | TokenKind::Then | TokenKind::ElIf | TokenKind::Else | TokenKind::End | TokenKind::Record | TokenKind::Ref | TokenKind::Return | TokenKind::Break | TokenKind::Continue | TokenKind::Closure | 
-    TokenKind::True | TokenKind::False | TokenKind::None => true,
-            _ => false
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Token(pub TokenKind, pub Range<usize>);

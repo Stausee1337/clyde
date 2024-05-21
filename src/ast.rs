@@ -192,12 +192,6 @@ pub enum StmtKind {
 }
 
 #[derive(Debug)]
-pub enum NameInNamespace {
-    Name(QName),
-    Path(QPath)
-}
-
-#[derive(Debug)]
 pub enum ControlFlow {
     Break, Continue
 }
@@ -215,7 +209,7 @@ pub enum ExprKind {
     UnaryOp(Box<Expr>, UnaryOperator),
     Cast(Cast),
     FunctionCall(Box<Expr>, Vec<FunctionArgument>),
-    RecordInit(NameInNamespace, Vec<FieldInit>),
+    RecordInit(QName, Vec<FieldInit>),
     Subscript(Box<Expr>, Vec<Expr>),
     Attribute(Box<Expr>, Ident),
     Constant(Constant),
@@ -268,7 +262,7 @@ pub enum BinaryOperator {
 
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOperator {
-    BooleanNot, BitwiseInvert, Pos, Neg, Ref
+    BooleanNot, BitwiseInvert, Pos, Neg, Ref, Deref
 }
 
 #[derive(Debug)]
@@ -301,8 +295,8 @@ pub struct TypeExpr {
 #[derive(Debug)]
 pub enum TypeExprKind {
     Ref(Box<TypeExpr>),
-    Name(NameInNamespace),
-    Generic(NameInNamespace, Vec<GenericArgument>),
+    Name(QName),
+    Generic(QName, Vec<GenericArgument>),
     Function {
         param_tys: Vec<TypeExpr>,
         return_ty: Option<Box<TypeExpr>>,
@@ -386,8 +380,6 @@ pub fn handle_stmt_error<'diag>(
     diagnostics: Diagnostics
 ) -> Result<Stmt, ParseError<usize, crate::lexer::TokenKind, UserError>> {
     match recovery.error {
-        lalrpop_util::ParseError::UnrecognizedToken { token, .. } if matches!(token.1, crate::lexer::TokenKind::Eq) 
-            => diagnostics.error("use `:=` for assigment, instead of `=`").with_span(token.0..token.2),
         lalrpop_util::ParseError::UnrecognizedToken { expected, token } if expected.contains(&"\";\"".to_string())
             => diagnostics.error("forgot semicolon `;`").with_span(token.0-2..token.0-1),
         lalrpop_util::ParseError::UnrecognizedToken { expected, token } => {

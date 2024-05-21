@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, NameInNamespace, DeclarationKind, QName}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol};
+use crate::{ast::{self, DeclarationKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -204,7 +204,7 @@ impl<'r> NameResolutionPass<'r> {
         None
     }
 
-    fn resolve(&self, space: Symbolspace, name: &mut QName, report_error: bool) -> bool {
+    fn resolve(&self, space: Symbolspace, name: &mut ast::QName, report_error: bool) -> bool {
         let ident = match name {
             ast::QName::Unresolved(ident) => ident.clone(),
             ast::QName::Resolved { .. } => return true,
@@ -254,7 +254,7 @@ impl<'r> NameResolutionPass<'r> {
         true
     }
 
-    fn resolve_priority(&self, pspaces: &[Symbolspace], name: &mut QName) -> bool {
+    fn resolve_priority(&self, pspaces: &[Symbolspace], name: &mut ast::QName) -> bool {
         for space in pspaces {
             if self.resolve(*space, name, false) {
                 return true;
@@ -378,13 +378,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::ExprKind::RecordInit(name, fields) => {
                 node_visitor::visit_vec(fields, |field| self.visit_field_init(field));
-                match name {
-                    NameInNamespace::Name(name) => {
-                        self.resolve(Symbolspace::Type, name, true);
-                    }
-                    NameInNamespace::Path(path) => 
-                        self.visit_path(path)
-                }
+                self.resolve(Symbolspace::Type, name, true);
             }
             ast::ExprKind::FunctionCall(base, args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
                 let ast::ExprKind::Name(name) = &mut base.kind else {
@@ -430,11 +424,8 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
     fn visit_ty_expr(&mut self, ty: &mut ast::TypeExpr) {
         match &mut ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
-            ast::TypeExprKind::Name(name) => match name {
-                NameInNamespace::Name(name) => { 
-                    self.resolve(Symbolspace::Type, name, true);
-                },
-                NameInNamespace::Path(path) => self.visit_path(path),
+            ast::TypeExprKind::Name(name) => {
+                self.resolve(Symbolspace::Type, name, true);
             },
             ast::TypeExprKind::Generic(..) => {
                 self.resolution.diagnostics

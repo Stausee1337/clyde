@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath, NameInNamespace};
+use crate::ast::{TopLevel, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath};
 
 
 pub trait MutVisitor: Sized {
@@ -249,15 +249,9 @@ pub fn noop_visit_pattern_kind<T: MutVisitor>(pat_kind: &mut PatternKind, vis: &
 pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &mut T) {
     match ty_kind {
         TypeExprKind::Ref(ty) => vis.visit_ty_expr(ty),
-        TypeExprKind::Name(name) => match name {
-            NameInNamespace::Name(name) => vis.visit_name(name),
-            NameInNamespace::Path(path) => vis.visit_path(path),
-        },
+        TypeExprKind::Name(name) => vis.visit_name(name),
         TypeExprKind::Generic(name, args) => {
-            match name {
-                NameInNamespace::Name(name) => vis.visit_name(name),
-                NameInNamespace::Path(path) => vis.visit_path(path),
-            }
+            vis.visit_name(name);
             visit_vec(args, |arg| vis.visit_generic_argument(arg));
         }
         TypeExprKind::Function { param_tys, return_ty, .. } => {

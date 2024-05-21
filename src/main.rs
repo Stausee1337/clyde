@@ -25,6 +25,7 @@ fn main() -> ExitCode {
         let mut ast = compiler.parse()?;
     
         resolve::run_resolve(&mut ast);
+        println!("{:#?}", ast);
 
         if ast.diagnostics.has_fatal() {
             ast.diagnostics.print_diagnostics();
