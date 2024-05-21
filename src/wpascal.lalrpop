@@ -240,7 +240,7 @@ ReturnStmt: ast::Stmt = {
 
 #[inline]
 Expression: ast::Expr = {
-    RangeExpr,
+    RangeExpr
 };
 
 RangeExpr: ast::Expr = {
@@ -358,13 +358,13 @@ Math1Op: ast::BinaryOperator = {
 };
 
 Math2Expr: ast::Expr = {
-    <sloc:@L> <lhs:Math2Expr> <op:Math2Op> <rhs:UnaryExpr> <eloc:@R> => ast::Expr {
+    <sloc:@L> <lhs:Math2Expr> <op:Math2Op> <rhs:DerefExpr> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    UnaryExpr
+    DerefExpr, 
 };
 
 Math2Op: ast::BinaryOperator = {
@@ -373,20 +373,13 @@ Math2Op: ast::BinaryOperator = {
     "%" => ast::BinaryOperator::Mod,
 };
 
-UnaryExpr: ast::Expr = {
-    <sloc:@L> <op:UnaryOp> <expr:UnaryExpr> <eloc:@R> => ast::Expr {
-        kind: ast::ExprKind::UnaryOp(Box::new(expr), op),
+DerefExpr: ast::Expr = {
+    <sloc:@L> "^" <expr:DerefExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::Deref(Box::new(expr)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
     CastExpr,
-};
-
-UnaryOp: ast::UnaryOperator = {
-    "~" => ast::UnaryOperator::BitwiseInvert,
-    "-" => ast::UnaryOperator::Neg,
-    "+" => ast::UnaryOperator::Pos,
-    "&" => ast::UnaryOperator::Ref,
 };
 
 CastExpr: ast::Expr = {
@@ -395,7 +388,7 @@ CastExpr: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    AtomExpr,
+    UnaryExpr,
 };
 
 TypeOrAuto: Option<ast::TypeExpr> = {
@@ -406,6 +399,22 @@ TypeOrAuto: Option<ast::TypeExpr> = {
 CastOrPun: ast::TypeConversion = {
     "cast" => ast::TypeConversion::Cast,
     "pun" => ast::TypeConversion::Pun
+};
+
+UnaryExpr: ast::Expr = {
+    <sloc:@L> <op:UnaryOp> <expr:UnaryExpr> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::UnaryOp(Box::new(expr), op),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    },
+    AtomExpr,
+};
+
+UnaryOp: ast::UnaryOperator = {
+    "~" => ast::UnaryOperator::BitwiseInvert,
+    "-" => ast::UnaryOperator::Neg,
+    "+" => ast::UnaryOperator::Pos,
+    "&" => ast::UnaryOperator::Ref,
 };
 
 AtomExpr: ast::Expr = {

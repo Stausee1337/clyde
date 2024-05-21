@@ -215,6 +215,9 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             vis.visit_expr(expr);
             vis.visit_pattern(pat);
         },
+        ExprKind::Deref(expr) => {
+            vis.visit_expr(expr);
+        }
         ExprKind::Err => ()
     }
 }

@@ -184,6 +184,7 @@ pub enum ExprKind {
     Closure(Closure),
     Range(Box<Expr>, Box<Expr>, bool),
     PatternMatch(Box<Expr>, MatchKind, Box<Pattern>),
+    Deref(Box<Expr>),
     Err
 }
 

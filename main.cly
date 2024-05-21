@@ -10,7 +10,6 @@ const nuint BOARD_CAP = 100;
 [BOARD_CAP]int board;
 
 void main() {
-    User a;
-    exit(a);
+    *User a;
+    exit(^a);
 }
-
