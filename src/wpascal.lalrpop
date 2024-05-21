@@ -117,12 +117,19 @@ LocalStatement: ast::Stmt = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <ty:SimpleTypeExpr> <name:Ident> <init:("=" <Expression>)?> ";" <eloc:@R> => {
+    <sloc:@L> <mut ty:SimpleTypeExpr> <name:Ident> <array_cap:("[" <ArrayCap> "]" <@R>)?> <init:("=" <Expression>)?> ";" <eloc:@R> => {
         let pat = ast::Pattern {
             span: name.span.clone(),
             kind: ast::PatternKind::Ident(name),
             node_id: ctxt.make_node_id(),
         };
+        if let Some((array_cap, end)) = array_cap {
+            ty = ast::TypeExpr {
+                kind: ast::TypeExprKind::Array(Box::new(ty), array_cap.map(Box::new)),
+                span: (sloc..end),
+                node_id: ctxt.make_node_id()
+            };
+        }
         ast::Stmt {
             kind: ast::StmtKind::Local(pat, Some(Box::new(ty)), init.map(|e| Box::new(e))),
             span: (sloc..eloc),
