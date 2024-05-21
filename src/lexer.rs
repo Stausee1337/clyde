@@ -3,6 +3,7 @@ use logos::Logos;
 use logos_display::Display;
 
 #[derive(Logos, Debug, Display, PartialEq, Clone)]
+#[logos(error = LexError)]
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
 pub enum TokenKind {
     #[token(".")]
@@ -89,6 +90,8 @@ pub enum TokenKind {
     Comment,
     #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| lex.slice().to_string())]
     String(String),
+    #[regex("\'[^\\n\'\\\\](?:\\\\.[^\\n\'\\\\]*)*\'", to_character)]
+    Char(char),
 
     #[token("const")]
     Const,
@@ -151,7 +154,7 @@ pub enum TokenKind {
 #[derive(Debug, Clone)]
 pub struct Token(pub TokenKind, pub Range<usize>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct LexError(pub Range<usize>, pub String);
 
 pub fn lex_input_string(source: &str) -> Result<Vec<Token>, LexError> {
@@ -179,4 +182,14 @@ pub fn lex_input_string(source: &str) -> Result<Vec<Token>, LexError> {
     Ok(result)
 }
 
+fn to_character<'a>(lex: &'a mut logos::Lexer<TokenKind>) -> Result<char, <TokenKind as Logos<'a>>::Error> {
+    let span = lex.span();
+    let res = snailquote::unescape(&lex.slice().to_string()).map_err(|err| LexError(span.clone(), err.to_string()))?;
+
+    if res.chars().count() > 1 {
+        return Err(LexError(span.clone(), "Found multi-char character literal".to_string()));
+    }
+
+    Ok(res.chars().nth(0).unwrap())
+}
 
