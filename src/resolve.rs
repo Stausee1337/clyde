@@ -317,11 +317,6 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     .with_pos(stmt.span.start);
                 stmt.kind = ast::StmtKind::Err;
             }
-            ast::StmtKind::Item(..) => {
-                self.resolution.diagnostics
-                    .fatal("inner items are not supported yet")
-                    .with_span(stmt.span.clone());
-            }
             _ => noop_visit_stmt_kind(&mut stmt.kind, self),
         }
     }
@@ -365,11 +360,6 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                 }
                 node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
                 self.resolve_priority(&[Symbolspace::Function, Symbolspace::Variable], name);
-            }
-            ast::ExprKind::PatternMatch(..) => {
-                self.resolution.diagnostics
-                    .fatal("pattern matching is not supported yet")
-                    .with_span(expr.span.clone());
             }
             _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self)
         }

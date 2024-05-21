@@ -3,7 +3,7 @@ use std::{mem::transmute, path::{PathBuf, Path}, env, process::ExitCode, str::Fr
 
 use crate::{
     diagnostics::{Diagnostics, DiagnosticsData},
-    parser, ast, resolve
+    parser, ast
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");

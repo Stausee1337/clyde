@@ -167,7 +167,6 @@ pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T
             visit_option(expr, |expr| vis.visit_expr(expr));
         }
         StmtKind::ControlFlow(cf) => vis.visit_control_flow(cf),
-        StmtKind::Item(item) => vis.visit_item(item),
         StmtKind::Err => ()
     }
 }
@@ -203,18 +202,10 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
         ExprKind::Tuple(items) =>
             visit_vec(items, |item| vis.visit_expr(item)),
         ExprKind::ShorthandEnum(_) => (),
-        ExprKind::Closure(closure) => {
-            visit_vec(&mut closure.params, |pat| vis.visit_pattern(pat));
-            visit_vec(&mut closure.body, |stmt| vis.visit_stmt(stmt));
-        }
         ExprKind::Range(start, end, _) => {
             vis.visit_expr(start);
             vis.visit_expr(end);
         }
-        ExprKind::PatternMatch(expr, _, pat) => {
-            vis.visit_expr(expr);
-            vis.visit_pattern(pat);
-        },
         ExprKind::Deref(expr) => {
             vis.visit_expr(expr);
         }

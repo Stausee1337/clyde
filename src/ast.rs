@@ -3,7 +3,6 @@ use std::hash::Hash;
 use lalrpop_util::{ErrorRecovery, ParseError};
 
 use crate::diagnostics::{JoinToHumanReadable, Diagnostics};
-use crate::lexer;
 use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
@@ -12,19 +11,6 @@ pub const DUMMY_SPAN: Range<usize> = 0..0;
 pub struct Ident {
     pub symbol: Symbol,
     pub span: Range<usize>
-}
-
-impl Ident {
-    pub fn from_str(s: &str) -> Self {
-        Self {
-            symbol: Symbol::intern(s),
-            span: DUMMY_SPAN
-        }
-    }
-
-    pub fn empty() -> Self {
-        Self::from_str("")
-    }
 }
 
 impl PartialEq for Ident {
@@ -120,7 +106,6 @@ pub struct Function {
 #[derive(Debug)]
 pub struct Attribute {
     pub span: Range<usize>,
-    pub token_stream: Vec<TokenTree>,
 }
 
 #[derive(Debug)]
@@ -149,7 +134,6 @@ pub enum StmtKind {
     Local(Pattern, Option<Box<TypeExpr>>, Option<Box<Expr>>),
     Return(Option<Box<Expr>>),
     ControlFlow(ControlFlow),
-    Item(Box<Item>),
     Err
 }
 
@@ -179,9 +163,7 @@ pub enum ExprKind {
     Name(QName),
     Tuple(Vec<Expr>),
     ShorthandEnum(Ident),
-    Closure(Closure),
     Range(Box<Expr>, Box<Expr>, bool),
-    PatternMatch(Box<Expr>, MatchKind, Box<Pattern>),
     Deref(Box<Expr>),
     Err
 }
@@ -189,17 +171,6 @@ pub enum ExprKind {
 #[derive(Debug)]
 pub enum TypeConversion {
     Cast, Pun
-}
-
-#[derive(Debug)]
-pub enum MatchKind {
-    Is, IsNot
-}
-
-#[derive(Debug)]
-pub struct Closure {
-    pub params: Vec<Pattern>,
-    pub body: Vec<Stmt>
 }
 
 #[derive(Debug)]
@@ -220,7 +191,7 @@ pub enum BinaryOperator {
 
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOperator {
-    BooleanNot, BitwiseInvert, Pos, Neg, Ref, Deref
+    BooleanNot, BitwiseInvert, Pos, Neg, Ref
 }
 
 #[derive(Debug)]
@@ -285,17 +256,6 @@ pub enum GenericParamKind {
     Const(TypeExpr)
 }
 
-#[derive(Debug)]
-pub enum TokenTree {
-    Flat(lexer::TokenKind),
-    Nested(NestingKind, Vec<TokenTree>),
-}
-
-#[derive(Debug)]
-pub enum NestingKind {
-    Paren, Bracket, Curly
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32);
 pub const NODE_ID_UNDEF: NodeId = NodeId(u32::MAX);
@@ -315,24 +275,6 @@ impl std::fmt::Debug for NodeId {
         }
         Ok(())
     }
-}
-
-pub fn binop_exprs2expr(mut exprs: Vec<Expr>, kind: BinaryOperator, eloc: usize) -> Expr {
-    let mut left = exprs.remove(0);
-    for right in exprs {
-        let sloc = left.span.start;
-        let binop = BinOp {
-            lhs: left,
-            rhs: right,
-            operator: kind 
-        };
-        left = Expr {
-            kind: ExprKind::BinOp(Box::new(binop)),
-            span: (sloc..eloc),
-            node_id: NODE_ID_UNDEF
-        };
-    }
-    left
 }
 
 pub fn handle_stmt_error<'diag>(

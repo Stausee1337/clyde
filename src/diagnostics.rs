@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::mem::transmute;
 use std::ops::{Range, Deref};
