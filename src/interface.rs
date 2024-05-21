@@ -189,7 +189,7 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    pub fn parse(&mut self) -> Result<ast::TopLevel, ()> {
+    pub fn parse(&mut self) -> Result<ast::TopLevel, Diagnostics> {
         parser::parse_file(&self.sess.input, &self.sess)
     }
 }

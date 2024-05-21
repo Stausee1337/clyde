@@ -22,7 +22,10 @@ fn main() -> ExitCode {
     let sess = options.create_compile_session();
     
     build_compiler(sess, |compiler| {
-        let mut ast = compiler.parse()?;
+        let mut ast = compiler.parse().map_err(|diagnostics| {
+            diagnostics.print_diagnostics();
+            ()
+        })?;
     
         resolve::run_resolve(&mut ast);
         println!("{:#?}", ast);
@@ -44,3 +47,4 @@ fn main() -> ExitCode {
         Ok::<ExitCode, ()>(ExitCode::SUCCESS)
     }).unwrap_or(ExitCode::FAILURE)
 }
+

@@ -21,17 +21,19 @@ fn read_entire_file(filename: &Path) -> io::Result<String> {
     Ok(result)
 }
 
-pub fn parse_file<'a>(file: &Path, sess: &interface::Session) -> Result<ast::TopLevel, ()> {
+pub fn parse_file<'a>(file: &Path, sess: &interface::Session) -> Result<ast::TopLevel, Diagnostics> {
     let contents = read_entire_file(file)
         .map_err(|err| {
             let file = unsafe { path_to_string(file) };
             eprintln!("ERROR: couldn't read {file}: {err}");
+            sess.create_diagnostics_for_file(&file, "")
         })?;
 
     let file = unsafe { path_to_string(file) };
     let tokens = lexer::lex_input_string(&contents).map_err(|err| {
         let diagnostics = sess.create_diagnostics_for_file(&file, &contents);
         diagnostics.error(err.1).with_span(err.0);
+        diagnostics
     })?;
 
     let diagnostics = sess.create_diagnostics_for_file(&file, &contents);
