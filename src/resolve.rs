@@ -331,9 +331,27 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             ast::ExprKind::Name(name) => {
                 self.resolve_priority(&[Symbolspace::Variable, Symbolspace::Function], name);
             }
-            ast::ExprKind::StructInit(name, fields) => {
-                node_visitor::visit_vec(fields, |field| self.visit_field_init(field));
-                self.resolve(Symbolspace::Type, name, true);
+            ast::ExprKind::TypeInit(ty, fields) => {
+                node_visitor::visit_vec(fields, |field| self.visit_type_init(field));
+                let Some(ty) = ty else {
+                    return;
+                };
+                match &mut ty.kind {
+                    ast::TypeExprKind::Name(name) => {
+                        self.resolve(Symbolspace::Type, name, true);
+                    },
+                    ast::TypeExprKind::Array(ty, cap) => {
+                        self.visit_ty_expr(ty);
+                        node_visitor::visit_option(cap, |cap| self.visit_expr(cap));
+                    }
+                    ast::TypeExprKind::Generic(..) => {
+                        self.resolution.diagnostics
+                            .fatal("generic types are not supported yet")
+                            .with_span(ty.span.clone());
+                    }
+                    ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Function { .. } =>
+                        panic!("invalid state after parsing type init")
+                }
             }
             ast::ExprKind::FunctionCall(base, args, generic_args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
                 let ast::ExprKind::Name(name) = &mut base.kind else {

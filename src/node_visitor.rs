@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow};
+use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow};
 
 
 pub trait MutVisitor: Sized {
@@ -36,8 +36,12 @@ pub trait MutVisitor: Sized {
         noop_visit_generic_argument(arg, self);
     }
 
-    fn visit_field_init(&mut self, field: &mut FieldInit) {
-        self.visit_expr(&mut field.init);
+    fn visit_type_init(&mut self, init: &mut TypeInit) {
+        let expr = match init {
+            TypeInit::Field(_, expr) => expr,
+            TypeInit::Direct(expr) => expr,
+        };
+        self.visit_expr(expr);
     }
 
     fn visit_generic_param(&mut self, param: &mut GenericParam) {
@@ -184,8 +188,10 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             visit_vec(args, |arg| vis.visit_argument(arg));
             visit_vec(generic_args, |arg| vis.visit_generic_argument(arg));
         }
-        ExprKind::StructInit(_, inits) =>
-            visit_vec(inits, |init| vis.visit_field_init(init)),
+        ExprKind::TypeInit(ty, inits) => {
+            visit_option(ty, |ty| vis.visit_ty_expr(ty));
+            visit_vec(inits, |init| vis.visit_type_init(init));
+        }
         ExprKind::Subscript(base, args) => {
             vis.visit_expr(base);
             visit_vec(args, |arg| vis.visit_expr(arg));
@@ -194,12 +200,6 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
         ExprKind::Constant(cnst) => vis.visit_const(cnst),
         ExprKind::String(_) => (),
         ExprKind::Name(name) => vis.visit_name(name),
-        ExprKind::ArraySize(default, size) => {
-            vis.visit_expr(default);
-            vis.visit_expr(size);
-        }
-        ExprKind::ArrayItems(items) =>
-            visit_vec(items, |item| vis.visit_expr(item)),
         ExprKind::Tuple(items) =>
             visit_vec(items, |item| vis.visit_expr(item)),
         ExprKind::ShorthandEnum(_) => (),

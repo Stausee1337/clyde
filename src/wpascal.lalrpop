@@ -30,7 +30,7 @@ Item: ast::Item = {
 };
 
 GlobalDef: ast::Item = {
-    <sloc:@L> <is_const:"const"?> <ty:TypeExpr> <ident:Ident> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Item {
+    <sloc:@L> <is_const:"const"?> <ty:TypeExpr> <ident:Ident> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::Item {
         ident,
         kind: ast::ItemKind::GlobalVar(Box::new(ty), init.map(|b| Box::new(b)), is_const.is_some()),
         span: (sloc..eloc),
@@ -112,12 +112,12 @@ Statement: ast::Stmt = {
 };
 
 LocalStatement: ast::Stmt = {
-    <sloc:@L> "var" <pat:Pat> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Stmt {
+    <sloc:@L> "var" <pat:Pat> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::Local(pat, None, init.map(|e| Box::new(e))),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <mut ty:SimpleTypeExpr> <name:Ident> <array_cap:("[" <ArrayCap> "]" <@R>)?> <init:("=" <Expression>)?> ";" <eloc:@R> => {
+    <sloc:@L> <mut ty:SimpleTypeExpr> <name:Ident> <array_cap:("[" <ArrayCap> "]" <@R>)?> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => {
         let pat = ast::Pattern {
             span: name.span.clone(),
             kind: ast::PatternKind::Ident(name),
@@ -139,11 +139,11 @@ LocalStatement: ast::Stmt = {
 };
 
 SimpleTypeExpr: ast::TypeExpr = {
-    <sloc:@L> <name:Name> <generic_args:("::" "<" <OneOrMore<GenericArgument, ",">> ">")?> <eloc:@R> => {
-        if let Some(generic_args) = generic_args {
+    <sloc:@L> <name:Name> <generic_args:("::" <@L> "<"  <OneOrMore<GenericArgument, ",">> ">" <@R>)?> <eloc:@R> => {
+        if let Some((start, generic_args, end)) = generic_args {
             return ast::TypeExpr {
                 kind: ast::TypeExprKind::Generic(name, generic_args),
-                span: (sloc..eloc),
+                span: (start..end),
                 node_id: ctxt.make_node_id()
             };
         }
@@ -163,7 +163,7 @@ SimpleTypeExpr: ast::TypeExpr = {
 };
 
 IfStatement: ast::Stmt = {
-    <sloc:@L> "if" <condition:Expression> "{" <bif:Statement*> "}"
+    <sloc:@L> "if" <condition:Expression<"no-inits">> "{" <bif:Statement*> "}"
     <else_block:("else" <ContinuedIfBlock>)?> <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::If(Box::new(condition), bif, else_block.map(Box::new)),
         span: (sloc..eloc),
@@ -181,7 +181,7 @@ ContinuedIfBlock: ast::Stmt = {
 };
 
 WhileStatement: ast::Stmt = {
-    <sloc:@L> "while" <condition:Expression> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
+    <sloc:@L> "while" <condition:Expression<"no-inits">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::While(Box::new(condition), body),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
@@ -189,7 +189,7 @@ WhileStatement: ast::Stmt = {
 };
 
 ForStatement: ast::Stmt = {
-    <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
+    <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression<"no-inits">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::For(pat, Box::new(iterator), body),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
@@ -210,7 +210,7 @@ ControlFlowStmt: ast::Stmt = {
 };
 
 ExpressionStmt: ast::Stmt = {
-    <sloc:@L> <expr:Expression> <assign:AssignSuffix?> ";" <eloc:@R> => {
+    <sloc:@L> <expr:Expression<"all">> <assign:AssignSuffix?> ";" <eloc:@R> => {
         if let Some(assign) = assign {
             return ast::Stmt {
                 kind: ast::StmtKind::Assign(Box::new(expr), Box::new(assign)),
@@ -227,11 +227,11 @@ ExpressionStmt: ast::Stmt = {
 };
 
 AssignSuffix: ast::Expr = {
-    "=" <expr:Expression> => expr,
+    "=" <expr:Expression<"all">> => expr,
 };
 
 ReturnStmt: ast::Stmt = {
-    <sloc:@L> "return" <expr:Expression?> ";" <eloc:@R> => ast::Stmt {
+    <sloc:@L> "return" <expr:Expression<"all">?> ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::Return(expr.map(|e| Box::new(e))),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
@@ -239,53 +239,57 @@ ReturnStmt: ast::Stmt = {
 };
 
 #[inline]
-Expression: ast::Expr = {
-    RangeExpr
+Expression<What>: ast::Expr = {
+    RangeExpr<What>
 };
 
-RangeExpr: ast::Expr = {
-    <sloc:@L> <lhs:OrExpr> ".." <inclusive:"="?> <rhs:OrExpr> <eloc:@R> => ast::Expr {
+RangeExpr<What>: ast::Expr = {
+    <sloc:@L> <lhs:OrExpr<What>> ".." <inclusive:"="?> <rhs:OrExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Range(
             Box::new(lhs), Box::new(rhs), inclusive.is_some()),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    OrExpr 
+    OrExpr<What>
 };
 
-OrExpr: ast::Expr = {
-    <mut exprs:(<AndExpr> "||")+> <end:AndExpr> <eloc:@R> => {
-        exprs.push(end);
-        ast::binop_exprs2expr(exprs, ast::BinaryOperator::BooleanOr, eloc)
-    },
-    AndExpr,
+OrExpr<What>: ast::Expr = {
+    <sloc:@L> <lhs:OrExpr<What>> "||" <rhs:AndExpr<What>> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BooleanOr })),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    }, 
+    AndExpr<What>
 };
 
-AndExpr: ast::Expr = {
-    <mut exprs:(<NotExpr> "&&")+> <end:NotExpr> <eloc:@R> => {
-        exprs.push(end);
-        ast::binop_exprs2expr(exprs, ast::BinaryOperator::BooleanAnd, eloc)
-    },
-    NotExpr
+AndExpr<What>: ast::Expr = {
+    <sloc:@L> <lhs:AndExpr<What>> "&&" <rhs:NotExpr<What>> <eloc:@R> => ast::Expr {
+        kind: ast::ExprKind::BinOp(
+            Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BooleanAnd })),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    }, 
+    NotExpr<What>
 };
 
-NotExpr: ast::Expr = {
-    <sloc:@L> "!" <expr:NotExpr> <eloc:@R> => ast::Expr {
+NotExpr<What>: ast::Expr = {
+    <sloc:@L> "!" <expr:NotExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::UnaryOp(Box::new(expr), ast::UnaryOperator::BooleanNot),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    ComparisonExpr
+    ComparisonExpr<What>
 };
 
-ComparisonExpr: ast::Expr = {
-    <sloc:@L> <lhs:BitwiseOr> <op:ComparisonOp> <rhs:BitwiseOr> <eloc:@R> => ast::Expr {
+ComparisonExpr<What>: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseOr<What>> <op:ComparisonOp> <rhs:BitwiseOr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    BitwiseOr
+    BitwiseOr<What>
 };
 
 ComparisonOp: ast::BinaryOperator = {
@@ -297,44 +301,44 @@ ComparisonOp: ast::BinaryOperator = {
     "<=" => ast::BinaryOperator::LessEqual
 };
 
-BitwiseOr: ast::Expr = {
-    <sloc:@L> <lhs:BitwiseOr> "|" <rhs:BitwiseXor> <eloc:@R> => ast::Expr {
+BitwiseOr<What>: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseOr<What>> "|" <rhs:BitwiseXor<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseOr })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }, 
-    BitwiseXor 
+    BitwiseXor<What>
 };
 
-BitwiseXor: ast::Expr = {
-    <sloc:@L> <lhs:BitwiseXor> "^" <rhs:BitwiseAnd> <eloc:@R> => ast::Expr {
+BitwiseXor<What>: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseXor<What>> "^" <rhs:BitwiseAnd<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseXor })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }, 
-    BitwiseAnd 
+    BitwiseAnd<What>
 };
 
-BitwiseAnd: ast::Expr = {
-    <sloc:@L> <lhs:BitwiseAnd> "&" <rhs:ShiftExpr> <eloc:@R> => ast::Expr {
+BitwiseAnd<What>: ast::Expr = {
+    <sloc:@L> <lhs:BitwiseAnd<What>> "&" <rhs:ShiftExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: ast::BinaryOperator::BitwiseAnd })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }, 
-    ShiftExpr 
+    ShiftExpr<What>
 };
 
-ShiftExpr: ast::Expr = {
-    <sloc:@L> <lhs:ShiftExpr> <op:ShiftOp> <rhs:Math1Expr> <eloc:@R> => ast::Expr {
+ShiftExpr<What>: ast::Expr = {
+    <sloc:@L> <lhs:ShiftExpr<What>> <op:ShiftOp> <rhs:Math1Expr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }, 
-    Math1Expr 
+    Math1Expr<What>
 };
 
 ShiftOp: ast::BinaryOperator = {
@@ -342,14 +346,14 @@ ShiftOp: ast::BinaryOperator = {
     ">>" => ast::BinaryOperator::ShiftRight,
 };
 
-Math1Expr: ast::Expr = {
-    <sloc:@L> <lhs:Math1Expr> <op:Math1Op> <rhs:Math2Expr> <eloc:@R> => ast::Expr {
+Math1Expr<What>: ast::Expr = {
+    <sloc:@L> <lhs:Math1Expr<What>> <op:Math1Op> <rhs:Math2Expr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    Math2Expr
+    Math2Expr<What>
 };
 
 Math1Op: ast::BinaryOperator = {
@@ -357,14 +361,14 @@ Math1Op: ast::BinaryOperator = {
     "-" => ast::BinaryOperator::Minus,
 };
 
-Math2Expr: ast::Expr = {
-    <sloc:@L> <lhs:Math2Expr> <op:Math2Op> <rhs:DerefExpr> <eloc:@R> => ast::Expr {
+Math2Expr<What>: ast::Expr = {
+    <sloc:@L> <lhs:Math2Expr<What>> <op:Math2Op> <rhs:DerefExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::BinOp(
             Box::new(ast::BinOp { lhs, rhs, operator: op })),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    DerefExpr, 
+    DerefExpr<What>, 
 };
 
 Math2Op: ast::BinaryOperator = {
@@ -373,22 +377,22 @@ Math2Op: ast::BinaryOperator = {
     "%" => ast::BinaryOperator::Mod,
 };
 
-DerefExpr: ast::Expr = {
-    <sloc:@L> "^" <expr:DerefExpr> <eloc:@R> => ast::Expr {
+DerefExpr<What>: ast::Expr = {
+    <sloc:@L> "^" <expr:DerefExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Deref(Box::new(expr)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    CastExpr,
+    CastExpr<What>,
 };
 
-CastExpr: ast::Expr = {
-    <sloc:@L> <tc:CastOrPun> "(" <autoty:TypeOrAuto> ")" <expr:CastExpr> <eloc:@R> => ast::Expr {
+CastExpr<What>: ast::Expr = {
+    <sloc:@L> <tc:CastOrPun> "(" <autoty:TypeOrAuto> ")" <expr:CastExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Cast(Box::new(expr), autoty.map(Box::new), tc),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    UnaryExpr,
+    UnaryExpr<What>,
 };
 
 TypeOrAuto: Option<ast::TypeExpr> = {
@@ -401,13 +405,13 @@ CastOrPun: ast::TypeConversion = {
     "pun" => ast::TypeConversion::Pun
 };
 
-UnaryExpr: ast::Expr = {
-    <sloc:@L> <op:UnaryOp> <expr:UnaryExpr> <eloc:@R> => ast::Expr {
+UnaryExpr<What>: ast::Expr = {
+    <sloc:@L> <op:UnaryOp> <expr:UnaryExpr<What>> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::UnaryOp(Box::new(expr), op),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    AtomExpr,
+    AtomExpr<What>,
 };
 
 UnaryOp: ast::UnaryOperator = {
@@ -417,35 +421,30 @@ UnaryOp: ast::UnaryOperator = {
     "&" => ast::UnaryOperator::Ref,
 };
 
-AtomExpr: ast::Expr = {
-    Atom,
-    <sloc:@L> <base:AtomExpr> "[" <args:OneOrMore<Expression, ",">> "]" <eloc:@R> => ast::Expr {
+AtomExpr<What>: ast::Expr = {
+    Atom<What>,
+    <sloc:@L> <base:AtomExpr<What>> "[" <args:OneOrMore<Expression<"all">, ",">> "]" <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Subscript(Box::new(base), args),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <base:AtomExpr> "." <name:Ident> <eloc:@R> => ast::Expr {
+    <sloc:@L> <base:AtomExpr<What>> "." <name:Ident> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Attribute(Box::new(base), name),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
 };
 
-StructFieldInit: ast::FieldInit = {
-    <field:Ident> "=" <init:Expression> => 
-        ast::FieldInit { field, init: Box::new(init) }
-};
-
 FnArgument: ast::FunctionArgument = {
-    <value:Expression> =>
+    <value:Expression<"all">> =>
         ast::FunctionArgument::Direct(Box::new(value)),
     "out" "var" <pat:Pat> =>
         ast::FunctionArgument::OutVar(pat),
-    <arg:Ident> ":" <value:Expression> =>
+    <arg:Ident> ":" <value:Expression<"all">> =>
         ast::FunctionArgument::Keyword(arg, Box::new(value))
 };
 
-Atom: ast::Expr = {
+Atom<What>: ast::Expr = {
     <sloc:@L> <cnst:Constant> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Constant(cnst),
         span: (sloc..eloc),
@@ -461,7 +460,7 @@ Atom: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> "(" <items:OneOrMore<Expression, ",">?> ")" 
+    <sloc:@L> "(" <items:OneOrMore<Expression<"all">, ",">?> ")" 
     <expr_call:("(" <@L> <OneOrMore<FnArgument, ",">?> <@R> ")")?> <eloc:@R> => {
         let mut items = items.unwrap_or(Vec::new());
         if items.len() == 1 {
@@ -506,6 +505,42 @@ Atom: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
+    <sloc:@L> <tyi:TypeOrArrayInit?> "{" <inits:OneOrMore<FieldOrDirectInit, ",">?> "}" <eloc:@R> if What != "no-inits" => ast::Expr {
+        kind: ast::ExprKind::TypeInit(tyi.map(Box::new), inits.unwrap_or(Vec::new())),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    },
+};
+
+TypeOrArrayInit: ast::TypeExpr = {
+    <sloc:@L> <name:Name> <generic_args:("::" <@L> "<"  <OneOrMore<GenericArgument, ",">> ">" <@R>)?> <eloc:@R> => {
+        if let Some((start, generic_args, end)) = generic_args {
+            return ast::TypeExpr {
+                kind: ast::TypeExprKind::Generic(name, generic_args),
+                span: (start..end),
+                node_id: ctxt.make_node_id()
+            };
+        }
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Name(name),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    },
+    <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Array(Box::new(base), cap.map(Box::new)),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    },
+};
+
+FieldOrDirectInit: ast::TypeInit = {
+    <field:Ident> "=" <init:Expression<"all">> => 
+        ast::TypeInit::Field(field, Box::new(init)),
+    <init:Expression<"all">> => 
+        ast::TypeInit::Direct(Box::new(init))
 };
 
 Constant: ast::Constant = {
@@ -561,7 +596,7 @@ TypeExpr: ast::TypeExpr = {
 
 ArrayCap: Option<ast::Expr> = {
     "?" => None,
-    <expr:Expression> => Some(expr),
+    <expr:Expression<"all">> => Some(expr),
 };
 
 IsClosure: bool = {

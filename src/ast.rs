@@ -171,14 +171,12 @@ pub enum ExprKind {
     UnaryOp(Box<Expr>, UnaryOperator),
     Cast(Box<Expr>, Option<Box<TypeExpr>>, TypeConversion),
     FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
-    StructInit(QName, Vec<FieldInit>),
+    TypeInit(Option<Box<TypeExpr>>, Vec<TypeInit>),
     Subscript(Box<Expr>, Vec<Expr>),
     Attribute(Box<Expr>, Ident),
     Constant(Constant),
     String(String),
     Name(QName),
-    ArraySize(Box<Expr>, Box<Expr>),
-    ArrayItems(Vec<Expr>),
     Tuple(Vec<Expr>),
     ShorthandEnum(Ident),
     Closure(Closure),
@@ -233,9 +231,9 @@ pub enum FunctionArgument {
 }
 
 #[derive(Debug)]
-pub struct FieldInit {
-    pub field: Ident,
-    pub init: Box<Expr>
+pub enum TypeInit {
+    Field(Ident, Box<Expr>),
+    Direct(Box<Expr>),
 }
 
 #[derive(Debug)]
