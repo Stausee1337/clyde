@@ -54,27 +54,6 @@ pub enum QName {
     },
 }
 
-#[derive(Debug, Clone)]
-pub enum QPath {
-    Unresolved(Path, Ident),
-    Resolved,
-}
-
-impl<'a> From<&'a mut QPath> for (&'a Path, Ident) {
-    fn from(value: &'a mut QPath) -> Self {
-        match value {
-            QPath::Unresolved(path, ident) => (path, ident.clone()),
-            QPath::Resolved => todo!("Multiple namespaces")
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Path {
-    pub segments: Vec<Ident>,
-    pub span: Range<usize>,
-}
-
 #[derive(Debug)]
 pub struct Pattern {
     pub kind: PatternKind,
@@ -87,26 +66,10 @@ pub enum PatternKind {
     Ident(Ident),
     Tuple(Vec<Pattern>),
     Literal(Box<Expr>),
-    Path(QPath)
-}
-
-#[derive(Debug)]
-pub struct Import {
-    pub kind: ImportKind,
-    pub span: Range<usize>,
-    pub node_id: NodeId
-}
-
-#[derive(Debug)]
-pub enum ImportKind {
-    Use(Path),
-    With(Path, Option<Ident>)
 }
 
 #[derive(Debug)]
 pub struct TopLevel {
-    pub imports: Vec<Import>,
-    pub unit_decl: Option<Path>,
     pub items: Vec<Item>,
     pub span: Range<usize>,
     pub node_id: NodeId,
@@ -215,7 +178,6 @@ pub enum ExprKind {
     Constant(Constant),
     String(String),
     Name(QName),
-    Path(QPath),
     ArraySize(Box<Expr>, Box<Expr>),
     ArrayItems(Vec<Expr>),
     Tuple(Vec<Expr>),

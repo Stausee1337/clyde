@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath};
+use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow};
 
 
 pub trait MutVisitor: Sized {
@@ -58,10 +58,6 @@ pub trait MutVisitor: Sized {
 
     fn visit_name(&mut self, name: &mut QName) {
         noop(name);
-    }
-
-    fn visit_path(&mut self, path: &mut QPath) {
-        noop(path);
     }
 
     fn visit_control_flow(&mut self, control_flow: &mut ControlFlow) {
@@ -201,7 +197,6 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
         ExprKind::Constant(cnst) => vis.visit_const(cnst),
         ExprKind::String(_) => (),
         ExprKind::Name(name) => vis.visit_name(name),
-        ExprKind::Path(path) => vis.visit_path(path),
         ExprKind::ArraySize(default, size) => {
             vis.visit_expr(default);
             vis.visit_expr(size);
@@ -242,7 +237,6 @@ pub fn noop_visit_pattern_kind<T: MutVisitor>(pat_kind: &mut PatternKind, vis: &
             visit_vec(pats, |pat| vis.visit_pattern(pat)),
         PatternKind::Literal(expr) => vis.visit_expr(expr),
         PatternKind::Ident(_) => (),
-        PatternKind::Path(qpath) => vis.visit_path(qpath)
     }
 }
 

@@ -7,9 +7,7 @@ use crate::{
 grammar<'a>(ctxt: &'a mut Context);
 
 pub TopLevel: ast::TopLevel = {
-    <start:@L> <unit_decl:Unit?> <imports:Import*> <items:Items> <end:@R> => ast::TopLevel {
-        imports,
-        unit_decl,
+    <start:@L> <items:Items> <end:@R> => ast::TopLevel {
         items,
         span: (start..end),
         diagnostics: ctxt.diagnostics,
@@ -17,34 +15,17 @@ pub TopLevel: ast::TopLevel = {
     }
 };
 
-Unit: ast::Path = {
-    "unit" <path:Path> ";" => path
-};
-
 Items: Vec<ast::Item> = {
     => vec![],
-    <mut items:Items> <next:Item<"var">> => {
+    <mut items:Items> <next:Item> => {
         items.push(next);
         items
     }
 };
 
-Import: ast::Import = {
-    <sloc:@L> "use" <path:Path> ";" <eloc:@R> => ast::Import {
-        kind: ast::ImportKind::Use(path),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-    <sloc:@L> "with" <path:Path> <mangled:("as" <Ident>)?> ";" <eloc:@R> => ast::Import {
-        kind: ast::ImportKind::With(path, mangled),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    }
-};
-
-Item<Global>: ast::Item = {
+Item: ast::Item = {
     ConstDef,
-    GlobalDef<Global>,
+    GlobalDef,
     StructDef,
     FunctionDef,
 };
@@ -58,8 +39,8 @@ ConstDef: ast::Item = {
     },
 };
 
-GlobalDef<Global>: ast::Item = {
-    <sloc:@L> (Global) <ident:Ident> <ty:(":" <TypeExpr>)?> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Item {
+GlobalDef: ast::Item = {
+    <sloc:@L> "var" <ident:Ident> <ty:(":" <TypeExpr>)?> <init:("=" <Expression>)?> ";" <eloc:@R> => ast::Item {
         ident,
         kind: ast::ItemKind::StaticVar(ty.map(|ty| Box::new(ty)), init.map(|b| Box::new(b))),
         span: (sloc..eloc),
@@ -139,7 +120,6 @@ Statement: ast::Stmt = {
     WhileStatement,
     ForStatement,
     ControlFlowStmt,
-    ItemStmt,
     ExpressionStmt,
     ReturnStmt,
     ! =>? ast::handle_stmt_error(<>, ctxt.diagnostics)
@@ -196,14 +176,6 @@ ControlFlowStmt: ast::Stmt = {
     <sloc:@L> "continue" ";" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Continue),
         span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    }
-};
-
-ItemStmt: ast::Stmt = {
-    <i:Item<"static">> => ast::Stmt {
-        span: i.span.clone(),
-        kind: ast::StmtKind::Item(Box::new(i)),
         node_id: ctxt.make_node_id()
     }
 };
@@ -576,24 +548,6 @@ Pat: ast::Pattern = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <path:QPath> <eloc:@R> => ast::Pattern {
-        kind: ast::PatternKind::Path(path),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    }
-};
-
-QPath: ast::QPath = {
-    <path:Path> "." <ident:Ident>
-        => ast::QPath::Unresolved(path, ident),
-};
-
-#[inline]
-Path: ast::Path = {
-    <sloc:@L> <segments:OneOrMore<Ident, ".">> <eloc:@R> => ast::Path {
-        segments,
-        span: (sloc..eloc),
-    }
 };
 
 Name: ast::QName = {

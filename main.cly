@@ -7,7 +7,7 @@ struct User {
 fn exit(code: int);
 
 fn main() {
-    var ptr = &1;
-    *ptr = 12;
+    var a: User;
+    exit(a.b.c);
 }
 

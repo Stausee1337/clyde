@@ -117,34 +117,6 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
             ast::ItemKind::Err => ()
         } 
     }
-
-    fn visit_expr(&mut self, expr: &mut ast::Expr) { 
-        match &mut expr.kind {
-            ast::ExprKind::Path(..) => {
-                let kind = core::mem::replace(&mut expr.kind, ast::ExprKind::Err);
-                let (mut path, ident) = match kind {
-                    ast::ExprKind::Path(ast::QPath::Unresolved(path, ident)) => (path, ident),
-                    _ => panic!("invalid state in path replace resolution"),
-                };
-                path.segments.push(ident);
-                let base = path.segments.remove(0);
-                let mut rexpr = ast::Expr {
-                    span: base.span.clone(),
-                    kind: ast::ExprKind::Name(ast::QName::Unresolved(base)),
-                    node_id: self.make_node_id() 
-                };
-                for ident in path.segments {
-                    rexpr = ast::Expr {
-                        span: (rexpr.span.start..ident.span.end),
-                        kind: ast::ExprKind::Attribute(Box::new(rexpr), ident),
-                        node_id: self.make_node_id()
-                    };
-                }
-                expr.kind = rexpr.kind;
-            },
-            _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -327,7 +299,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                             .with_span(pat.span.clone());
                         return;
                     }
-                    ast::PatternKind::Literal(..) | ast::PatternKind::Path(..) => {
+                    ast::PatternKind::Literal(..) => { 
                         self.resolution.diagnostics
                             .error(format!("unsensible pattern found in var declaration"))
                             .with_span(pat.span.clone());
@@ -405,7 +377,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     .with_span(param.pat.span.clone());
                 return;
             }
-            ast::PatternKind::Literal(..) | ast::PatternKind::Path(..) => {
+            ast::PatternKind::Literal(..) => {
                 self.resolution.diagnostics
                     .error(format!("unsensible pattern found in function parameter"))
                     .with_span(param.pat.span.clone());
@@ -438,16 +410,6 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     .with_span(ty.span.clone());
             }
         }
-    }
-
-    fn visit_path(&mut self, path: &mut ast::QPath) {
-        let (path, ident) = match path {
-            ast::QPath::Unresolved(path, ident) => (path, ident), 
-            ast::QPath::Resolved => panic!("invalid state when emitting path error"),
-        };
-        self.resolution.diagnostics
-            .error("there is no namespace support yet")
-            .with_span(path.span.start..ident.span.end);
     }
 }
 
