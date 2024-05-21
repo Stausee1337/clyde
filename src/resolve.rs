@@ -95,14 +95,14 @@ impl<'r> TypeResolutionPass<'r> {
 impl<'r> MutVisitor for TypeResolutionPass<'r> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
-            ast::ItemKind::Record(rec) => {
+            ast::ItemKind::Struct(stc) => {
                 self.resolution.define(Symbolspace::Type, item.ident.clone(), item.node_id);
-                node_visitor::visit_vec(&mut rec.fields, |field_def| self.visit_field_def(field_def));
-                node_visitor::visit_vec(&mut rec.generics, |generic| self.visit_generic_param(generic));
+                node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
+                node_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
             },
-            ast::ItemKind::Proc(proc) => {
+            ast::ItemKind::Function(function) => {
                 self.resolution.define(Symbolspace::Function, item.ident.clone(), item.node_id);
-                node_visitor::visit_proc(proc, self);
+                node_visitor::visit_fn(function, self);
             },
             ast::ItemKind::Constant(ty, expr) => {
                 self.resolution.define(Symbolspace::Variable, item.ident.clone(), item.node_id);
@@ -274,35 +274,35 @@ impl<'r> NameResolutionPass<'r> {
 impl<'r> MutVisitor for NameResolutionPass<'r> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
-            ast::ItemKind::Proc(proc) => {
-                if proc.generics.len() > 0 {
-                    let first = proc.generics.first().unwrap();
-                    let last = proc.generics.last().unwrap();
+            ast::ItemKind::Function(function) => {
+                if function.generics.len() > 0 {
+                    let first = function.generics.first().unwrap();
+                    let last = function.generics.last().unwrap();
                     self.resolution.diagnostics
-                        .fatal("procedure generics are not supported yet")
+                        .fatal("functionedure generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
-                node_visitor::visit_option(&mut proc.returns, |ty| self.visit_ty_expr(ty));
+                node_visitor::visit_option(&mut function.returns, |ty| self.visit_ty_expr(ty));
 
-                let Some(ref mut body) = proc.body else {
-                    node_visitor::visit_vec(&mut proc.params, |p| self.visit_param(p));
+                let Some(ref mut body) = function.body else {
+                    node_visitor::visit_vec(&mut function.params, |p| self.visit_param(p));
                     return;
                 };
 
                 self.with_rib(|this| {
-                    node_visitor::visit_vec(&mut proc.params, |p| this.visit_param(p));
+                    node_visitor::visit_vec(&mut function.params, |p| this.visit_param(p));
                     node_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
                 });
             }
-            ast::ItemKind::Record(rec) => {
-                if rec.generics.len() > 0 {
-                    let first = rec.generics.first().unwrap();
-                    let last = rec.generics.last().unwrap();
+            ast::ItemKind::Struct(stc) => {
+                if stc.generics.len() > 0 {
+                    let first = stc.generics.first().unwrap();
+                    let last = stc.generics.last().unwrap();
                     self.resolution.diagnostics
-                        .fatal("record generics are not supported yet")
+                        .fatal("struct generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
-                node_visitor::visit_vec(&mut rec.fields, |field_def| self.visit_field_def(field_def));
+                node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
             }
             ast::ItemKind::Constant(ty, expr) => {
                 self.visit_ty_expr(ty);
@@ -376,7 +376,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             ast::ExprKind::Name(name) => {
                 self.resolve_priority(&[Symbolspace::Variable, Symbolspace::Function, Symbolspace::Type], name);
             }
-            ast::ExprKind::RecordInit(name, fields) => {
+            ast::ExprKind::StructInit(name, fields) => {
                 node_visitor::visit_vec(fields, |field| self.visit_field_init(field));
                 self.resolve(Symbolspace::Type, name, true);
             }
@@ -434,7 +434,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::TypeExprKind::Function { .. } => {
                 self.resolution.diagnostics
-                    .fatal("procedure types are not supported yet")
+                    .fatal("function types are not supported yet")
                     .with_span(ty.span.clone());
             }
         }

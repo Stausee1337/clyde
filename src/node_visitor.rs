@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Proc, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath};
+use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, FieldInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, QPath};
 
 
 pub trait MutVisitor: Sized {
@@ -114,12 +114,12 @@ pub fn map_vec<T, I: IntoIterator<Item = T>, F: FnMut(T) -> I>(elems: &mut Vec<T
 
 pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T) {
     match item_kind {
-        ItemKind::Proc(proc) => {
-            visit_proc(proc, vis);
+        ItemKind::Function(func) => {
+            visit_fn(func, vis);
         }
-        ItemKind::Record(rec) => {
-            visit_vec(&mut rec.fields, |field_def| vis.visit_field_def(field_def));
-            visit_vec(&mut rec.generics, |generic| vis.visit_generic_param(generic));
+        ItemKind::Struct(stc) => {
+            visit_vec(&mut stc.fields, |field_def| vis.visit_field_def(field_def));
+            visit_vec(&mut stc.generics, |generic| vis.visit_generic_param(generic));
         }
         ItemKind::Constant(ty, expr) => {
             vis.visit_ty_expr(ty);
@@ -133,11 +133,11 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
     }
 }
 
-pub fn visit_proc<T: MutVisitor>(proc: &mut Proc, vis: &mut T) {
-    visit_vec(&mut proc.params, |p| vis.visit_param(p));
-    visit_vec(&mut proc.generics, |generic| vis.visit_generic_param(generic));
-    visit_option(&mut proc.returns, |ty| vis.visit_ty_expr(ty));
-    visit_option(&mut proc.body, |body| visit_vec(body, |stmt| vis.visit_stmt(stmt)));
+pub fn visit_fn<T: MutVisitor>(func: &mut Function, vis: &mut T) {
+    visit_vec(&mut func.params, |p| vis.visit_param(p));
+    visit_vec(&mut func.generics, |generic| vis.visit_generic_param(generic));
+    visit_option(&mut func.returns, |ty| vis.visit_ty_expr(ty));
+    visit_option(&mut func.body, |body| visit_vec(body, |stmt| vis.visit_stmt(stmt)));
 }
 
 pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T) {
@@ -191,7 +191,7 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             vis.visit_expr(base);
             visit_vec(args, |arg| vis.visit_argument(arg));
         }
-        ExprKind::RecordInit(_, inits) =>
+        ExprKind::StructInit(_, inits) =>
             visit_vec(inits, |init| vis.visit_field_init(init)),
         ExprKind::Subscript(base, args) => {
             vis.visit_expr(base);

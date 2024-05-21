@@ -123,15 +123,15 @@ pub struct Item {
 
 #[derive(Debug)]
 pub enum ItemKind {
-    Proc(Box<Proc>),
-    Record(Box<Record>),
+    Function(Box<Function>),
+    Struct(Box<Struct>),
     Constant(Box<TypeExpr>, Box<Expr>),
     StaticVar(Option<Box<TypeExpr>>, Option<Box<Expr>>),
     Err
 }
 
 #[derive(Debug)]
-pub struct Record {
+pub struct Struct {
     pub generics: Vec<GenericParam>,
     pub fields: Vec<FieldDef>,
     pub attributes: Vec<Attribute>
@@ -146,7 +146,7 @@ pub struct FieldDef {
 }
 
 #[derive(Debug)]
-pub struct Proc {
+pub struct Function {
     pub body: Option<Vec<Stmt>>,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
@@ -209,7 +209,7 @@ pub enum ExprKind {
     UnaryOp(Box<Expr>, UnaryOperator),
     Cast(Cast),
     FunctionCall(Box<Expr>, Vec<FunctionArgument>),
-    RecordInit(QName, Vec<FieldInit>),
+    StructInit(QName, Vec<FieldInit>),
     Subscript(Box<Expr>, Vec<Expr>),
     Attribute(Box<Expr>, Ident),
     Constant(Constant),

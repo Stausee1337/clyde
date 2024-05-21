@@ -45,8 +45,8 @@ Import: ast::Import = {
 Item<Global>: ast::Item = {
     ConstDef,
     GlobalDef<Global>,
-    RecordDef,
-    ProcDef,
+    StructDef,
+    FunctionDef,
 };
 
 ConstDef: ast::Item = { 
@@ -67,36 +67,36 @@ GlobalDef<Global>: ast::Item = {
     },
 };
 
-RecordDef: ast::Item = {
-    <sloc:@L> "struct" <ident:Ident> <generics:("<" <GenericParams> ">")?> "{" <f:RecordFields?> "}" <eloc:@R> => {
-        let record = ast::Record {
+StructDef: ast::Item = {
+    <sloc:@L> "struct" <ident:Ident> <generics:("<" <GenericParams> ">")?> "{" <f:StructFields?> "}" <eloc:@R> => {
+        let stc = ast::Struct {
             generics: generics.unwrap_or(Vec::new()),
             fields: f.unwrap_or(Vec::new()),
             attributes: vec![]
         };
         ast::Item {
             ident,
-            kind: ast::ItemKind::Record(Box::new(record)),
+            kind: ast::ItemKind::Struct(Box::new(stc)),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
     }
 };
 
-RecordFields: Vec<ast::FieldDef> = {
-    OneOrMore<RecordField, ",">
+StructFields: Vec<ast::FieldDef> = {
+    OneOrMore<StructField, ",">
 };
 
-RecordField: ast::FieldDef = {
+StructField: ast::FieldDef = {
     <sloc:@L> <name:Ident> ":" <ty:TypeExpr> <eloc:@R> => ast::FieldDef {
         name, ty, span: (sloc..eloc), node_id: ctxt.make_node_id(),
     }
 };
 
-ProcDef: ast::Item = {
+FunctionDef: ast::Item = {
     <sloc:@L> "fn" <ident:Ident> <generics:("<" <GenericParams> ">")?> 
     <p:Parameters> <returns:(":" <TypeExpr>)?> <body:Body> <eloc:@R> => {
-        let proc = ast::Proc {
+        let func = ast::Function {
             params: p.unwrap_or(Vec::new()),
             returns,
             generics: generics.unwrap_or(Vec::new()),
@@ -106,7 +106,7 @@ ProcDef: ast::Item = {
         };
         ast::Item {
             ident,
-            kind: ast::ItemKind::Proc(Box::new(proc)),
+            kind: ast::ItemKind::Function(Box::new(func)),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -417,7 +417,7 @@ AtomExpr: ast::Expr = {
     },
 };
 
-RecField: ast::FieldInit = {
+StructFieldInit: ast::FieldInit = {
     <field:Ident> "=" <init:Expression> => 
         ast::FieldInit { field, init: Box::new(init) }
 };
