@@ -337,7 +337,11 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     },
                     ast::TypeExprKind::Array(ty, cap) => {
                         self.visit_ty_expr(ty);
-                        node_visitor::visit_option(cap, |cap| self.visit_expr(cap));
+                        match cap {
+                            ast::ArrayCapacity::Discrete(expr) =>
+                                self.visit_expr(expr),
+                            ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
+                        }
                     }
                     ast::TypeExprKind::Generic(..) => {
                         self.resolution.diagnostics
@@ -408,7 +412,11 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
             }
             ast::TypeExprKind::Array(base, cap) => {
                 self.visit_ty_expr(base);
-                node_visitor::visit_option(cap, |cap| self.visit_expr(cap));
+                match cap {
+                    ast::ArrayCapacity::Discrete(expr) =>
+                        self.visit_expr(expr),
+                    ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
+                }
             }
         }
     }

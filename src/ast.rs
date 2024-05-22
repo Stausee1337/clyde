@@ -207,6 +207,14 @@ pub enum TypeInit {
     Direct(Box<Expr>),
 }
 
+
+#[derive(Debug)]
+pub enum ArrayCapacity {
+    Infer,
+    Dynamic,
+    Discrete(Box<Expr>)
+}
+
 #[derive(Debug)]
 pub enum Constant {
     Null,
@@ -232,7 +240,7 @@ pub enum TypeExprKind {
         return_ty: Option<Box<TypeExpr>>,
         is_closure: bool 
     },
-    Array(Box<TypeExpr>, Option<Box<Expr>>),
+    Array(Box<TypeExpr>, ArrayCapacity),
 }
 
 #[derive(Debug)]

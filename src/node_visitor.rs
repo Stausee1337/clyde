@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow};
+use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self};
 
 
 pub trait MutVisitor: Sized {
@@ -245,7 +245,11 @@ pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &
         }
         TypeExprKind::Array(base, cap) => {
             vis.visit_ty_expr(base);
-            visit_option(cap, |cap| vis.visit_expr(cap));
+            match cap {
+                ast::ArrayCapacity::Discrete(expr) =>
+                    vis.visit_expr(expr),
+                ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
+            }
         }
     }
 }

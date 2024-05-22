@@ -155,7 +155,7 @@ SimpleTypeExpr: ast::TypeExpr = {
     },
     <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
         ast::TypeExpr {
-            kind: ast::TypeExprKind::Array(Box::new(base), cap.map(Box::new)),
+            kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -529,7 +529,7 @@ TypeOrArrayInit: ast::TypeExpr = {
     },
     <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
         ast::TypeExpr {
-            kind: ast::TypeExprKind::Array(Box::new(base), cap.map(Box::new)),
+            kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -587,16 +587,17 @@ TypeExpr: ast::TypeExpr = {
     },
     <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
         ast::TypeExpr {
-            kind: ast::TypeExprKind::Array(Box::new(base), cap.map(Box::new)),
+            kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
     }
 };
 
-ArrayCap: Option<ast::Expr> = {
-    "?" => None,
-    <expr:Expression<"all">> => Some(expr),
+ArrayCap: ast::ArrayCapacity = {
+    "?" => ast::ArrayCapacity::Infer,
+    ".." => ast::ArrayCapacity::Dynamic,
+    <expr:Expression<"all">> => ast::ArrayCapacity::Discrete(Box::new(expr)),
 };
 
 IsClosure: bool = {
