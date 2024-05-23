@@ -6,8 +6,11 @@ pub enum Primitive {
     Char, String
 }
 
+pub struct AdtDefInner {
+    
+}
 
-pub enum Ty {
+pub enum TyKind {
     Primitive(Primitive),
     Adt()
 }

@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, DeclarationKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol};
+use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -10,15 +10,14 @@ use crate::{ast::{self, DeclarationKind}, node_visitor::{MutVisitor, self, noop_
 ///                                                 |
 ///                                           Name <-> declaration site (NodeId)
 
-
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Symbolspace {
+enum NameSpace {
     Type, Function, Variable 
 }
 
-impl std::fmt::Display for Symbolspace {
+impl std::fmt::Display for NameSpace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use Symbolspace as Sym;
+        use NameSpace as Sym;
         match self {
             Sym::Type => write!(f, "type"),
             Sym::Function => write!(f, "function"),
@@ -27,8 +26,26 @@ impl std::fmt::Display for Symbolspace {
     }
 }
 
+impl From<DefinitonKind> for NameSpace {
+    fn from(value: DefinitonKind) -> Self {
+        use DefinitonKind as D;
+        match value {
+            D::Struct => NameSpace::Type,
+            D::Function => NameSpace::Function,
+            D::Global | D::Const => NameSpace::Variable,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Declaration {
+    site: ast::DefId,
+    kind: DefinitonKind,
+    span: Range<usize>,
+}
+
+#[derive(Clone)]
+struct Local {
     site: ast::NodeId,
     span: Range<usize>,
 }
@@ -38,6 +55,7 @@ struct ResolutionState {
     types: HashMap<Symbol, Declaration>,
     functions: HashMap<Symbol, Declaration>,
     globals: HashMap<Symbol, Declaration>,
+    declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
 }
 
 impl ResolutionState {
@@ -47,21 +65,23 @@ impl ResolutionState {
             types: Default::default(),
             functions: Default::default(),
             globals: Default::default(),
+            declarations: Default::default()
         }
     }
 
-    fn define(&mut self, space_kind: Symbolspace, name: ast::Ident, site: ast::NodeId) {
-        let space = match space_kind {
-            Symbolspace::Type => &mut self.types,
-            Symbolspace::Function => &mut self.functions,
-            Symbolspace::Variable => &mut self.globals,
+    fn define(&mut self, kind: DefinitonKind, name: ast::Ident, site: ast::NodeId) {
+        let space = match kind {
+            DefinitonKind::Struct => &mut self.types,
+            DefinitonKind::Function => &mut self.functions,
+            DefinitonKind::Global | DefinitonKind::Const => &mut self.globals,
         };
         let declaration = Declaration {
-            site, span: name.span.clone()
+            site: self.declarations.push(site).into(), kind, span: name.span.clone()
         };
         if let Some(prev) = space.insert(name.symbol, declaration) {
+            let space: NameSpace = kind.into();
             self.diagnostics
-                .error(format!("redeclaration of {space_kind} {name:?}", name = name.symbol.get()))
+                .error(format!("redeclaration of {space} {name:?}", name = name.symbol.get()))
                 .with_span(name.span);
             self.diagnostics
                 .note(format!("previous declaration of {name:?} here", name = name.symbol.get()))
@@ -88,16 +108,18 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
             ast::ItemKind::Struct(stc) => {
-                self.resolution.define(Symbolspace::Type, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitonKind::Struct, item.ident.clone(), item.node_id);
                 node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
                 node_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
             },
             ast::ItemKind::Function(function) => {
-                self.resolution.define(Symbolspace::Function, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitonKind::Function, item.ident.clone(), item.node_id);
                 node_visitor::visit_fn(function, self);
             },
-            ast::ItemKind::GlobalVar(ty, expr, _) => {
-                self.resolution.define(Symbolspace::Variable, item.ident.clone(), item.node_id);
+            ast::ItemKind::GlobalVar(ty, expr, is_const) => {
+                self.resolution.define(
+                    if *is_const {DefinitonKind::Global} else {DefinitonKind::Const},
+                    item.ident.clone(), item.node_id);
                 self.visit_ty_expr(ty);
                 node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
             }
@@ -108,7 +130,7 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
 
 #[derive(Default)]
 struct Rib {
-    symspace: HashMap<Symbol, Declaration>,
+    symspace: HashMap<Symbol, Local>,
 }
 
 struct NameResolutionPass<'r> {
@@ -137,16 +159,16 @@ impl<'r> NameResolutionPass<'r> {
     fn define(&mut self, name: ast::Ident, site: ast::NodeId) {
         assert!(self.has_rib(), "NameResolutionPass::define() called outside of vaild scope");
         let symbol = name.symbol;
-        if let Some(decl) = self.resolve_local(symbol) {
+        if let Some(decl) = self.ribs.last().and_then(|rib| rib.symspace.get(&symbol)) {
             self.resolution.diagnostics
-                .error(format!("redeclaration of var {name} here", name = symbol.get()))
+                .error(format!("redeclaration of local {name} here", name = symbol.get()))
                 .with_span(name.span.clone());
             self.resolution.diagnostics
                 .note(format!("previous declaration of {name} here", name = symbol.get()))
                 .with_span(decl.span.clone());
             return;
         }
-        let decl = Declaration {
+        let decl = Local {
             site,
             span: name.span.clone()
         };
@@ -154,48 +176,39 @@ impl<'r> NameResolutionPass<'r> {
         rib.symspace.insert(symbol, decl);
     }
 
-    fn resolve_local(&self, symbol: Symbol) -> Option<&Declaration> {
+    fn resolve_local(&self, symbol: Symbol) -> Option<&Local> {
         for rib in self.ribs.iter().rev() {
-            if let decl @ Some(_) = rib.symspace.get(&symbol) {
-                return decl;
+            if let loc @ Some(_) = rib.symspace.get(&symbol) {
+                return loc;
             }
         }
         None
     }
 
-    fn resolve(&self, space: Symbolspace, name: &mut ast::QName, report_error: bool) -> bool {
+    fn resolve(&self, space: NameSpace, name: &mut ast::QName, report_error: bool) -> bool {
         let ident = match name {
             ast::QName::Unresolved(ident) => ident.clone(),
             ast::QName::Resolved { .. } => return true,
         };
-        let mut is_local = true;
         let decl = match space {
-            Symbolspace::Type => self.resolution.types.get(&ident.symbol),
-            Symbolspace::Function => self.resolution.functions.get(&ident.symbol),
-            Symbolspace::Variable => {
-                self.resolve_local(ident.symbol)
-                    .or_else(|| {
-                        is_local = false;
-                        self.resolution.globals.get(&ident.symbol)
-                    })
-            },
+            NameSpace::Type => self.resolution.types.get(&ident.symbol),
+            NameSpace::Function => self.resolution.functions.get(&ident.symbol),
+            NameSpace::Variable => self.resolution.globals.get(&ident.symbol)
         };
         if let Some(decl) = decl {
-            let res_kind = match space {
-                Symbolspace::Type => DeclarationKind::Type,
-                Symbolspace::Function => DeclarationKind::Function,
-                Symbolspace::Variable => if is_local { DeclarationKind::Local } else { DeclarationKind::Global }
-            };
             *name = ast::QName::Resolved {
                 ident,
-                node_id: decl.site,
-                res_kind
+                res_kind: Resolution::Def(decl.site, decl.kind)
             };
-        } else if ident.symbol.is_primtive() && space == Symbolspace::Type {
+        } else if let Some(local) = self.resolve_local(ident.symbol) {
             *name = ast::QName::Resolved {
                 ident,
-                node_id: ast::NODE_ID_UNDEF,
-                res_kind: DeclarationKind::Primitive
+                res_kind: Resolution::Local(local.site)
+            };
+        } else if ident.symbol.is_primtive() && space == NameSpace::Type {
+            *name = ast::QName::Resolved {
+                ident,
+                res_kind: Resolution::Primitive
             };
         } else {
             if report_error {
@@ -204,8 +217,7 @@ impl<'r> NameResolutionPass<'r> {
                     .with_span(ident.span.clone());
                 *name = ast::QName::Resolved {
                     ident,
-                    node_id: ast::NODE_ID_UNDEF,
-                    res_kind: DeclarationKind::Err
+                    res_kind: Resolution::Err
                 };
             }
             return false;
@@ -213,7 +225,7 @@ impl<'r> NameResolutionPass<'r> {
         true
     }
 
-    fn resolve_priority(&self, pspaces: &[Symbolspace], name: &mut ast::QName) -> bool {
+    fn resolve_priority(&self, pspaces: &[NameSpace], name: &mut ast::QName) -> bool {
         for space in pspaces {
             if self.resolve(*space, name, false) {
                 return true;
@@ -324,7 +336,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
     fn visit_expr(&mut self, expr: &mut ast::Expr) {
         match &mut expr.kind {
             ast::ExprKind::Name(name) => {
-                self.resolve_priority(&[Symbolspace::Variable, Symbolspace::Function], name);
+                self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], name);
             }
             ast::ExprKind::TypeInit(ty, fields) => {
                 node_visitor::visit_vec(fields, |field| self.visit_type_init(field));
@@ -333,7 +345,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                 };
                 match &mut ty.kind {
                     ast::TypeExprKind::Name(name) => {
-                        self.resolve(Symbolspace::Type, name, true);
+                        self.resolve(NameSpace::Type, name, true);
                     },
                     ast::TypeExprKind::Array(ty, cap) => {
                         self.visit_ty_expr(ty);
@@ -363,7 +375,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                     return;
                 }
                 node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
-                self.resolve_priority(&[Symbolspace::Function, Symbolspace::Variable], name);
+                self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], name);
             }
             _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self)
         }
@@ -398,7 +410,7 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
         match &mut ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
             ast::TypeExprKind::Name(name) => {
-                self.resolve(Symbolspace::Type, name, true);
+                self.resolve(NameSpace::Type, name, true);
             },
             ast::TypeExprKind::Generic(..) => {
                 self.resolution.diagnostics

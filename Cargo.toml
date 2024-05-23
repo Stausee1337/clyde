@@ -22,4 +22,5 @@ multimap = "0.10.0"
 logos-display = "0.1.2"
 getopts = "0.2"
 bitflags = "2.5.0"
+index_vec = "0.1.3"
 

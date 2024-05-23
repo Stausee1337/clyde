@@ -25,9 +25,52 @@ impl Hash for Ident {
     }
 }
 
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DefIndex(pub u32);
+
+impl std::fmt::Debug for DefIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DefIndex({})", self.0)?;
+        Ok(())
+    }
+}
+
+impl index_vec::Idx for DefIndex {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    fn from_usize(idx: usize) -> Self {
+        Self(idx as u32)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
-pub enum DeclarationKind {
-    Local, Global, Function, Type, Primitive, Err
+pub struct DefId {
+    index: DefIndex
+}
+
+impl From<DefIndex> for DefId {
+    fn from(index: DefIndex) -> Self {
+        Self { index }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DefinitonKind {
+    Global,
+    Function,
+    Struct,
+    Const,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Resolution {
+    Def(DefId, DefinitonKind),
+    Local(NodeId),
+    Primitive,
+    Err
 }
 
 #[derive(Debug, Clone)]
@@ -35,8 +78,7 @@ pub enum QName {
     Unresolved(Ident),
     Resolved {
         ident: Ident,
-        node_id: NodeId,
-        res_kind: DeclarationKind 
+        res_kind: Resolution
     },
 }
 

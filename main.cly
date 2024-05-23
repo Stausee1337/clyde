@@ -7,6 +7,11 @@ struct User {
 void exit(int code);
 
 void main() {
-    char first = 'c';
-    exit(1);
+    int code = 12;
+    exit(code);
+
+    if code == 12 {
+        char code = 'c';
+        exit(code);
+    }
 }
