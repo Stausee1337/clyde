@@ -1,17 +1,12 @@
 
 struct User {
-    string name;
+    *str name;
     int age;
 }
 
 void exit(int code);
+void println(*str message);
 
 void main() {
-    int code = 12;
-    exit(code);
-
-    if code == 12 {
-        char code = 'c';
-        exit(code);
-    }
+    println("Hello, World");
 }

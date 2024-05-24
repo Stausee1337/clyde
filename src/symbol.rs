@@ -64,7 +64,7 @@ impl Hasher for GNUHasher {
 const PRIMITIVES: &[&'static str] = &[
     "bool", "void",
     "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "nint", "nuint",
-    "char", "string"
+    "char", "str"
 ];
 
 thread_local! {
