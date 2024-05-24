@@ -1,13 +1,13 @@
 use std::{
     mem::{ManuallyDrop, transmute},
-    hash::{BuildHasherDefault, Hasher},
     cell::RefCell,
     fmt::Debug
 };
 
 use bumpalo::Bump;
+use ahash::RandomState;
 
-type StringSet = indexmap::IndexSet<&'static str, BuildHasherDefault<GNUHasher>>;
+type StringSet = indexmap::IndexSet<&'static str, RandomState>;
 
 struct StringInterner {
     arena: ManuallyDrop<Bump>,
@@ -38,26 +38,6 @@ impl StringInterner {
 
     fn get(&self, idx: u32) -> &str {
         self.strings.get_index(idx as usize).unwrap()
-    }
-}
-
-struct GNUHasher(u32);
-
-impl Default for GNUHasher {
-    fn default() -> Self {
-        GNUHasher(5381)
-    }
-}
-
-impl Hasher for GNUHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = (self.0 << 5).wrapping_add(self.0).wrapping_add(*byte as u32);
-        }
-    }
-
-    fn finish(&self) -> u64 {
-        self.0 as u64
     }
 }
 
