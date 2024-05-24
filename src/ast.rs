@@ -131,6 +131,7 @@ pub struct Struct {
 pub struct FieldDef {
     pub name: Ident,
     pub ty: TypeExpr,
+    pub default_init: Option<Box<Expr>>,
     pub span: Range<usize>,
     pub node_id: NodeId
 }

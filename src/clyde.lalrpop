@@ -55,8 +55,8 @@ StructDef: ast::Item = {
 };
 
 StructField: ast::FieldDef = {
-    <sloc:@L> <ty:TypeExpr> <name:Ident> ";" <eloc:@R> => ast::FieldDef {
-        name, ty, span: (sloc..eloc), node_id: ctxt.make_node_id(),
+    <sloc:@L> <ty:TypeExpr> <name:Ident> <default_init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::FieldDef {
+        name, ty, default_init: default_init.map(Box::new), span: (sloc..eloc), node_id: ctxt.make_node_id(),
     }
 };
 

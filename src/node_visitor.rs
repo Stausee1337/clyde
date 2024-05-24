@@ -22,6 +22,7 @@ pub trait MutVisitor: Sized {
 
     fn visit_field_def(&mut self, field_def: &mut FieldDef) {
         self.visit_ty_expr(&mut field_def.ty);
+        visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
     }
 
     fn visit_expr(&mut self, expr: &mut Expr) {

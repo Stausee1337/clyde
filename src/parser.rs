@@ -42,7 +42,7 @@ pub fn parse_file<'a>(file: &Path, sess: &interface::Session) -> Result<ast::Top
 }
 
 fn parse(tokens: Vec<Token>, mut ctxt: ParseContext) -> ast::TopLevel {
-    wpascal::TopLevelParser::new()
+    clyde::TopLevelParser::new()
         .parse(
             &mut ctxt,
             tokens
@@ -51,6 +51,6 @@ fn parse(tokens: Vec<Token>, mut ctxt: ParseContext) -> ast::TopLevel {
     .unwrap()
 }
 
-mod wpascal {
-    include!(concat!(env!("OUT_DIR"), "/wpascal.rs"));
+mod clyde {
+    include!(concat!(env!("OUT_DIR"), "/clyde.rs"));
 }

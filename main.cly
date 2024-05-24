@@ -7,6 +7,6 @@ struct User {
 void exit(int code);
 void println(*str message);
 
-void main() {
+int main() {
     println("Hello, World");
 }
