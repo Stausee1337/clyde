@@ -30,7 +30,7 @@ impl From<DefinitonKind> for NameSpace {
     fn from(value: DefinitonKind) -> Self {
         use DefinitonKind as D;
         match value {
-            D::Struct => NameSpace::Type,
+            D::Struct | D::Enum => NameSpace::Type,
             D::Function => NameSpace::Function,
             D::Global | D::Const => NameSpace::Variable,
         }
@@ -71,7 +71,7 @@ impl ResolutionState {
 
     fn define(&mut self, kind: DefinitonKind, name: ast::Ident, site: ast::NodeId) {
         let space = match kind {
-            DefinitonKind::Struct => &mut self.types,
+            DefinitonKind::Struct | DefinitonKind::Enum => &mut self.types,
             DefinitonKind::Function => &mut self.functions,
             DefinitonKind::Global | DefinitonKind::Const => &mut self.globals,
         };
@@ -111,6 +111,10 @@ impl<'r> MutVisitor for TypeResolutionPass<'r> {
                 self.resolution.define(DefinitonKind::Struct, item.ident.clone(), item.node_id);
                 node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
                 node_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
+            }, 
+            ast::ItemKind::Enum(en) => {
+                self.resolution.define(DefinitonKind::Enum, item.ident.clone(), item.node_id);
+                node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
                 self.resolution.define(DefinitonKind::Function, item.ident.clone(), item.node_id);
@@ -275,12 +279,38 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
                 }
                 node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
             }
+            ast::ItemKind::Enum(en) => {
+                if let Some(extends) = &en.extends {
+                    self.resolution.diagnostics
+                        .fatal("enum type extension is not supported yet")
+                        .with_span(extends.span.start..extends.span.end);
+                }
+                node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
+            }
             ast::ItemKind::GlobalVar(ty, expr, _) => {
                 self.visit_ty_expr(ty);
                 node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
         }
+    }
+
+    fn visit_variant_def(&mut self, variant_def: &mut ast::VariantDef) {
+        if let Some(sset) = &variant_def.sset {
+            self.resolution.diagnostics
+                .fatal("setting explicit enum tag values is not supported yet")
+                .with_span(sset.span.start..sset.span.end);
+        }
+    }
+
+    fn visit_field_def(&mut self, field_def: &mut ast::FieldDef) {
+        if let Some(default_init) = &field_def.default_init {
+            self.resolution.diagnostics
+                .fatal("struct default initalizers are not supported yet")
+                .with_span(default_init.span.start..field_def.span.end);
+        }
+        self.visit_ty_expr(&mut field_def.ty);
+        node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
     }
 
     fn visit_stmt(&mut self, stmt: &mut ast::Stmt) {

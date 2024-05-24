@@ -4,6 +4,12 @@ struct User {
     int age;
 }
 
+enum Gender: u32 {
+    Male,
+    Female,
+    NonBinary
+}
+
 void exit(int code);
 void println(*str message);
 

@@ -12,8 +12,8 @@ pub struct AdtDefInner {
 
 pub struct AdtDef<'tcx>(&'tcx AdtDefInner);
 
-pub enum TyKind {
+pub enum TyKind<'tcx> {
     Primitive(Primitive),
-    Adt()
+    Adt(AdtDef<'tcx>)
 }
 

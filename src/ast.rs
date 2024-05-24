@@ -62,6 +62,7 @@ pub enum DefinitonKind {
     Global,
     Function,
     Struct,
+    Enum,
     Const,
 }
 

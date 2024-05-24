@@ -26,6 +26,7 @@ Items: Vec<ast::Item> = {
 Item: ast::Item = {
     GlobalDef,
     StructDef,
+    EnumDef,
     FunctionDef,
 };
 
