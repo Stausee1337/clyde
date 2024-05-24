@@ -4,7 +4,7 @@ struct User {
     int age;
 }
 
-enum Gender: u32 {
+enum Sex {
     Male,
     Female,
     NonBinary
@@ -15,4 +15,5 @@ void println(*str message);
 
 int main() {
     println("Hello, World");
+    return 0;
 }

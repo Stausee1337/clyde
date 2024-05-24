@@ -58,11 +58,5 @@ lex -> parse -> resolve -> type normalisation
 Convert all types from ast::TypeExpr into &'tcx types::Ty, in order to NORMALIZE the types
 
 ## Roadmap UNTIL Sunday (then I'll pause this compiler again)
-
-- Type Normalisation
-- It describes a single defined type like struct, enum, etc ...
-- Collect all the types into internal &'tcx types::Ty repr
-- Introduce three TyKind variants: (Primtive, Adt, Fn)
-
-- Add enum type
+- Introduce global context
 

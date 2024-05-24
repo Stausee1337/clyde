@@ -13,6 +13,7 @@ mod interface;
 mod resolve;
 mod types;
 mod normalization;
+mod context;
 
 fn main() -> ExitCode {
     let options = match interface::parse_argv_options(env::args()) {

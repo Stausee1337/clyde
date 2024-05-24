@@ -26,15 +26,8 @@ impl Hash for Ident {
 }
 
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DefIndex(pub u32);
-
-impl std::fmt::Debug for DefIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DefIndex({})", self.0)?;
-        Ok(())
-    }
-}
 
 impl index_vec::Idx for DefIndex {
     fn index(self) -> usize {
@@ -46,7 +39,7 @@ impl index_vec::Idx for DefIndex {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct DefId {
     index: DefIndex
 }
