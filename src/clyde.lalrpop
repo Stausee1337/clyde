@@ -47,7 +47,7 @@ StructDef: ast::Item = {
         };
         ast::Item {
             ident,
-            kind: ast::ItemKind::Struct(Box::new(stc)),
+            kind: ast::ItemKind::Struct(stc),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -57,6 +57,28 @@ StructDef: ast::Item = {
 StructField: ast::FieldDef = {
     <sloc:@L> <ty:TypeExpr> <name:Ident> <default_init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::FieldDef {
         name, ty, default_init: default_init.map(Box::new), span: (sloc..eloc), node_id: ctxt.make_node_id(),
+    }
+};
+
+EnumDef: ast::Item = {
+    <sloc:@L> "enum" <ident:Ident> <extends:(":" <TypeExpr>)?> "{" <v:OneOrMore<VariantDef, ",">> "}" <eloc:@R> => {
+        let en = ast::Enum {
+            extends: extends.map(Box::new),
+            variants: v,
+            attributes: vec![]
+        };
+        ast::Item {
+            ident,
+            kind: ast::ItemKind::Enum(en),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    }
+};
+
+VariantDef: ast::VariantDef = {
+    <sloc:@L> <name:Ident> <sset:("=" <Expression<"all">>)?> <eloc:@R> => ast::VariantDef {
+        name, sset: sset.map(Box::new), span: (sloc..eloc), node_id: ctxt.make_node_id(),
     }
 };
 
@@ -751,6 +773,7 @@ extern {
         "if" => lexer::TokenKind::If,
         "else" => lexer::TokenKind::Else,
         "struct" => lexer::TokenKind::Struct,
+        "enum" => lexer::TokenKind::Enum,
         "return" => lexer::TokenKind::Return,
         "break" => lexer::TokenKind::Break,
         "continue" => lexer::TokenKind::Continue,

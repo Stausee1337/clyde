@@ -115,7 +115,8 @@ pub struct Item {
 #[derive(Debug)]
 pub enum ItemKind {
     Function(Box<Function>),
-    Struct(Box<Struct>),
+    Struct(Struct),
+    Enum(Enum),
     GlobalVar(Box<TypeExpr>, Option<Box<Expr>>, bool),
     Err
 }
@@ -132,6 +133,21 @@ pub struct FieldDef {
     pub name: Ident,
     pub ty: TypeExpr,
     pub default_init: Option<Box<Expr>>,
+    pub span: Range<usize>,
+    pub node_id: NodeId
+}
+
+#[derive(Debug)]
+pub struct Enum {
+    pub extends: Option<Box<TypeExpr>>,
+    pub variants: Vec<VariantDef>,
+    pub attributes: Vec<Attribute>
+}
+
+#[derive(Debug)]
+pub struct VariantDef {
+    pub name: Ident,
+    pub sset: Option<Box<Expr>>,
     pub span: Range<usize>,
     pub node_id: NodeId
 }

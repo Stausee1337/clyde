@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self};
+use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef};
 
 
 pub trait MutVisitor: Sized {
@@ -23,6 +23,10 @@ pub trait MutVisitor: Sized {
     fn visit_field_def(&mut self, field_def: &mut FieldDef) {
         self.visit_ty_expr(&mut field_def.ty);
         visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
+    }
+    
+    fn visit_variant_def(&mut self, variant_def: &mut VariantDef) {
+        visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
     }
 
     fn visit_expr(&mut self, expr: &mut Expr) {
@@ -119,8 +123,12 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
             visit_fn(func, vis);
         }
         ItemKind::Struct(stc) => {
-            visit_vec(&mut stc.fields, |field_def| vis.visit_field_def(field_def));
             visit_vec(&mut stc.generics, |generic| vis.visit_generic_param(generic));
+            visit_vec(&mut stc.fields, |field_def| vis.visit_field_def(field_def));
+        }
+        ItemKind::Enum(en) => {
+            visit_option(&mut en.extends, |extends| vis.visit_ty_expr(extends));
+            visit_vec(&mut en.variants, |variant_def| vis.visit_variant_def(variant_def));
         }
         ItemKind::GlobalVar(ty, expr, _) => {
             vis.visit_ty_expr(ty);

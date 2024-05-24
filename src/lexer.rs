@@ -129,6 +129,8 @@ pub enum TokenKind {
     Else,
     #[token("struct")]
     Struct,
+    #[token("enum")]
+    Enum,
     #[token("return")]
     Return,
     #[token("break")]
