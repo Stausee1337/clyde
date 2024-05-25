@@ -1,9 +1,8 @@
 
-use std::{mem::transmute, path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, collections::HashMap, cell::RefCell, ffi::OsStr};
+use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr};
 
 use crate::{
-    diagnostics::{Diagnostics, DiagnosticsData},
-    parser, ast
+    parser, ast, context::GlobalCtxt
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -13,9 +12,6 @@ pub struct Cfg {
 }
 
 pub struct Session {
-    diagnostic_arena: bumpalo::Bump,
-    diagnostics_file_map: RefCell<HashMap<&'static str, Diagnostics>>,
-
     input: PathBuf,
 
     output_dir: PathBuf,
@@ -26,22 +22,6 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn create_diagnostics_for_file<'s>(&self, filename: &'s str, source: &'s str) -> Diagnostics {
-        let filename = unsafe { 
-            transmute::<&mut str, &str>(self.diagnostic_arena.alloc_str(filename))
-        };
-        let source = unsafe { 
-            transmute::<&mut str, &str>(self.diagnostic_arena.alloc_str(source))
-        };
-
-        let data = self.diagnostic_arena.alloc(DiagnosticsData::new(filename, source));
-        let data = unsafe { transmute::<&mut DiagnosticsData, &DiagnosticsData>(data) };
-
-        let diagnostics = Diagnostics(data);
-        self.diagnostics_file_map.borrow_mut().insert(filename, diagnostics);
-
-        diagnostics
-    }
 }
 
 pub struct Options {
@@ -56,9 +36,6 @@ pub struct Options {
 impl Options {
     pub fn create_compile_session(self) -> Session {
         Session {
-            diagnostic_arena: bumpalo::Bump::new(),
-            diagnostics_file_map: Default::default(),
-
             input: self.input,
             output_dir: self.output_dir.unwrap_or_else(|| self.working_dir.clone()),
             output_file: self.output_file.unwrap_or_else(|| self.working_dir.clone()),
@@ -189,8 +166,8 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    pub fn parse(&mut self) -> Result<ast::TopLevel, Diagnostics> {
-        parser::parse_file(&self.sess.input, &self.sess)
+    pub fn parse<'tcx>(&mut self, gcx: &'tcx GlobalCtxt<'tcx>) -> Result<ast::TopLevel, ()> {
+        parser::parse_file(gcx, &self.sess.input)
     }
 }
 

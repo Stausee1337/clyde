@@ -4,13 +4,12 @@ use crate::{
     parser::ParseContext as Context,
 };
 
-grammar<'a>(ctxt: &'a mut Context);
+grammar<'a, 'tcx>(ctxt: &'a mut Context<'tcx>);
 
 pub TopLevel: ast::TopLevel = {
     <start:@L> <items:Items> <end:@R> => ast::TopLevel {
         items,
         span: (start..end),
-        diagnostics: ctxt.diagnostics,
         node_id: ctxt.make_node_id(),
     }
 };
@@ -140,7 +139,7 @@ LocalStatement: ast::Stmt = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <mut ty:SimpleTypeExpr> <name:Ident> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => {
+    <sloc:@L> <ty:SimpleTypeExpr> <name:Ident> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => {
         let pat = ast::Pattern {
             span: name.span.clone(),
             kind: ast::PatternKind::Ident(name),

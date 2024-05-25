@@ -3,8 +3,11 @@ use std::mem::transmute;
 use std::ops::{Range, Deref};
 use std::fmt::Write;
 use std::os::raw::c_void;
+use std::hash::Hash;
 
 use bitflags::bitflags;
+
+use crate::context::GlobalCtxt;
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -33,14 +36,14 @@ bitflags! {
 }
 
 pub struct DiagnosticsData {
-    pub source: &'static str,
-    pub filename: &'static str,
+    pub source: String,
+    pub filename: String,
     events: RefCell<Vec<Reported>>,
     flags: RefCell<HappenedEvents>
 }
 
 impl DiagnosticsData {
-    pub fn new(filename: &'static str, source: &'static str) -> Self {
+    pub fn new(filename: String, source: String) -> Self {
         Self {
             filename,
             source,
@@ -112,9 +115,9 @@ impl DiagnosticsData {
 }
 
 #[derive(Clone, Copy)]
-pub struct Diagnostics(pub &'static DiagnosticsData);
+pub struct Diagnostics<'tcx>(&'tcx DiagnosticsData);
 
-impl std::cmp::PartialEq for Diagnostics {
+impl<'tcx> std::cmp::PartialEq for Diagnostics<'tcx> {
     fn eq(&self, other: &Self) -> bool {
         unsafe {
             let a = transmute::<Diagnostics, *const c_void>(*self);
@@ -125,15 +128,15 @@ impl std::cmp::PartialEq for Diagnostics {
     }
 }
 
-impl std::cmp::Eq for Diagnostics {}
+impl<'tcx> std::cmp::Eq for Diagnostics<'tcx> {}
 
-impl std::fmt::Debug for Diagnostics {
+impl<'tcx> std::fmt::Debug for Diagnostics<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Diagnostics({:?})", self.filename)
     }
 }
 
-impl<'a> Deref for Diagnostics {
+impl<'tcx> Deref for Diagnostics<'tcx> {
     type Target = DiagnosticsData;
 
     fn deref(&self) -> &Self::Target {
@@ -230,5 +233,47 @@ impl SourcePosition {
     fn line<'s>(&self, source: &'s str) -> &'s str {
         let line = &source[self.bol+1..];
         &line[..line.find('\n').unwrap_or(line.len() - 1)]
+    }
+}
+
+impl<'tcx> GlobalCtxt<'tcx> {
+    pub fn diagnostics_for(&self, filename: String, source: String) -> Diagnostics<'tcx> {
+        use crate::context::Interner;
+        Diagnostics(
+            self.interners.diagnostics.intern(filename, |filename| {
+                self.interners.alloc(DiagnosticsData::new(filename, source))
+            })
+        )
+    }
+
+    pub fn all_diagnostics(&'tcx self) -> impl Iterator<Item = Diagnostics<'tcx>> {
+        struct DiagnosticsIterator<'tcx> {
+            ctxt: &'tcx GlobalCtxt<'tcx>,
+            hashes: Vec<u64>,
+            index: usize
+        }
+
+        impl<'tcx> Iterator for DiagnosticsIterator<'tcx> {
+            type Item = Diagnostics<'tcx>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.index >= self.hashes.len() {
+                    return None;
+                }
+                let diag = *self.ctxt.interners.diagnostics.borrow().get(&self.hashes[self.index]).unwrap();
+                self.index += 1;
+                Some(Diagnostics(unsafe { transmute::<&DiagnosticsData, &'tcx DiagnosticsData>(diag) }))
+            }
+        }
+
+        DiagnosticsIterator {
+            ctxt: self,
+            hashes: self.interners.diagnostics.borrow().keys().map(|k| *k).collect(),
+            index: 0
+        }
+    }
+
+    pub fn has_fatal_errors(&'tcx self) -> bool {
+        self.all_diagnostics().any(|diag| diag.has_fatal())
     }
 }

@@ -3,6 +3,8 @@ use std::{env, process::ExitCode};
 
 use interface::build_compiler;
 
+use crate::context::GlobalCtxt;
+
 mod ast;
 mod lexer;
 mod parser;
@@ -24,16 +26,14 @@ fn main() -> ExitCode {
     let sess = options.create_compile_session();
     
     build_compiler(sess, |compiler| {
-        let mut ast = compiler.parse().map_err(|diagnostics| {
-            diagnostics.print_diagnostics();
-            ()
-        })?;
+        let gcx = GlobalCtxt::new();
+        let mut ast = compiler.parse(&gcx)?;
     
-        resolve::run_resolve(&mut ast);
+        resolve::run_resolve(&gcx, &mut ast);
         println!("{:#?}", ast);
 
-        if ast.diagnostics.has_fatal() {
-            ast.diagnostics.print_diagnostics();
+        if gcx.has_fatal_errors() {
+            gcx.all_diagnostics().for_each(|diag| diag.print_diagnostics());
             return Ok::<ExitCode, ()>(ExitCode::FAILURE);
         }
 
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
 
         // IR generation
 
-        ast.diagnostics.print_diagnostics();
+        gcx.all_diagnostics().for_each(|diag| diag.print_diagnostics());
 
         Ok::<ExitCode, ()>(ExitCode::SUCCESS)
     }).unwrap_or(ExitCode::FAILURE)

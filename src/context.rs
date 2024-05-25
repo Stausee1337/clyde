@@ -1,33 +1,12 @@
-use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, mem::transmute, ops::Deref};
+use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref};
 
-use bumpalo::Bump;
 use ahash::AHasher;
 
-use crate::types::{TyKind, Ty, AdtDef, AdtDefInner};
+use crate::types::CtxtInterners;
 
-macro_rules! interners {
-    ($($interner:ident : $fn:ident($ty:ty) -> $ret:ident;)*) => {
-        $(
-            impl<'tcx> TyCtxt<'tcx> {
-                pub fn $fn(&self, value: $ty) -> $ret<'tcx> {
-                    $ret(self.interners.$interner.intern(value, |value| {
-                        unsafe {
-                            transmute::<&mut $ty, &'tcx $ty>(self.interners.arena.alloc(value))
-                        }
-                    }))
-                }
-            }
-        )*
-    };
-}
+pub type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
 
-interners! {
-    adt_defs: mk_adt_from_data(AdtDefInner) -> AdtDef;
-}
-
-type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
-
-trait Interner<V> {
+pub trait Interner<V> {
     fn intern<Q: Hash>(&self, v: Q, make: impl FnOnce(Q) -> V) -> V;
 }
 
@@ -53,24 +32,14 @@ fn make_hash<H: Hash>(hashable: &H) -> u64 {
     hasher.finish()
 }
 
-pub struct CtxtInterners<'tcx> {
-    arena: Bump,
-    types: SharedHashMap<&'tcx TyKind<'tcx>>,
-    adt_defs: SharedHashMap<&'tcx AdtDefInner>
-}
-
-impl<'tcx> CtxtInterners<'tcx> {
-    pub fn intern_ty(&self, kind: TyKind<'tcx>) -> Ty<'tcx> {
-        Ty(self.types.intern(kind, |kind| {
-            unsafe {
-                transmute::<&mut TyKind<'tcx>, &'tcx TyKind<'tcx>>(self.arena.alloc(kind))
-            }
-        }))
-    }
-}
-
 pub struct GlobalCtxt<'tcx> {
     pub interners: CtxtInterners<'tcx>
+}
+
+impl<'tcx> GlobalCtxt<'tcx> {
+    pub fn new() -> Self {
+        Self { interners: CtxtInterners::default() }
+    }
 }
 
 pub struct TyCtxt<'tcx> {

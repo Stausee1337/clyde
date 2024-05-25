@@ -1,6 +1,9 @@
+use std::mem::transmute;
+
+use bumpalo::Bump;
 use bitflags::bitflags;
 
-use crate::{ast::DefId, symbol::Symbol};
+use crate::{ast::DefId, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}, diagnostics::DiagnosticsData};
 
 bitflags! {
     #[derive(Hash)]
@@ -8,6 +11,44 @@ bitflags! {
         const ENUM = 0b01;
         const STRUCT = 0b10;
         const UNION = 0b11;
+    }
+}
+
+macro_rules! interners {
+    ($($interner:ident : $fn:ident($ty:ty) -> $ret:ident;)*) => {
+        $(
+            impl<'tcx> TyCtxt<'tcx> {
+                pub fn $fn(&self, value: $ty) -> $ret<'tcx> {
+                    $ret(self.interners.$interner.intern(value, |value| {
+                        self.interners.alloc(value)
+                    }))
+                }
+            }
+        )*
+    };
+}
+
+interners! {
+    adt_defs: mk_adt_from_data(AdtDefInner) -> AdtDef;
+}
+
+#[derive(Default)]
+pub struct CtxtInterners<'tcx> {
+    arena: Bump,
+    types: SharedHashMap<&'tcx TyKind<'tcx>>,
+    adt_defs: SharedHashMap<&'tcx AdtDefInner>,
+    pub diagnostics: SharedHashMap<&'tcx DiagnosticsData>
+}
+
+impl<'tcx> CtxtInterners<'tcx> {
+    pub fn alloc<'r, T>(&self, val: T) -> &'r T {
+        unsafe { transmute::<&mut T, &'r T>(self.arena.alloc(val)) }
+    }
+
+    pub fn intern_ty(&self, kind: TyKind<'tcx>) -> Ty<'tcx> {
+        Ty(self.types.intern(kind, |kind| {
+            self.alloc(kind)
+        }))
     }
 }
 
@@ -39,7 +80,7 @@ pub struct FieldDef {
 }
 
 #[derive(Hash)]
-pub struct AdtDef<'tcx>(pub &'tcx AdtDefInner);
+pub struct AdtDef<'tcx>(&'tcx AdtDefInner);
 
 #[derive(Hash)]
 pub enum TyKind<'tcx> {
@@ -47,7 +88,7 @@ pub enum TyKind<'tcx> {
     Adt(AdtDef<'tcx>)
 }
 
-pub struct Ty<'tcx>(pub &'tcx TyKind<'tcx>);
+pub struct Ty<'tcx>(&'tcx TyKind<'tcx>);
 
 #[repr(u32)]
 #[derive(Hash)]

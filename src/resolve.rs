@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol};
+use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::GlobalCtxt};
 
 /// AST (&tree) 
 ///     |          |
@@ -50,16 +50,16 @@ struct Local {
     span: Range<usize>,
 }
 
-struct ResolutionState {
-    diagnostics: Diagnostics,
+struct ResolutionState<'tcx> {
+    diagnostics: Diagnostics<'tcx>,
     types: HashMap<Symbol, Declaration>,
     functions: HashMap<Symbol, Declaration>,
     globals: HashMap<Symbol, Declaration>,
     declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
 }
 
-impl ResolutionState {
-    fn new(diagnostics: Diagnostics) -> ResolutionState {
+impl<'tcx> ResolutionState<'tcx> {
+    fn new(diagnostics: Diagnostics<'tcx>) -> ResolutionState<'tcx> {
         ResolutionState {
             diagnostics,
             types: Default::default(),
@@ -90,12 +90,12 @@ impl ResolutionState {
     }
 }
 
-struct TypeResolutionPass<'r> {
-    resolution: &'r mut ResolutionState,
+struct TypeResolutionPass<'r, 'tcx> {
+    resolution: &'r mut ResolutionState<'tcx>,
 }
 
-impl<'r> TypeResolutionPass<'r> {
-    fn new(resolution: &'r mut ResolutionState) -> Self {
+impl<'r, 'tcx> TypeResolutionPass<'r, 'tcx> {
+    fn new(resolution: &'r mut ResolutionState<'tcx>) -> Self {
         Self { resolution }
     }
 
@@ -104,7 +104,7 @@ impl<'r> TypeResolutionPass<'r> {
     }
 }
 
-impl<'r> MutVisitor for TypeResolutionPass<'r> {
+impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
             ast::ItemKind::Struct(stc) => {
@@ -137,13 +137,13 @@ struct Rib {
     symspace: HashMap<Symbol, Local>,
 }
 
-struct NameResolutionPass<'r> {
-    resolution: &'r mut ResolutionState,
+struct NameResolutionPass<'r, 'tcx> {
+    resolution: &'r mut ResolutionState<'tcx>,
     ribs: Vec<Rib>
 }
 
-impl<'r> NameResolutionPass<'r> {
-    fn new(resolution: &'r mut ResolutionState) -> Self {
+impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
+    fn new(resolution: &'r mut ResolutionState<'tcx>) -> Self {
         Self {
             resolution,
             ribs: Default::default()
@@ -246,7 +246,7 @@ impl<'r> NameResolutionPass<'r> {
     }
 }
 
-impl<'r> MutVisitor for NameResolutionPass<'r> {
+impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
             ast::ItemKind::Function(function) => {
@@ -464,8 +464,9 @@ impl<'r> MutVisitor for NameResolutionPass<'r> {
     }
 }
 
-pub fn run_resolve(tree: &mut ast::TopLevel) {
-    let mut resolution = ResolutionState::new(tree.diagnostics);
+pub fn run_resolve<'tcx>(gcx: &'tcx GlobalCtxt<'tcx>, tree: &mut ast::TopLevel) {
+    let diagnostics = todo!();
+    let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
     rpass.resolve(tree);

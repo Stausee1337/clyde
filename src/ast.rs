@@ -95,7 +95,6 @@ pub struct TopLevel {
     pub items: Vec<Item>,
     pub span: Range<usize>,
     pub node_id: NodeId,
-    pub diagnostics: Diagnostics
 }
 
 #[derive(Debug)]
