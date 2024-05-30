@@ -1,14 +1,29 @@
 
-use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr};
+use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File};
 
 use crate::{
-    parser, ast, context::GlobalCtxt
+    parser, ast, context::TyCtxt
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Cfg {
     run_output: bool
+}
+
+pub const INPUT_FILE_IDX: FileIdx = FileIdx(0);
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FileIdx(pub u32);
+
+impl index_vec::Idx for FileIdx {
+    fn index(self) -> usize {
+        return self.0 as usize
+    }
+
+    fn from_usize(idx: usize) -> Self {
+        Self(idx as u32)
+    }
 }
 
 pub struct Session {
@@ -19,9 +34,6 @@ pub struct Session {
     working_dir: PathBuf,
 
     config: Cfg,
-}
-
-impl Session {
 }
 
 pub struct Options {
@@ -141,6 +153,19 @@ fn matches_to_config(matches: &getopts::Matches) -> Cfg {
     }
 }
 
+fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
+    let mut result = String::new();
+    File::open(filename)?
+        .read_to_string(&mut result)?;
+    Ok(result)
+}
+
+pub fn file_source<'tcx>(tcx: TyCtxt<'tcx>, idx: FileIdx) -> Result<&'tcx str, std::io::ErrorKind> {
+    let path = tcx.file_path(idx);
+    let source = read_entire_file(path).map_err(|err| err.kind())?;
+    Ok(tcx.alloc_str(&source))
+}
+
 macro_rules! optflag {
     ($shortopt:literal, $fullopt:literal, $desc:literal) => {
         |parser| parser.optflag($shortopt, $fullopt, $desc)
@@ -166,8 +191,8 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    pub fn parse<'tcx>(&mut self, gcx: &'tcx GlobalCtxt<'tcx>) -> Result<ast::TopLevel, ()> {
-        parser::parse_file(gcx, &self.sess.input)
+    pub fn parse<'tcx>(&mut self, tcx: TyCtxt<'tcx>) -> Result<ast::TopLevel, ()> {
+        parser::parse_file(tcx, INPUT_FILE_IDX)
     }
 }
 

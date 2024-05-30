@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::GlobalCtxt};
+use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::{GlobalCtxt, TyCtxt}};
 
 /// AST (&tree) 
 ///     |          |
@@ -464,7 +464,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     }
 }
 
-pub fn run_resolve<'tcx>(gcx: &'tcx GlobalCtxt<'tcx>, tree: &mut ast::TopLevel) {
+pub fn run_resolve<'tcx>(tcx: TyCtxt<'tcx>, tree: &mut ast::TopLevel) {
     let diagnostics = todo!();
     let mut resolution = ResolutionState::new(diagnostics);
 

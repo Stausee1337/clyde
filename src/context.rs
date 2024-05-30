@@ -1,8 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref};
+use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref, mem::transmute};
 
 use ahash::AHasher;
 
-use crate::types::CtxtInterners;
+use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}};
 
 pub type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
 
@@ -33,24 +33,46 @@ fn make_hash<H: Hash>(hashable: &H) -> u64 {
 }
 
 pub struct GlobalCtxt<'tcx> {
-    pub interners: CtxtInterners<'tcx>
+    arena: bumpalo::Bump,
+    pub interners: CtxtInterners<'tcx>,
+    pub providers: Providers,
+    pub caches: QueryCaches<'tcx>,
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
     pub fn new() -> Self {
-        Self { interners: CtxtInterners::default() }
+        Self {
+            arena: bumpalo::Bump::new(),
+            interners: CtxtInterners::default(),
+            providers: Providers::default(),
+            caches: QueryCaches::default()
+        }
+    }
+
+    pub fn enter<R, F: FnOnce(TyCtxt<'tcx>) -> R>(&'tcx self, do_work: F) -> R {
+        let tcx = TyCtxt { gcx: self };
+        do_work(tcx)
+    }
+
+    pub fn alloc<T>(&self, val: T) -> &'tcx T {
+        unsafe { transmute::<&mut T, &'tcx T>(self.arena.alloc(val)) }
+    }
+
+    pub fn alloc_str(&self, string: &str) -> &'tcx str {
+        unsafe { transmute::<&mut str, &'tcx str>(self.arena.alloc_str(string)) }
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct TyCtxt<'tcx> {
-    ctxt: &'tcx GlobalCtxt<'tcx>
+    gcx: &'tcx GlobalCtxt<'tcx>
 }
 
 impl<'tcx> Deref for TyCtxt<'tcx> {
     type Target = GlobalCtxt<'tcx>;
 
     fn deref(&self) -> &Self::Target {
-        self.ctxt
+        self.gcx
     }
 }
 

@@ -3,6 +3,7 @@ use std::hash::Hash;
 use lalrpop_util::{ErrorRecovery, ParseError};
 
 use crate::diagnostics::{JoinToHumanReadable, Diagnostics};
+use crate::interface::{FileIdx, INPUT_FILE_IDX};
 use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
@@ -41,12 +42,13 @@ impl index_vec::Idx for DefIndex {
 
 #[derive(Debug, Clone, Copy, Hash)]
 pub struct DefId {
-    index: DefIndex
+    index: DefIndex,
+    file: FileIdx
 }
 
 impl From<DefIndex> for DefId {
     fn from(index: DefIndex) -> Self {
-        Self { index }
+        Self { index, file: INPUT_FILE_IDX }
     }
 }
 

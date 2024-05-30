@@ -1,6 +1,4 @@
-use std::{path::Path, fs::File, io::{Read, self}};
-
-use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, interface::path_to_string, context::GlobalCtxt};
+use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, interface::{self, FileIdx}, context::TyCtxt};
 
 struct ParseContext<'tcx> {
     pub diagnostics: Diagnostics<'tcx>,
@@ -14,22 +12,14 @@ impl<'tcx> ParseContext<'tcx> {
     }
 }
 
-fn read_entire_file(filename: &Path) -> io::Result<String> {
-    let mut result = String::new();
-    File::open(filename)?
-        .read_to_string(&mut result)?;
-    Ok(result)
-}
-
-pub fn parse_file<'a, 'tcx>(gcx: &'tcx GlobalCtxt<'tcx>, file: &Path) -> Result<ast::TopLevel, ()> {
-    let contents = read_entire_file(file)
+pub fn parse_file<'a, 'tcx>(tcx: TyCtxt<'tcx>, file: FileIdx) -> Result<ast::TopLevel, ()> {
+    let contents = tcx.file_source(file) 
         .map_err(|err| {
-            let file = unsafe { path_to_string(file) };
+            let file = unsafe { interface::path_to_string(tcx.file_path(file)) };
             eprintln!("ERROR: couldn't read {file}: {err}");
         })?;
 
-    let file = unsafe { path_to_string(file) };
-    let diagnostics = gcx.diagnostics_for(file, contents.clone());
+    let diagnostics = tcx.diagnostics_for_file(interface::INPUT_FILE_IDX);
 
     let tokens = lexer::lex_input_string(&contents).map_err(|err| {
         diagnostics.error(err.1).with_span(err.0);

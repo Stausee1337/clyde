@@ -16,6 +16,7 @@ mod resolve;
 mod types;
 mod normalization;
 mod context;
+mod queries;
 
 fn main() -> ExitCode {
     let options = match interface::parse_argv_options(env::args()) {
@@ -27,9 +28,14 @@ fn main() -> ExitCode {
     
     build_compiler(sess, |compiler| {
         let gcx = GlobalCtxt::new();
-        let mut ast = compiler.parse(&gcx)?;
+
+        let ast = gcx.enter(|tcx| {
+            let mut ast = compiler.parse(tcx)?;
+            resolve::run_resolve(tcx, &mut ast);
+
+            Ok(ast)
+        })?;
     
-        resolve::run_resolve(&gcx, &mut ast);
         println!("{:#?}", ast);
 
         if gcx.has_fatal_errors() {

@@ -37,7 +37,6 @@ pub struct CtxtInterners<'tcx> {
     arena: Bump,
     types: SharedHashMap<&'tcx TyKind<'tcx>>,
     adt_defs: SharedHashMap<&'tcx AdtDefInner>,
-    pub diagnostics: SharedHashMap<&'tcx DiagnosticsData>
 }
 
 impl<'tcx> CtxtInterners<'tcx> {
