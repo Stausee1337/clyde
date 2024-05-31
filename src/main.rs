@@ -39,7 +39,7 @@ fn main() -> ExitCode {
         println!("{:#?}", ast);
 
         if gcx.has_fatal_errors() {
-            gcx.all_diagnostics().for_each(|diag| diag.print_diagnostics());
+            gcx.all_diagnostics(|diag| diag.print_diagnostics());
             return Ok::<ExitCode, ()>(ExitCode::FAILURE);
         }
 
@@ -50,7 +50,7 @@ fn main() -> ExitCode {
 
         // IR generation
 
-        gcx.all_diagnostics().for_each(|diag| diag.print_diagnostics());
+        gcx.all_diagnostics(|diag| diag.print_diagnostics());
 
         Ok::<ExitCode, ()>(ExitCode::SUCCESS)
     }).unwrap_or(ExitCode::FAILURE)

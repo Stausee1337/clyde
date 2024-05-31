@@ -80,7 +80,8 @@ define_queries! {
 }
 
 providers! {
-    @file_source(interface::file_source)
+    @file_source(interface::file_source),
+    @diagnostics_for_file(diagnostics::create_for_file)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(
@@ -108,7 +109,7 @@ consider feeding the query first, using feed.{name}(...) on its associated feeda
     )
 }
 
-mod caches {
+pub mod caches {
     use std::{fmt::Debug, hash::Hash, collections::HashMap, cell::RefCell};
 
     use index_vec::IndexVec;

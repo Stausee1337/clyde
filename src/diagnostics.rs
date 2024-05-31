@@ -9,6 +9,7 @@ use bitflags::bitflags;
 
 use crate::context::{GlobalCtxt, TyCtxt};
 use crate::interface::{FileIdx, self};
+use crate::queries::caches::{QueryCache, Key};
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -242,23 +243,17 @@ impl SourcePosition {
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
-    pub fn all_diagnostics(&'tcx self) -> impl Iterator<Item = Diagnostics<'tcx>> {
-        struct DiagnosticsIterator<'tcx> {
-            gcx: &'tcx GlobalCtxt<'tcx>
-        }
-
-        impl<'tcx> Iterator for DiagnosticsIterator<'tcx> {
-            type Item = Diagnostics<'tcx>;
-
-            fn next(&mut self) -> Option<Self::Item> {
-                todo!()
-            }
-        }
-
-        DiagnosticsIterator { gcx: self }
+    pub fn all_diagnostics<F: FnMut(Diagnostics<'tcx>)>(&'tcx self, mut f: F) {
+        self.caches.diagnostics_for_file.iter(&mut |_, d| f(*d));
     }
 
     pub fn has_fatal_errors(&'tcx self) -> bool {
-        self.all_diagnostics().any(|diag| diag.has_fatal())
+        let mut has_fatal_errors = false;
+        self.all_diagnostics(|diag| has_fatal_errors |= diag.has_fatal());
+        has_fatal_errors
     }
+}
+
+pub fn create_for_file<'tcx>(tcx: TyCtxt<'tcx>, file: interface::FileIdx) -> Diagnostics<'tcx> {
+    Diagnostics(tcx.alloc(DiagnosticsData::new(tcx, file)))
 }
