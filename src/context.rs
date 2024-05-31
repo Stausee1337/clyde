@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref,
 
 use ahash::AHasher;
 
-use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}};
+use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}, interface::{Session, self}};
 
 pub type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
 
@@ -34,14 +34,16 @@ fn make_hash<H: Hash>(hashable: &H) -> u64 {
 
 pub struct GlobalCtxt<'tcx> {
     arena: bumpalo::Bump,
+    pub session: &'tcx Session,
     pub interners: CtxtInterners<'tcx>,
     pub providers: Providers,
     pub caches: QueryCaches<'tcx>,
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
-    pub fn new() -> Self {
+    pub fn new(session: &'tcx Session) -> GlobalCtxt<'tcx> {
         Self {
+            session,
             arena: bumpalo::Bump::new(),
             interners: CtxtInterners::default(),
             providers: Providers::default(),
@@ -76,3 +78,21 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
     }
 }
 
+impl<'tcx> TyCtxt<'tcx> {
+    pub fn create_file(self, idx: Option<interface::FileIdx>) -> TyCtxtFeed<'tcx, interface::FileIdx> {
+        TyCtxtFeed { tcx: self, key: idx.unwrap() }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TyCtxtFeed<'tcx, K: Copy> {
+   pub tcx: TyCtxt<'tcx>,
+   key: K
+}
+
+impl<'tcx, K: Copy> TyCtxtFeed<'tcx, K> {
+    #[allow(unused)]
+    pub fn key(&self) -> K {
+        return self.key;
+    }
+}

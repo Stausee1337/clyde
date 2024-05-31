@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::{GlobalCtxt, TyCtxt}};
+use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::{GlobalCtxt, TyCtxt}, interface};
 
 /// AST (&tree) 
 ///     |          |
@@ -99,7 +99,7 @@ impl<'r, 'tcx> TypeResolutionPass<'r, 'tcx> {
         Self { resolution }
     }
 
-    fn resolve(&mut self, tree: &mut ast::TopLevel) {
+    fn resolve(&mut self, tree: &mut ast::SourceFile) {
         self.visit(tree);
     }
 }
@@ -464,14 +464,18 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     }
 }
 
-pub fn run_resolve<'tcx>(tcx: TyCtxt<'tcx>, tree: &mut ast::TopLevel) {
-    let diagnostics = todo!();
+pub fn run_resolve<'tcx>(tcx: TyCtxt<'tcx>) -> ast::SourceFile {
+    let diagnostics = tcx.diagnostics_for_file(interface::INPUT_FILE_IDX);
+    let mut tree = tcx.file_ast(interface::INPUT_FILE_IDX).steal();
+
     let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.resolve(tree);
+    rpass.resolve(&mut tree);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.visit(tree);
+    rpass.visit(&mut tree);
+
+    tree
 }
 

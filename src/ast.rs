@@ -93,7 +93,7 @@ pub enum PatternKind {
 }
 
 #[derive(Debug)]
-pub struct TopLevel {
+pub struct SourceFile {
     pub items: Vec<Item>,
     pub span: Range<usize>,
     pub node_id: NodeId,

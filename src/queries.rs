@@ -1,4 +1,15 @@
-use crate::{diagnostics, ast, types, interface, context::TyCtxt};
+
+use crate::{diagnostics, ast, parser, interface, context::TyCtxt};
+
+macro_rules! query_if_feedable {
+    ([] { $($feedable:tt)* }) => {  };
+    ([feedable $($rest:tt)*] { $($feedable:tt)* }) => {
+        $($feedable)* 
+    };
+    ([$other:tt $($modifiers:tt)*] { $($feedable:tt)* }) => {
+        query_if_feedable! { [$($modifiers)*] { $($feedable)* }}
+    };
+}
 
 macro_rules! define_queries {
     ($([$($modifiers:tt)*] $name:ident($pat:ty) -> $rty:ty),*) => {
@@ -10,6 +21,27 @@ macro_rules! define_queries {
                 pub type Storage<'tcx> = <$pat as Key>::Cache<$rty>;
             }
         )*}
+
+        $(query_if_feedable! {
+            [$($modifiers:tt)*] {
+            impl<'tcx> crate::context::TyCtxtFeed<'tcx, $pat> {
+                pub fn $name(&self, value: $rty) {
+                    use crate::queries::caches::QueryCache;
+
+                    let key = self.key();
+                    let cache = &self.tcx.caches.$name;
+
+                    match cache.lookup(&key) {
+                        Some(..) => {
+                            todo!("Handle double feeding error")
+                        }
+                        None => {
+                            cache.complete(key, value);
+                        }
+                    }
+                }
+            }
+        }})*
 
         impl<'tcx> crate::context::TyCtxt<'tcx> {
             $(
@@ -73,15 +105,14 @@ macro_rules! providers {
 }
 
 define_queries! {
+    [feedable] file_path_and_source(interface::FileIdx) -> (&'tcx std::path::Path, &'tcx str),
     [] diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>,
-    [feedable] file_path(interface::FileIdx) -> &'tcx std::path::Path,
-    [feedable] file_source(interface::FileIdx) -> Result<&'tcx str, std::io::ErrorKind>,
-    [feedable] file_ast(interface::FileIdx) -> &'tcx ast::TopLevel
+    [] file_ast(interface::FileIdx) -> &'tcx interface::Steal<ast::SourceFile>
 }
 
 providers! {
-    @file_source(interface::file_source),
-    @diagnostics_for_file(diagnostics::create_for_file)
+    @diagnostics_for_file(diagnostics::create_for_file),
+    @file_ast(parser::parse_file)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(

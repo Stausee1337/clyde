@@ -9,7 +9,7 @@ use bitflags::bitflags;
 
 use crate::context::{GlobalCtxt, TyCtxt};
 use crate::interface::{FileIdx, self};
-use crate::queries::caches::{QueryCache, Key};
+use crate::queries::caches::QueryCache;
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -47,8 +47,7 @@ pub struct DiagnosticsData<'tcx> {
 
 impl<'tcx> DiagnosticsData<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, file: FileIdx) -> Self {
-        let path = tcx.file_path(file);
-        let source = tcx.file_source(file).unwrap();
+        let (path, source) = tcx.file_path_and_source(file);
         let filename = unsafe { interface::path_to_string(&path) };
 
         Self {

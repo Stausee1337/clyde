@@ -159,29 +159,39 @@ pub struct Token(pub TokenKind, pub Range<usize>);
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LexError(pub Range<usize>, pub String);
 
-pub fn lex_input_string(source: &str) -> Result<Vec<Token>, LexError> {
+pub fn lex_input_string(source: &str) -> (Vec<Token>, Vec<LexError>) {
     let mut lexer = TokenKind::lexer(source);
-    let mut result = Vec::new();
+    let mut tokens = Vec::new();
+    let mut errors = Vec::new();
     loop {
         let Some(token) = lexer.next() else {
             break;
         };
         let span = lexer.span();
-        let mut token = token
-            .map_err(|_|
-                LexError(span.clone(), format!("Invalid character `{}` in input stream", &source[span.clone()])))?;
+        let Ok(mut token) = token else {
+            errors.push(
+                LexError(span.clone(), format!("Invalid character `{}` in input stream", &source[span.clone()]))
+            );
+            continue;
+        };
         match &mut token {
             TokenKind::Comment => {
                 continue;
             }
             TokenKind::String(s) => {
-                *s = snailquote::unescape(s).map_err(|err| LexError(span.clone(), err.to_string()))?;
+                *s = snailquote::unescape(s).unwrap_or_else(|err| {
+                    errors.push(
+                        LexError(span.clone(), err.to_string())
+                    );
+                    "".to_string()
+                });
             }
             _ => ()
         }
-        result.push(Token(token, span));
+        tokens.push(Token(token, span));
     }
-    Ok(result)
+
+    (tokens, errors)
 }
 
 fn to_character<'a>(lex: &'a mut logos::Lexer<TokenKind>) -> Result<char, <TokenKind as Logos<'a>>::Error> {

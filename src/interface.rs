@@ -1,9 +1,7 @@
 
-use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File};
+use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File, cell::{OnceCell, RefCell}, mem::transmute};
 
-use crate::{
-    parser, ast, context::TyCtxt
-};
+use crate::context::GlobalCtxt;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -160,12 +158,6 @@ fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
     Ok(result)
 }
 
-pub fn file_source<'tcx>(tcx: TyCtxt<'tcx>, idx: FileIdx) -> Result<&'tcx str, std::io::ErrorKind> {
-    let path = tcx.file_path(idx);
-    let source = read_entire_file(path).map_err(|err| err.kind())?;
-    Ok(tcx.alloc_str(&source))
-}
-
 macro_rules! optflag {
     ($shortopt:literal, $fullopt:literal, $desc:literal) => {
         |parser| parser.optflag($shortopt, $fullopt, $desc)
@@ -186,18 +178,80 @@ const CMD_OPTIONS: &[fn(&mut getopts::Options) -> &mut getopts::Options] = &[
     optflag!("v", "version", "Print wpc version")
 ];
 
-pub struct Compiler {
-    pub sess: Session
+#[derive(Debug)]
+pub struct Steal<T> {
+    value: RefCell<Option<T>>
 }
 
-impl Compiler {
-    pub fn parse<'tcx>(&mut self, tcx: TyCtxt<'tcx>) -> Result<ast::TopLevel, ()> {
-        parser::parse_file(tcx, INPUT_FILE_IDX)
+impl<T> Steal<T> {
+    pub fn new(value: T) -> Self {
+        Self { value: RefCell::new(Some(value)) }
+    }
+
+    #[allow(unused)]
+    pub fn get(&self) -> &'_ T {
+        let borrow = self.value.borrow();
+        if borrow.is_none() {
+            panic!("attempted to read from stolen value: {}", std::any::type_name::<T>());
+        }
+        unsafe { transmute(borrow.as_ref().unwrap()) }
+    }
+
+    #[allow(unused)]
+    pub fn get_mut(&mut self) -> &'_ mut T {
+        self.value.get_mut().as_mut().expect("attempt to read from stolen value")
+    }
+
+    #[allow(unused)]
+    pub fn steal(&self) -> T {
+        let value = self.value.take();
+        value.expect("attempt to steal from stolen value")
     }
 }
 
-pub fn build_compiler<T, F: FnOnce(&mut Compiler) -> T>(sess: Session, f: F) -> T {
-    let mut compiler = Compiler { sess };
+pub struct Compiler<'tcx> {
+    pub sess: Session,
+    gcx_cell: OnceCell<GlobalCtxt<'tcx>>,
+    gcx: RefCell<Option<&'tcx GlobalCtxt<'tcx>>>
+}
+
+impl<'tcx> Compiler<'tcx> {
+    pub fn global_ctxt(&'tcx self) -> &'tcx GlobalCtxt<'tcx> {
+        self.gcx
+            .borrow_mut()
+            .get_or_insert_with(|| {
+            let gcx = self.gcx_cell
+                .get_or_init(|| GlobalCtxt::new(&self.sess));
+
+            gcx.enter(|tcx| {
+                let source = read_entire_file(&tcx.session.input)
+                    .map_err(|err| {
+                        let file = unsafe { path_to_string(&tcx.session.input) };
+                        eprintln!("ERROR: couldn't read {file}: {err}");
+                    })
+                    .ok()
+                    .map(|s| tcx.alloc_str(&s));
+                if let Some(source) = source {
+                    let input_file = tcx.create_file(Some(INPUT_FILE_IDX));
+                    let path = tcx.alloc(&tcx.session.input);
+                    input_file.file_path_and_source((path, source));
+                }
+            });
+
+            gcx
+        })
+    }
+}
+
+pub fn build_compiler<T, F>(sess: Session, f: F) -> T
+where
+    F: for<'tcx> FnOnce(&'tcx Compiler<'tcx>) -> T
+{
+    let mut compiler = Compiler {
+        sess, 
+        gcx_cell: OnceCell::new(),
+        gcx: RefCell::new(None)
+    };
 
     f(&mut compiler)
 }

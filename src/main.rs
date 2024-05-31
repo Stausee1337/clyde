@@ -3,8 +3,6 @@ use std::{env, process::ExitCode};
 
 use interface::build_compiler;
 
-use crate::context::GlobalCtxt;
-
 mod ast;
 mod lexer;
 mod parser;
@@ -27,16 +25,13 @@ fn main() -> ExitCode {
     let sess = options.create_compile_session();
     
     build_compiler(sess, |compiler| {
-        let gcx = GlobalCtxt::new();
+        let gcx = compiler.global_ctxt();
 
-        let ast = gcx.enter(|tcx| {
-            let mut ast = compiler.parse(tcx)?;
-            resolve::run_resolve(tcx, &mut ast);
+        gcx.enter(|tcx| {
+            let ast = resolve::run_resolve(tcx);
 
-            Ok(ast)
-        })?;
-    
-        println!("{:#?}", ast);
+            println!("{:#?}", ast);
+        }); 
 
         if gcx.has_fatal_errors() {
             gcx.all_diagnostics(|diag| diag.print_diagnostics());

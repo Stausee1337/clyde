@@ -1,4 +1,4 @@
-use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, interface::{self, FileIdx}, context::TyCtxt};
+use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, interface::{FileIdx, Steal}, context::TyCtxt};
 
 struct ParseContext<'tcx> {
     pub diagnostics: Diagnostics<'tcx>,
@@ -12,24 +12,21 @@ impl<'tcx> ParseContext<'tcx> {
     }
 }
 
-pub fn parse_file<'a, 'tcx>(tcx: TyCtxt<'tcx>, file: FileIdx) -> Result<ast::TopLevel, ()> {
-    let contents = tcx.file_source(file) 
-        .map_err(|err| {
-            let file = unsafe { interface::path_to_string(tcx.file_path(file)) };
-            eprintln!("ERROR: couldn't read {file}: {err}");
-        })?;
+pub fn parse_file<'a, 'tcx>(tcx: TyCtxt<'tcx>, file: FileIdx) -> &'tcx Steal<ast::SourceFile> {
+    let source = tcx.file_path_and_source(file).1;
+    let diagnostics = tcx.diagnostics_for_file(file);
 
-    let diagnostics = tcx.diagnostics_for_file(interface::INPUT_FILE_IDX);
-
-    let tokens = lexer::lex_input_string(&contents).map_err(|err| {
+    let (tokens, errors) = lexer::lex_input_string(source);
+    for err in errors {
         diagnostics.error(err.1).with_span(err.0);
-    })?;
+    }
 
-    Ok(parse(tokens, &mut ParseContext { diagnostics, current_node_id: 0 }))
+    let source_file = parse(tokens, &mut ParseContext { diagnostics, current_node_id: 0 });
+    tcx.alloc(Steal::new(source_file))
 }
 
-fn parse<'a, 'tcx>(tokens: Vec<Token>, ctxt: &'a mut ParseContext<'tcx>) -> ast::TopLevel {
-    clyde::TopLevelParser::new()
+fn parse<'a, 'tcx>(tokens: Vec<Token>, ctxt: &'a mut ParseContext<'tcx>) -> ast::SourceFile {
+    clyde::SourceFileParser::new()
         .parse(ctxt, tokens
             .into_iter()
             .map(|tok| (tok.1.start, tok.0, tok.1.end)))

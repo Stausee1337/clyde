@@ -6,8 +6,8 @@ use crate::{
 
 grammar<'a, 'tcx>(ctxt: &'a mut Context<'tcx>);
 
-pub TopLevel: ast::TopLevel = {
-    <start:@L> <items:Items> <end:@R> => ast::TopLevel {
+pub SourceFile: ast::SourceFile = {
+    <start:@L> <items:Items> <end:@R> => ast::SourceFile {
         items,
         span: (start..end),
         node_id: ctxt.make_node_id(),

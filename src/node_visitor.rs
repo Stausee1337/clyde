@@ -1,10 +1,10 @@
 use std::ptr;
 
-use crate::ast::{TopLevel, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef};
+use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef};
 
 
 pub trait MutVisitor: Sized {
-    fn visit(&mut self, tree: &mut TopLevel) {
+    fn visit(&mut self, tree: &mut SourceFile) {
         visit_vec(&mut tree.items, |item| self.visit_item(item));
     }
 
