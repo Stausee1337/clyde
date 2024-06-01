@@ -31,6 +31,11 @@ fn main() -> ExitCode {
         resolve::run_resolve(&mut tree, diag);
         println!("{:#?}", tree); 
 
+        gcx.enter(|tcx| {
+            let feed = tcx.create_file(Some(interface::INPUT_FILE_IDX));
+            feed.diagnostics_for_file(diag);
+        });
+
         if gcx.has_fatal_errors() {
             gcx.all_diagnostics(|diag| diag.print_diagnostics());
             return Ok::<ExitCode, ()>(ExitCode::FAILURE);

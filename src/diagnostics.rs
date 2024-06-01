@@ -250,7 +250,3 @@ impl<'tcx> GlobalCtxt<'tcx> {
     }
 }
 
-pub fn create_for_file<'tcx>(tcx: TyCtxt<'tcx>, file: interface::FileIdx) -> Diagnostics<'tcx> {
-    let (path, source) = tcx.file_path_and_source(file);
-    Diagnostics(tcx.alloc(DiagnosticsData::new(path, source)))
-}

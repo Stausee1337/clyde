@@ -105,13 +105,11 @@ macro_rules! providers {
 }
 
 define_queries! {
-    [feedable] file_path_and_source(interface::FileIdx) -> (&'tcx std::path::Path, &'tcx str),
     [feedable] diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>,
     [feedable] file_ast(interface::FileIdx) -> &'tcx ast::SourceFile
 }
 
 providers! {
-    @diagnostics_for_file(diagnostics::create_for_file)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(
