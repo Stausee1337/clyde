@@ -4,12 +4,11 @@ use std::ops::{Range, Deref};
 use std::fmt::Write;
 use std::os::raw::c_void;
 use std::hash::Hash;
+use std::path::Path;
 
 use bitflags::bitflags;
 
-use crate::context::{GlobalCtxt, TyCtxt};
-use crate::interface::{FileIdx, self};
-use crate::queries::caches::QueryCache;
+use crate::{context::{GlobalCtxt, TyCtxt}, interface, queries::caches::QueryCache};
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -38,20 +37,18 @@ bitflags! {
 }
 
 pub struct DiagnosticsData<'tcx> {
-    pub file: FileIdx,
     pub source: &'tcx str,
-    pub filename: String,
+    pub filename: &'tcx str,
     events: RefCell<Vec<Reported>>,
     flags: RefCell<HappenedEvents>
 }
 
 impl<'tcx> DiagnosticsData<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, file: FileIdx) -> Self {
-        let (path, source) = tcx.file_path_and_source(file);
-        let filename = unsafe { interface::path_to_string(&path) };
+    pub fn new(path: &'tcx Path, source: &'tcx str) -> Self {
+        let filename = unsafe { interface::path_as_str(&path) };
 
         Self {
-            file, source, filename,
+            source, filename,
             events: RefCell::new(Vec::new()),
             flags: RefCell::new(HappenedEvents::empty())
         }
@@ -120,7 +117,7 @@ impl<'tcx> DiagnosticsData<'tcx> {
 }
 
 #[derive(Clone, Copy)]
-pub struct Diagnostics<'tcx>(&'tcx DiagnosticsData<'tcx>);
+pub struct Diagnostics<'tcx>(pub &'tcx DiagnosticsData<'tcx>);
 
 impl<'tcx> std::cmp::PartialEq for Diagnostics<'tcx> {
     fn eq(&self, other: &Self) -> bool {
@@ -137,7 +134,7 @@ impl<'tcx> std::cmp::Eq for Diagnostics<'tcx> {}
 
 impl<'tcx> std::fmt::Debug for Diagnostics<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Diagnostics(file: {:?})", self.file)
+        write!(f, "Diagnostics(file: {:?})", self.filename)
     }
 }
 
@@ -254,5 +251,6 @@ impl<'tcx> GlobalCtxt<'tcx> {
 }
 
 pub fn create_for_file<'tcx>(tcx: TyCtxt<'tcx>, file: interface::FileIdx) -> Diagnostics<'tcx> {
-    Diagnostics(tcx.alloc(DiagnosticsData::new(tcx, file)))
+    let (path, source) = tcx.file_path_and_source(file);
+    Diagnostics(tcx.alloc(DiagnosticsData::new(path, source)))
 }

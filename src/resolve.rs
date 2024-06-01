@@ -464,18 +464,13 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     }
 }
 
-pub fn run_resolve<'tcx>(tcx: TyCtxt<'tcx>) -> ast::SourceFile {
-    let diagnostics = tcx.diagnostics_for_file(interface::INPUT_FILE_IDX);
-    let mut tree = tcx.file_ast(interface::INPUT_FILE_IDX).steal();
-
+pub fn run_resolve<'tcx>(tree: &mut ast::SourceFile, diagnostics: Diagnostics<'tcx>) {
     let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.resolve(&mut tree);
+    rpass.resolve(tree);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.visit(&mut tree);
-
-    tree
+    rpass.visit(tree);
 }
 

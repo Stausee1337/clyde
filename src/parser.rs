@@ -1,4 +1,4 @@
-use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, interface::{FileIdx, Steal}, context::TyCtxt};
+use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, context::GlobalCtxt};
 
 struct ParseContext<'tcx> {
     pub diagnostics: Diagnostics<'tcx>,
@@ -12,9 +12,8 @@ impl<'tcx> ParseContext<'tcx> {
     }
 }
 
-pub fn parse_file<'a, 'tcx>(tcx: TyCtxt<'tcx>, file: FileIdx) -> &'tcx Steal<ast::SourceFile> {
-    let source = tcx.file_path_and_source(file).1;
-    let diagnostics = tcx.diagnostics_for_file(file);
+pub fn parse_file<'a, 'tcx>(diagnostics: Diagnostics<'tcx>) -> ast::SourceFile {
+    let source = diagnostics.source; 
 
     let (tokens, errors) = lexer::lex_input_string(source);
     for err in errors {
@@ -22,7 +21,7 @@ pub fn parse_file<'a, 'tcx>(tcx: TyCtxt<'tcx>, file: FileIdx) -> &'tcx Steal<ast
     }
 
     let source_file = parse(tokens, &mut ParseContext { diagnostics, current_node_id: 0 });
-    tcx.alloc(Steal::new(source_file))
+    source_file
 }
 
 fn parse<'a, 'tcx>(tokens: Vec<Token>, ctxt: &'a mut ParseContext<'tcx>) -> ast::SourceFile {

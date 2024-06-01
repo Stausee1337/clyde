@@ -106,13 +106,12 @@ macro_rules! providers {
 
 define_queries! {
     [feedable] file_path_and_source(interface::FileIdx) -> (&'tcx std::path::Path, &'tcx str),
-    [] diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>,
-    [] file_ast(interface::FileIdx) -> &'tcx interface::Steal<ast::SourceFile>
+    [feedable] diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>,
+    [feedable] file_ast(interface::FileIdx) -> &'tcx ast::SourceFile
 }
 
 providers! {
-    @diagnostics_for_file(diagnostics::create_for_file),
-    @file_ast(parser::parse_file)
+    @diagnostics_for_file(diagnostics::create_for_file)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(
@@ -184,6 +183,12 @@ pub mod caches {
 
     pub struct VecCache<K: index_vec::Idx, V> {
         cache: RefCell<IndexVec<K, V>>,
+    }
+
+    impl<K: index_vec::Idx, V> VecCache<K, V> {
+        pub fn end(&self) -> K {
+            K::from_usize(self.cache.borrow().len())
+        }
     }
 
     impl<K: index_vec::Idx, V> Default for VecCache<K, V> {

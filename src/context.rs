@@ -79,8 +79,9 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
 }
 
 impl<'tcx> TyCtxt<'tcx> {
-    pub fn create_file(self, idx: Option<interface::FileIdx>) -> TyCtxtFeed<'tcx, interface::FileIdx> {
-        TyCtxtFeed { tcx: self, key: idx.unwrap() }
+    pub fn create_file(self, idx: Option<interface::FileIdx>) -> TyCtxtFeed<'tcx, interface::FileIdx> { 
+        let key = idx.unwrap_or_else(|| self.caches.file_path_and_source.end());
+        TyCtxtFeed { tcx: self, key }
     }
 }
 

@@ -1,7 +1,7 @@
 
 use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File, cell::{OnceCell, RefCell}, mem::transmute};
 
-use crate::context::GlobalCtxt;
+use crate::{context::GlobalCtxt, ast, diagnostics::{Diagnostics, DiagnosticsData}, parser};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -61,7 +61,7 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
 
     let program = if args.is_empty() { "wpc".to_string() } else { args.remove(0) };
     let program = PathBuf::from_str(program.as_str()).unwrap();
-    let program = get_filename(program).unwrap_or_else(|| "wpc".to_string());
+    let program = get_filename(&program).unwrap_or_else(|| "wpc");
 
     let working_dir = env::current_dir().map_err(|error| {
         eprintln!("ERROR: Could not get current working directory {error}");
@@ -126,24 +126,18 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     Ok(options)
 }
 
-fn get_filename(path: PathBuf) -> Option<String> {
-    Some(unsafe { osstr_to_string(path.file_name()?) })
+fn get_filename(path: &Path) -> Option<&str> {
+    Some(unsafe { osstr_as_str(path.file_name()?) })
 }
 
-
-pub unsafe fn path_to_string(path: &Path) -> String {
-    osstr_to_string(path.as_os_str())
-}
-
-pub unsafe fn osstr_to_string(osstr: &OsStr) -> String {
-    let bytes = osstr.as_bytes();
-    String::from_utf8_unchecked(bytes.to_vec())
+pub unsafe fn path_as_str(path: &Path) -> &str {
+    osstr_as_str(path.as_os_str())
 }
 
 pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
-    std::str::from_utf8_unchecked(osstr.as_bytes())
+    let bytes = osstr.as_bytes();
+    std::str::from_utf8_unchecked(bytes)
 }
-
 
 fn matches_to_config(matches: &getopts::Matches) -> Cfg {
     Cfg {
@@ -216,28 +210,26 @@ pub struct Compiler<'tcx> {
 }
 
 impl<'tcx> Compiler<'tcx> {
+    pub fn parse(&'tcx self) -> Result<(ast::SourceFile, Diagnostics<'tcx>), ()> {
+        let gcx = self.global_ctxt();
+        let source = read_entire_file(&gcx.session.input)
+            .map_err(|err| {
+                let file = unsafe { path_as_str(&gcx.session.input) };
+                eprintln!("ERROR: couldn't read {file}: {err}");
+            })
+            .map(|s| gcx.alloc_str(&s))?;
+
+        let diagnostics = Diagnostics(gcx.alloc(DiagnosticsData::new(&gcx.session.input, source)));
+
+        Ok((parser::parse_file(diagnostics), diagnostics))
+    }
+
     pub fn global_ctxt(&'tcx self) -> &'tcx GlobalCtxt<'tcx> {
         self.gcx
             .borrow_mut()
             .get_or_insert_with(|| {
             let gcx = self.gcx_cell
                 .get_or_init(|| GlobalCtxt::new(&self.sess));
-
-            gcx.enter(|tcx| {
-                let source = read_entire_file(&tcx.session.input)
-                    .map_err(|err| {
-                        let file = unsafe { path_to_string(&tcx.session.input) };
-                        eprintln!("ERROR: couldn't read {file}: {err}");
-                    })
-                    .ok()
-                    .map(|s| tcx.alloc_str(&s));
-                if let Some(source) = source {
-                    let input_file = tcx.create_file(Some(INPUT_FILE_IDX));
-                    let path = tcx.alloc(&tcx.session.input);
-                    input_file.file_path_and_source((path, source));
-                }
-            });
-
             gcx
         })
     }

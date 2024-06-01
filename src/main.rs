@@ -27,11 +27,9 @@ fn main() -> ExitCode {
     build_compiler(sess, |compiler| {
         let gcx = compiler.global_ctxt();
 
-        gcx.enter(|tcx| {
-            let ast = resolve::run_resolve(tcx);
-
-            println!("{:#?}", ast);
-        }); 
+        let (mut tree, diag) = compiler.parse()?;
+        resolve::run_resolve(&mut tree, diag);
+        println!("{:#?}", tree); 
 
         if gcx.has_fatal_errors() {
             gcx.all_diagnostics(|diag| diag.print_diagnostics());
