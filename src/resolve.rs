@@ -1,7 +1,7 @@
 
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, cell::OnceCell};
 
-use crate::{ast::{self, Resolution, DefinitonKind, NodeId}, mut_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface};
+use crate::{ast::{self, Resolution, DefinitonKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}, queries::queries::resolutions};
 
 /// AST (&tree) 
 ///     |          |
@@ -373,7 +373,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     .with_pos(stmt.span.start);
                 stmt.kind = ast::StmtKind::Err;
             }
-            _ => noop_visit_stmt_kind(&mut stmt.kind, self),
+            _ => mut_visitor::noop_visit_stmt_kind(&mut stmt.kind, self),
         }
     }
 
@@ -478,16 +478,94 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     }
 }
 
+struct ResolveNodeForNodeId<'tcx> {
+    needle: NodeId,
+    node: OnceCell<ast::Node<'tcx>>
+}
+
+impl<'tcx> ResolveNodeForNodeId<'tcx> {
+    fn resolve(source: &'tcx ast::SourceFile, needle: NodeId) -> Option<ast::Node<'tcx>> {
+        let resolver = ResolveNodeForNodeId { needle, node: OnceCell::new() };
+        resolver.visit(source);
+        resolver.node.get().map(|node| *node)
+    }
+}
+
+impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
+    fn visit(&self, tree: &ast::SourceFile) {
+        if tree.node_id == self.needle {
+            self.node.set(ast::Node::SourceFile(tree).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::visit_vec(&tree.items, |item| self.visit_item(item));
+    }
+
+    fn visit_item(&self, item: &ast::Item) {
+        if item.node_id == self.needle {
+            self.node.set(ast::Node::Item(item).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::noop_visit_item_kind(&item.kind, self);
+    }
+
+    fn visit_stmt(&self, stmt: &ast::Stmt) {
+        if stmt.node_id == self.needle {
+            self.node.set(ast::Node::Stmt(stmt).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::noop_visit_stmt_kind(&stmt.kind, self);
+    }
+
+    fn visit_expr(&self, expr: &ast::Expr) {
+        if expr.node_id == self.needle {
+            self.node.set(ast::Node::Expr(expr).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::noop_visit_expr_kind(&expr.kind, self);
+    }
+
+    fn visit_ty_expr(&self, ty: &ast::TypeExpr) {
+        if ty.node_id == self.needle {
+            self.node.set(ast::Node::TypeExpr(ty).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::noop_visit_ty_expr_kind(&ty.kind, self);
+    }
+
+    fn visit_pattern(&self, pattern: &ast::Pattern) {
+        if pattern.node_id == self.needle {
+            self.node.set(ast::Node::Pattern(pattern).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::noop_visit_pattern_kind(&pattern.kind, self);
+    }
+
+}
+
 impl<'tcx> TyCtxt<'tcx> {
-    fn ast_node(self, id: NodeId) -> ast::Node<'tcx> {
-        todo!("{id:?}")
+    pub fn ast_node(self, id: NodeId) -> ast::Node<'tcx> {
+        let source = self.file_ast(interface::INPUT_FILE_IDX);
+        ResolveNodeForNodeId::resolve(source, id)
+            .expect("tried to resolve NodeId in to ast::Node that does not exist")
+    }
+
+    pub fn node_by_def_id(self, id: DefId) -> ast::Node<'tcx> {
+        let resolutions = self.resolutions(());
+        assert_eq!(id.file, interface::INPUT_FILE_IDX, "Compiler is single file");
+        self.ast_node(resolutions.declarations[id.index])
     }
 }
 
 pub fn run_resolve<'tcx>(
     tcx: TyCtxt<'tcx>,
     (mut tree, diagnostics): (ast::SourceFile, Diagnostics<'tcx>)
-) -> ResolutionResults {
+) {
     let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
@@ -500,6 +578,7 @@ pub fn run_resolve<'tcx>(
     feed.diagnostics_for_file(diagnostics);
     feed.file_ast(tcx.alloc(tree));
 
-    resolution.results()
+    let results = tcx.alloc(resolution.results());
+    tcx.globals().resolutions(results);
 }
 

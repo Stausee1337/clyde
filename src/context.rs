@@ -83,6 +83,10 @@ impl<'tcx> TyCtxt<'tcx> {
         let key = idx.unwrap_or_else(|| self.caches.diagnostics_for_file.end());
         TyCtxtFeed { tcx: self, key }
     }
+
+    pub fn globals(self) -> TyCtxtFeed<'tcx, ()> { 
+        TyCtxtFeed { tcx: self, key: () }
+    }
 }
 
 #[derive(Clone, Copy)]

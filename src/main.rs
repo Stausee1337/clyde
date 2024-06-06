@@ -8,6 +8,7 @@ mod lexer;
 mod parser;
 mod symbol;
 mod mut_visitor;
+mod node_visitor;
 mod diagnostics;
 mod interface;
 mod resolve;
@@ -28,7 +29,7 @@ fn main() -> ExitCode {
         let gcx = compiler.global_ctxt();
 
         gcx.enter(|tcx| {
-            let results = resolve::run_resolve(tcx, compiler.parse()?);
+            resolve::run_resolve(tcx, compiler.parse()?);
 
             println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
 

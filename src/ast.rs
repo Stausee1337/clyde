@@ -1,3 +1,4 @@
+use std::mem::transmute;
 use std::ops::Range;
 use std::hash::Hash;
 use lalrpop_util::{ErrorRecovery, ParseError};
@@ -8,7 +9,7 @@ use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Node<'a> {
     Expr(&'a Expr),
     Item(&'a Item),
@@ -16,6 +17,12 @@ pub enum Node<'a> {
     SourceFile(&'a SourceFile),
     Stmt(&'a Stmt),
     TypeExpr(&'a TypeExpr)
+}
+
+impl<'a> Node<'a> {
+    pub fn tcx<'tcx>(self) -> Node<'tcx> {
+        unsafe { transmute::<Node<'a>, Node<'tcx>>(self) }
+    }
 }
 
 #[derive(Debug, Clone, Eq)]

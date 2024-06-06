@@ -1,4 +1,4 @@
-use crate::{diagnostics, ast, interface, context::TyCtxt, types, typecheck};
+use crate::{diagnostics, ast, interface, context::TyCtxt, types, typecheck, resolve};
 
 macro_rules! query_if_feedable {
     ([] { $($feedable:tt)* }) => {  };
@@ -106,6 +106,7 @@ macro_rules! providers {
 define_queries! {
     [feedable] fn diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>;
     [feedable] fn file_ast(interface::FileIdx) -> &'tcx ast::SourceFile;
+    [feedable] fn resolutions(()) -> &'tcx resolve::ResolutionResults;
     [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
     [] fn adt_def(ast::DefId) -> types::AdtDef<'tcx>;
 }
