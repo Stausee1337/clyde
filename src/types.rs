@@ -78,7 +78,7 @@ pub struct FieldDef {
     pub symbol: Symbol
 }
 
-#[derive(Hash)]
+#[derive(Hash, Clone, Copy)]
 pub struct AdtDef<'tcx>(&'tcx AdtDefInner);
 
 #[derive(Hash)]
@@ -87,6 +87,7 @@ pub enum TyKind<'tcx> {
     Adt(AdtDef<'tcx>)
 }
 
+#[derive(Clone, Copy)]
 pub struct Ty<'tcx>(&'tcx TyKind<'tcx>);
 
 #[repr(u32)]

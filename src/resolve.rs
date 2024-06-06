@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, Resolution, DefinitonKind}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::{GlobalCtxt, TyCtxt}, interface};
+use crate::{ast::{self, Resolution, DefinitonKind, NodeId}, node_visitor::{MutVisitor, self, noop_visit_stmt_kind}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface};
 
 /// AST (&tree) 
 ///     |          |
@@ -52,10 +52,16 @@ struct Local {
 
 struct ResolutionState<'tcx> {
     diagnostics: Diagnostics<'tcx>,
-    types: HashMap<Symbol, Declaration>,
-    functions: HashMap<Symbol, Declaration>,
-    globals: HashMap<Symbol, Declaration>,
+    types: HashMap<Symbol, Declaration, ahash::RandomState>,
+    functions: HashMap<Symbol, Declaration, ahash::RandomState>,
+    globals: HashMap<Symbol, Declaration, ahash::RandomState>,
     declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
+}
+
+#[derive(Debug)]
+pub struct ResolutionResults {
+    pub entry: Option<ast::DefId>,
+    pub declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
 }
 
 impl<'tcx> ResolutionState<'tcx> {
@@ -86,6 +92,14 @@ impl<'tcx> ResolutionState<'tcx> {
             self.diagnostics
                 .note(format!("previous declaration of {name:?} here", name = name.symbol.get()))
                 .with_pos(prev.span.start);
+        }
+    }
+
+    fn results(self) -> ResolutionResults {
+        let entry = self.functions.get(&Symbol::intern("main")).map(|decl| decl.site);
+        ResolutionResults {
+            entry,
+            declarations: self.declarations
         }
     }
 }
@@ -464,13 +478,28 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     }
 }
 
-pub fn run_resolve<'tcx>(tree: &mut ast::SourceFile, diagnostics: Diagnostics<'tcx>) {
+impl<'tcx> TyCtxt<'tcx> {
+    fn ast_node(self, id: NodeId) -> ast::Node<'tcx> {
+        todo!("{id:?}")
+    }
+}
+
+pub fn run_resolve<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    (mut tree, diagnostics): (ast::SourceFile, Diagnostics<'tcx>)
+) -> ResolutionResults {
     let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.resolve(tree);
+    rpass.resolve(&mut tree);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.visit(tree);
+    rpass.visit(&mut tree);
+
+    let feed = tcx.create_file(Some(interface::INPUT_FILE_IDX));
+    feed.diagnostics_for_file(diagnostics);
+    feed.file_ast(tcx.alloc(tree));
+
+    resolution.results()
 }
 

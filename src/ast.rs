@@ -8,6 +8,16 @@ use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
 
+#[derive(Clone, Copy)]
+pub enum Node<'a> {
+    Expr(&'a Expr),
+    Item(&'a Item),
+    Pattern(&'a Pattern),
+    SourceFile(&'a SourceFile),
+    Stmt(&'a Stmt),
+    TypeExpr(&'a TypeExpr)
+}
+
 #[derive(Debug, Clone, Eq)]
 pub struct Ident {
     pub symbol: Symbol,
@@ -26,7 +36,6 @@ impl Hash for Ident {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DefIndex(pub u32);
 
@@ -40,10 +49,10 @@ impl index_vec::Idx for DefIndex {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DefId {
-    index: DefIndex,
-    file: FileIdx
+    pub index: DefIndex,
+    pub file: FileIdx
 }
 
 impl From<DefIndex> for DefId {

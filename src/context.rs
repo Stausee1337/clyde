@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref,
 
 use ahash::AHasher;
 
-use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}, interface::{Session, self}};
+use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}, interface::{Session, self}, ast};
 
 pub type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
 

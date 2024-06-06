@@ -248,5 +248,11 @@ impl<'tcx> GlobalCtxt<'tcx> {
         self.all_diagnostics(|diag| has_fatal_errors |= diag.has_fatal());
         has_fatal_errors
     }
+
+    pub fn has_errors(&'tcx self) -> bool {
+        let mut has_errors = false;
+        self.all_diagnostics(|diag| has_errors |= diag.has_error());
+        has_errors
+    }
 }
 

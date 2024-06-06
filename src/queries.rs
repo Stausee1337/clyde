@@ -1,5 +1,4 @@
-
-use crate::{diagnostics, ast, parser, interface, context::TyCtxt};
+use crate::{diagnostics, ast, interface, context::TyCtxt, types, typecheck};
 
 macro_rules! query_if_feedable {
     ([] { $($feedable:tt)* }) => {  };
@@ -12,7 +11,7 @@ macro_rules! query_if_feedable {
 }
 
 macro_rules! define_queries {
-    ($([$($modifiers:tt)*] $name:ident($pat:ty) -> $rty:ty),*) => {
+    ($([$($modifiers:tt)*] fn $name:ident($pat:ty) -> $rty:ty;)*) => {
         pub mod queries {$(
             pub mod $name {
                 use crate::queries::caches::*;
@@ -105,11 +104,14 @@ macro_rules! providers {
 }
 
 define_queries! {
-    [feedable] diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>,
-    [feedable] file_ast(interface::FileIdx) -> &'tcx ast::SourceFile
+    [feedable] fn diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>;
+    [feedable] fn file_ast(interface::FileIdx) -> &'tcx ast::SourceFile;
+    [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
+    [] fn adt_def(ast::DefId) -> types::AdtDef<'tcx>;
 }
 
 providers! {
+    @type_of(typecheck::type_of)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(
@@ -138,11 +140,11 @@ consider feeding the query first, using feed.{name}(...) on its associated feeda
 }
 
 pub mod caches {
-    use std::{fmt::Debug, hash::Hash, collections::HashMap, cell::RefCell};
+    use std::{fmt::Debug, hash::Hash, collections::HashMap, cell::{RefCell, OnceCell}, borrow::Borrow};
 
     use index_vec::IndexVec;
 
-    use crate::interface::FileIdx;
+    use crate::{interface::FileIdx, ast::{DefId, DefIndex}};
 
     pub trait QueryCache {
         type Key: Hash + Eq + Copy + Debug;
@@ -216,11 +218,91 @@ pub mod caches {
         }
     }
 
+    pub struct OnceCache<K, V> {
+        cache: RefCell<OnceCell<(K, V)>>,
+    }
+
+    impl<K: Hash + Eq + Copy + Debug, V: Copy> Default for OnceCache<K, V> {
+        fn default() -> Self {
+            Self { cache: RefCell::new(OnceCell::default()) }
+        }
+    }
+
+    impl<K: Hash + Eq + Copy + Debug, V: Copy> QueryCache for OnceCache<K, V> {
+        type Key = K;
+        type Value = V;
+        fn lookup(&self, key: &Self::Key) -> Option<Self::Value> {
+            if let Some((skey, svalue)) = self.cache.borrow().get() {
+                if key == skey {
+                    return Some(*svalue);
+                }
+            }
+            None
+        }
+
+        fn complete(&self, key: Self::Key, value: Self::Value) {
+            let Err(..) = self.cache.borrow_mut().set((key, value)) else {
+                return;
+            };
+            panic!("tried to complete a once cache multiple times");
+        }
+
+        fn iter(&self, f: &mut dyn FnMut(&Self::Key, &Self::Value)) {
+           self.cache.borrow().get().map(|(k, v)| f(k, v));
+        }
+    }
+
+    pub struct DefIdCache<V> {
+        cache: RefCell<IndexVec<FileIdx, IndexVec<DefIndex, V>>>
+    }
+
+    impl<V: Copy> Default for DefIdCache<V> {
+        fn default() -> Self {
+            Self { cache: RefCell::new(IndexVec::new()) }
+        }
+    }
+
+    impl<V: Copy> QueryCache for DefIdCache<V> {
+        type Key = DefId;
+        type Value = V;
+
+        fn lookup(&self, key: &Self::Key) -> Option<Self::Value> {
+            if let Some(per_file_cache) = self.cache.borrow().get(key.file) {
+                return per_file_cache.get(key.index).map(|value| *value);
+            }
+            None
+        }
+        
+        fn complete(&self, key: Self::Key, value: Self::Value) { 
+            if let None = self.cache.borrow_mut().get(key.file) {
+                self.cache.borrow_mut().insert(key.file, IndexVec::default());
+            }
+
+            let mut per_file_cache = self.cache.borrow_mut();
+            per_file_cache
+                .get_mut(key.file)
+                .unwrap()
+                .insert(key.index, value);
+        }
+
+        fn iter(&self, _f: &mut dyn FnMut(&Self::Key, &Self::Value)) {
+            todo!()
+        }
+    }
+
     pub trait Key {
         type Cache<V: Copy>: QueryCache<Value = V>;
     }
 
     impl Key for FileIdx {
         type Cache<V: Copy> = VecCache<Self, V>;
+    }
+
+    impl Key for () {
+        type Cache<V: Copy> = OnceCache<Self, V>;
+    }
+
+    impl Key for DefId {
+        type Cache<V: Copy> = DefIdCache<V>;
     }
 }

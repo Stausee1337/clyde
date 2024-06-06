@@ -12,9 +12,9 @@ mod diagnostics;
 mod interface;
 mod resolve;
 mod types;
-mod normalization;
 mod context;
 mod queries;
+mod typecheck;
 
 fn main() -> ExitCode {
     let options = match interface::parse_argv_options(env::args()) {
@@ -27,14 +27,13 @@ fn main() -> ExitCode {
     build_compiler(sess, |compiler| {
         let gcx = compiler.global_ctxt();
 
-        let (mut tree, diag) = compiler.parse()?;
-        resolve::run_resolve(&mut tree, diag);
-        println!("{:#?}", tree); 
-
         gcx.enter(|tcx| {
-            let feed = tcx.create_file(Some(interface::INPUT_FILE_IDX));
-            feed.diagnostics_for_file(diag);
-        });
+            let results = resolve::run_resolve(tcx, compiler.parse()?);
+
+            println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
+
+            Ok(())
+        })?;
 
         if gcx.has_fatal_errors() {
             gcx.all_diagnostics(|diag| diag.print_diagnostics());
@@ -50,7 +49,7 @@ fn main() -> ExitCode {
 
         gcx.all_diagnostics(|diag| diag.print_diagnostics());
 
-        Ok::<ExitCode, ()>(ExitCode::SUCCESS)
+        Ok::<ExitCode, ()>(if !gcx.has_errors() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
     }).unwrap_or(ExitCode::FAILURE)
 }
 
