@@ -10,19 +10,69 @@ use crate::symbol::Symbol;
 pub const DUMMY_SPAN: Range<usize> = 0..0;
 
 #[derive(Debug, Clone, Copy)]
-pub enum Node<'a> {
-    Expr(&'a Expr),
-    Item(&'a Item),
-    Pattern(&'a Pattern),
-    SourceFile(&'a SourceFile),
-    Stmt(&'a Stmt),
-    TypeExpr(&'a TypeExpr)
+pub enum Node<'ast> {
+    Expr(&'ast Expr),
+    Item(&'ast Item),
+    Pattern(&'ast Pattern),
+    SourceFile(&'ast SourceFile),
+    Stmt(&'ast Stmt),
+    TypeExpr(&'ast TypeExpr)
 }
 
-impl<'a> Node<'a> {
+impl<'ast> Node<'ast> {
     pub fn tcx<'tcx>(self) -> Node<'tcx> {
-        unsafe { transmute::<Node<'a>, Node<'tcx>>(self) }
+        unsafe { transmute::<Node<'ast>, Node<'tcx>>(self) }
     }
+
+    pub fn body(self) -> Option<Body<'ast>> {
+        match self {
+            Self::Item(item) => match &item.kind {
+                ItemKind::Function(func) => {
+                    if let Some(ref body) = func.body {
+                        Some(Body {
+                            params: &func.params,
+                            body
+                        })
+                    } else {
+                        None
+                    }
+                }
+                ItemKind::GlobalVar(_, body, _) => {
+                    if let Some(ref body) = body {
+                        Some(Body { params: &[], body })
+                    } else {
+                        None
+                    }
+                },
+                _ => None,
+            },
+            _ => None
+        }
+    }
+
+    pub fn signature(self) -> Option<FnSignature<'ast>> {
+        match self {
+            Node::Item(Item { kind: ItemKind::Function(func), .. }) => {
+                Some(FnSignature {
+                    ret_ty: &func.returns,
+                    params: &func.params
+                })
+            }
+            _ => None
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FnSignature<'ast> {
+    pub ret_ty: &'ast TypeExpr,
+    pub params:  &'ast [Param]
+}
+
+#[derive(Debug)]
+pub struct Body<'ast> {
+    pub params: &'ast [Param],
+    pub body: &'ast Expr
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -69,7 +119,7 @@ impl From<DefIndex> for DefId {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum DefinitonKind {
+pub enum DefinitionKind {
     Global,
     Function,
     Struct,
@@ -79,7 +129,7 @@ pub enum DefinitonKind {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Resolution {
-    Def(DefId, DefinitonKind),
+    Def(DefId, DefinitionKind),
     Local(NodeId),
     Primitive,
     Err
@@ -165,7 +215,7 @@ pub struct VariantDef {
 
 #[derive(Debug)]
 pub struct Function {
-    pub body: Option<Vec<Stmt>>,
+    pub body: Option<Box<Expr>>,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub returns: TypeExpr,
@@ -198,7 +248,6 @@ pub enum StmtKind {
     Expr(Box<Expr>),
     Assign(Box<Expr>, Box<Expr>),
     If(Box<Expr>, Vec<Stmt>, Option<Box<Stmt>>),
-    Block(Vec<Stmt>),
     While(Box<Expr>, Vec<Stmt>),
     For(Pattern, Box<Expr>, Vec<Stmt>),
     Local(Pattern, Option<Box<TypeExpr>>, Option<Box<Expr>>),
@@ -235,6 +284,7 @@ pub enum ExprKind {
     ShorthandEnum(Ident),
     Range(Box<Expr>, Box<Expr>, bool),
     Deref(Box<Expr>),
+    Block(Vec<Stmt>),
     Err
 }
 
@@ -305,11 +355,6 @@ pub enum TypeExprKind {
     Ref(Box<TypeExpr>),
     Name(QName),
     Generic(QName, Vec<GenericArgument>),
-    Function {
-        param_tys: Vec<TypeExpr>,
-        return_ty: Option<Box<TypeExpr>>,
-        is_closure: bool 
-    },
     Array(Box<TypeExpr>, ArrayCapacity),
 }
 

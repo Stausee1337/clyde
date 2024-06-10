@@ -4,16 +4,10 @@ struct User {
     int age;
 }
 
-enum Sex {
-    Male,
-    Female,
-    NonBinary
-}
-
 void exit(int code);
-void println(*str message);
+void println(*str message, int a);
 
-int main() {
-    println("Hello, World");
+int main(int test) {
+    println("Hello, World", test);
     return 0;
 }

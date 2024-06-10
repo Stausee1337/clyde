@@ -142,7 +142,7 @@ pub fn visit_fn<T: MutVisitor>(func: &mut Function, vis: &mut T) {
     vis.visit_ty_expr(&mut func.returns);
     visit_vec(&mut func.params, |p| vis.visit_param(p));
     visit_vec(&mut func.generics, |generic| vis.visit_generic_param(generic));
-    visit_option(&mut func.body, |body| visit_vec(body, |stmt| vis.visit_stmt(stmt)));
+    visit_option(&mut func.body, |body| vis.visit_expr(body));
 }
 
 pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T) {
@@ -157,7 +157,6 @@ pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T
             visit_vec(if_body, |stmt| vis.visit_stmt(stmt));
             visit_option(else_body, |else_body| vis.visit_stmt(else_body));
         }
-        StmtKind::Block(body) => visit_vec(body, |stmt| vis.visit_stmt(stmt)),
         StmtKind::While(condition, body) => {
             vis.visit_expr(condition);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
@@ -215,9 +214,8 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             vis.visit_expr(start);
             vis.visit_expr(end);
         }
-        ExprKind::Deref(expr) => {
-            vis.visit_expr(expr);
-        }
+        ExprKind::Deref(expr) => vis.visit_expr(expr),
+        ExprKind::Block(stmts) => visit_vec(stmts, |stmt| vis.visit_stmt(stmt)),
         ExprKind::Err => ()
     }
 }
@@ -247,10 +245,6 @@ pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &
         TypeExprKind::Generic(name, args) => {
             vis.visit_name(name);
             visit_vec(args, |arg| vis.visit_generic_argument(arg));
-        }
-        TypeExprKind::Function { param_tys, return_ty, .. } => {
-            visit_vec(param_tys, |param_ty| vis.visit_ty_expr(param_ty));
-            visit_option(return_ty, |return_ty| vis.visit_ty_expr(return_ty));
         }
         TypeExprKind::Array(base, cap) => {
             vis.visit_ty_expr(base);

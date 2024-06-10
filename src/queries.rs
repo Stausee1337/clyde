@@ -109,10 +109,12 @@ define_queries! {
     [feedable] fn resolutions(()) -> &'tcx resolve::ResolutionResults;
     [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
     [] fn adt_def(ast::DefId) -> types::AdtDef<'tcx>;
+    [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
 }
 
 providers! {
-    @type_of(typecheck::type_of)
+    @type_of(typecheck::type_of),
+    @typecheck(typecheck::typecheck)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(

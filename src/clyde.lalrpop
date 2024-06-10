@@ -102,8 +102,12 @@ FunctionDef: ast::Item = {
     },
 };
 
-Body: Option<Vec<ast::Stmt>> = {
-    "{" <Statement*> "}" => Some(<>),
+Body: Option<Box<ast::Expr>> = {
+    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> => Some(Box::new(ast::Expr { 
+        kind: ast::ExprKind::Block(stmts),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    })),
     ";" => None,
 };
 
@@ -194,10 +198,17 @@ IfStatement: ast::Stmt = {
 };
 
 ContinuedIfBlock: ast::Stmt = {
-    <sloc:@L> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::Block(body),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
+    <sloc:@L> "{" <body:Statement*> "}" <eloc:@R> => {
+        let body = ast::Expr {
+            kind: ast::ExprKind::Block(body),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        };
+        ast::Stmt {
+            kind: ast::StmtKind::Expr(Box::new(body)),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
     },
     <sif:IfStatement> => sif
 };
@@ -575,17 +586,7 @@ Constant: ast::Constant = {
 
 TypeExpr: ast::TypeExpr = {
     <sloc:@L> <is_closure:IsClosure> "(" <params: OneOrMore<TypeExpr, ",">?> ")"
-    <rty:("->" <TypeExpr>)?> <eloc:@R> => {
-        ast::TypeExpr {
-            kind: ast::TypeExprKind::Function {
-                param_tys: params.unwrap_or(Vec::new()),
-                return_ty: rty.map(Box::new),
-                is_closure
-            },
-            span: (sloc..eloc),
-            node_id: ctxt.make_node_id()
-        }
-    },
+    <rty:("->" <TypeExpr>)?> <eloc:@R> => todo!(),
     <sloc:@L> "*" <ty:TypeExpr> <eloc:@R> => {
         ast::TypeExpr {
             kind: ast::TypeExprKind::Ref(Box::new(ty)),

@@ -31,7 +31,13 @@ fn main() -> ExitCode {
         gcx.enter(|tcx| {
             resolve::run_resolve(tcx, compiler.parse()?);
 
-            println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
+            // println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
+            tcx.resolutions(()).declarations.iter_enumerated().for_each(|(index, _)| {
+                let def_id = ast::DefId { index, file: interface::INPUT_FILE_IDX };
+                if let Some(..) = tcx.node_by_def_id(def_id).body() {
+                    tcx.typecheck(def_id);
+                }
+            });
 
             Ok(())
         })?;

@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range, cell::OnceCell};
 
-use crate::{ast::{self, Resolution, DefinitonKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}, queries::queries::resolutions};
+use crate::{ast::{self, Resolution, DefinitionKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}, queries::queries::resolutions};
 
 /// AST (&tree) 
 ///     |          |
@@ -21,14 +21,14 @@ impl std::fmt::Display for NameSpace {
         match self {
             Sym::Type => write!(f, "type"),
             Sym::Function => write!(f, "function"),
-            Sym::Variable => write!(f, "var"),
+            Sym::Variable => write!(f, "variable"),
         }
     }
 }
 
-impl From<DefinitonKind> for NameSpace {
-    fn from(value: DefinitonKind) -> Self {
-        use DefinitonKind as D;
+impl From<DefinitionKind> for NameSpace {
+    fn from(value: DefinitionKind) -> Self {
+        use DefinitionKind as D;
         match value {
             D::Struct | D::Enum => NameSpace::Type,
             D::Function => NameSpace::Function,
@@ -40,7 +40,7 @@ impl From<DefinitonKind> for NameSpace {
 #[derive(Clone)]
 struct Declaration {
     site: ast::DefId,
-    kind: DefinitonKind,
+    kind: DefinitionKind,
     span: Range<usize>,
 }
 
@@ -75,11 +75,11 @@ impl<'tcx> ResolutionState<'tcx> {
         }
     }
 
-    fn define(&mut self, kind: DefinitonKind, name: ast::Ident, site: ast::NodeId) {
+    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: ast::NodeId) {
         let space = match kind {
-            DefinitonKind::Struct | DefinitonKind::Enum => &mut self.types,
-            DefinitonKind::Function => &mut self.functions,
-            DefinitonKind::Global | DefinitonKind::Const => &mut self.globals,
+            DefinitionKind::Struct | DefinitionKind::Enum => &mut self.types,
+            DefinitionKind::Function => &mut self.functions,
+            DefinitionKind::Global | DefinitionKind::Const => &mut self.globals,
         };
         let declaration = Declaration {
             site: self.declarations.push(site).into(), kind, span: name.span.clone()
@@ -122,21 +122,21 @@ impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
             ast::ItemKind::Struct(stc) => {
-                self.resolution.define(DefinitonKind::Struct, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitionKind::Struct, item.ident.clone(), item.node_id);
                 mut_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
                 mut_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
             }, 
             ast::ItemKind::Enum(en) => {
-                self.resolution.define(DefinitonKind::Enum, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitionKind::Enum, item.ident.clone(), item.node_id);
                 mut_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
-                self.resolution.define(DefinitonKind::Function, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitionKind::Function, item.ident.clone(), item.node_id);
                 mut_visitor::visit_fn(function, self);
             },
             ast::ItemKind::GlobalVar(ty, expr, is_const) => {
                 self.resolution.define(
-                    if *is_const {DefinitonKind::Global} else {DefinitonKind::Const},
+                    if *is_const {DefinitionKind::Global} else {DefinitionKind::Const},
                     item.ident.clone(), item.node_id);
                 self.visit_ty_expr(ty);
                 mut_visitor::visit_option(expr, |expr| self.visit_expr(expr));
@@ -280,7 +280,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
 
                 self.with_rib(|this| {
                     mut_visitor::visit_vec(&mut function.params, |p| this.visit_param(p));
-                    mut_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
+                    this.visit_expr(body);
                 });
             }
             ast::ItemKind::Struct(stc) => {
@@ -404,7 +404,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                             .fatal("generic types are not supported yet")
                             .with_span(ty.span.clone());
                     }
-                    ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Function { .. } =>
+                    ast::TypeExprKind::Ref(..) =>
                         panic!("invalid state after parsing type init")
                 }
             }
@@ -459,11 +459,6 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
             ast::TypeExprKind::Generic(..) => {
                 self.resolution.diagnostics
                     .fatal("generic types are not supported yet")
-                    .with_span(ty.span.clone());
-            }
-            ast::TypeExprKind::Function { .. } => {
-                self.resolution.diagnostics
-                    .fatal("function types are not supported yet")
                     .with_span(ty.span.clone());
             }
             ast::TypeExprKind::Array(base, cap) => {
@@ -557,7 +552,7 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn node_by_def_id(self, id: DefId) -> ast::Node<'tcx> {
         let resolutions = self.resolutions(());
-        assert_eq!(id.file, interface::INPUT_FILE_IDX, "Compiler is single file");
+        assert_eq!(id.file, interface::INPUT_FILE_IDX, "single-file compiler");
         self.ast_node(resolutions.declarations[id.index])
     }
 }
