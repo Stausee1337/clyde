@@ -256,7 +256,7 @@ pub mod caches {
     }
 
     pub struct DefIdCache<V> {
-        cache: RefCell<IndexVec<FileIdx, IndexVec<DefIndex, V>>>
+        cache: RefCell<IndexVec<FileIdx, HashMap<DefIndex, V, ahash::RandomState>>>
     }
 
     impl<V: Copy> Default for DefIdCache<V> {
@@ -271,14 +271,14 @@ pub mod caches {
 
         fn lookup(&self, key: &Self::Key) -> Option<Self::Value> {
             if let Some(per_file_cache) = self.cache.borrow().get(key.file) {
-                return per_file_cache.get(key.index).map(|value| *value);
+                return per_file_cache.get(&key.index).map(|value| *value);
             }
             None
         }
         
         fn complete(&self, key: Self::Key, value: Self::Value) { 
-            if let None = self.cache.borrow_mut().get(key.file) {
-                self.cache.borrow_mut().insert(key.file, IndexVec::default());
+            if self.cache.borrow_mut().get(key.file).is_none() {
+                self.cache.borrow_mut().insert(key.file, HashMap::default());
             }
 
             let mut per_file_cache = self.cache.borrow_mut();

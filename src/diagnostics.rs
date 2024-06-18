@@ -174,7 +174,7 @@ impl std::fmt::Display for DiagnosticKind {
             DiagnosticKind::Error => "ERROR",
             DiagnosticKind::Fatal => "FATAL",
             DiagnosticKind::Note => "NOTE",
-            DiagnosticKind::Warning => "WARN"
+            DiagnosticKind::Warning => "WARNING"
         })
     }
 }

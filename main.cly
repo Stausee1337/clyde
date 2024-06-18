@@ -7,7 +7,7 @@ struct User {
 void exit(int code);
 void println(*str message, int a);
 
-int main(int test) {
-    println("Hello, World", test);
-    return 0;
+int main(byte test) {
+    // println("Hello, World", test);
+    return test;
 }

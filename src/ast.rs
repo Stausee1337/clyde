@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::mem::transmute;
 use std::ops::Range;
 use std::hash::Hash;
@@ -257,8 +258,32 @@ pub enum StmtKind {
 }
 
 #[derive(Debug)]
-pub enum ControlFlow {
+pub struct ControlFlow {
+    pub kind: ControlFlowKind,
+    pub res: OnceCell<NodeId>
+}
+
+impl ControlFlow {
+    pub fn new(kind: ControlFlowKind) -> ControlFlow {
+        ControlFlow {
+            kind,
+            res: OnceCell::new()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ControlFlowKind {
     Break, Continue
+}
+
+impl std::fmt::Display for ControlFlowKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ControlFlowKind::Break => f.write_str("break"),
+            ControlFlowKind::Continue => f.write_str("continue"),
+        }
+    }
 }
 
 #[derive(Debug)]

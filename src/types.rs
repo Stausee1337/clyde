@@ -1,4 +1,4 @@
-use std::mem::transmute;
+use std::{mem::transmute, ops::Deref};
 
 use bumpalo::Bump;
 use bitflags::bitflags;
@@ -83,6 +83,14 @@ pub struct FieldDef {
 #[derive(Debug, Hash, Clone, Copy)]
 pub struct AdtDef<'tcx>(&'tcx AdtDefInner);
 
+impl<'tcx> Deref for AdtDef<'tcx> {
+    type Target = AdtDefInner;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
 #[derive(Debug, Hash)]
 pub enum ConstInner {
     Direct,
@@ -100,6 +108,7 @@ pub enum TyKind<'tcx> {
     Refrence(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
     DynamicArray(Ty<'tcx>),
+    Never,
     Err
 }
 
@@ -108,12 +117,30 @@ pub struct Ty<'tcx>(pub &'tcx TyKind<'tcx>);
 
 impl<'tcx> PartialEq for Ty<'tcx> {
     fn eq(&self, other: &Self) -> bool {
+        if let Ty(TyKind::Never | TyKind::Err) = self {
+            return true;
+        }
+        if let Ty(TyKind::Never | TyKind::Err) = other {
+            return true;
+        }
         std::ptr::eq(self.0, other.0)
     }
 }
 
-impl<'tcx> Eq for Ty<'tcx> {
+impl<'tcx> Eq for Ty<'tcx> {}
 
+impl<'tcx> std::fmt::Display for Ty<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            TyKind::Never => write!(f, "never"),
+            TyKind::Primitive(p) => write!(f, "{p}"),
+            TyKind::Adt(adt) => f.write_str(adt.name.get()),
+            TyKind::Refrence(ty) => write!(f, "*{ty}"),
+            TyKind::Array(ty, _) => write!(f, "[?]{ty}"),
+            TyKind::DynamicArray(ty) => write!(f, "[..]{ty}"),
+            TyKind::Err => write!(f, "Err"),
+        }
+    }
 }
 
 impl<'tcx> Ty<'tcx> {
@@ -133,6 +160,10 @@ impl<'tcx> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Err)
     }
 
+    pub fn new_never(tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
+        tcx.interners.intern_ty(TyKind::Never)
+    }
+
     pub fn new_primitive(tcx: TyCtxt<'tcx>, primitive: Primitive) -> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Primitive(primitive))
     }
@@ -148,7 +179,7 @@ pub enum NumberSign {
 }
 
 #[repr(u32)]
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, Clone, Copy)]
 pub enum Primitive {
     Bool, Void,
     SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint,
@@ -163,6 +194,19 @@ impl TryFrom<Symbol> for Primitive {
             return Err(());
         }
         Ok(unsafe { transmute(value) })
+    }
+}
+
+impl From<Primitive> for Symbol {
+    fn from(value: Primitive) -> Self {
+        unsafe { transmute(value) }
+    }
+}
+
+impl std::fmt::Display for Primitive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let symbol: Symbol = (*self).into();
+        f.write_str(symbol.get())
     }
 }
 

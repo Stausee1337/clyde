@@ -340,8 +340,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     }
                     ast::PatternKind::Literal(..) => { 
                         self.resolution.diagnostics
-                            .error(format!("unsensible pattern found in var declaration"))
+                            .error(format!("unsensible pattern found in variable declaration"))
                             .with_span(pat.span.clone());
+                        stmt.kind = ast::StmtKind::Err;
                         return;
                     }
                 };
@@ -420,6 +421,11 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 }
                 mut_visitor::visit_vec(args, |arg| self.visit_argument(arg));
                 self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], name);
+            }
+            ast::ExprKind::Block(body) => {
+                self.with_rib(|this| {
+                    mut_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
+                });
             }
             _ => mut_visitor::noop_visit_expr_kind(&mut expr.kind, self)
         }
@@ -568,6 +574,8 @@ pub fn run_resolve<'tcx>(
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
     rpass.visit(&mut tree);
+
+    println!("{tree:#?}");
 
     let feed = tcx.create_file(Some(interface::INPUT_FILE_IDX));
     feed.diagnostics_for_file(diagnostics);

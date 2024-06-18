@@ -189,7 +189,7 @@ SimpleTypeExpr: ast::TypeExpr = {
 };
 
 IfStatement: ast::Stmt = {
-    <sloc:@L> "if" <condition:Expression<"no-inits">> "{" <bif:Statement*> "}"
+    <sloc:@L> "if" <condition:Expression<"no-blocks">> "{" <bif:Statement*> "}"
     <else_block:("else" <ContinuedIfBlock>)?> <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::If(Box::new(condition), bif, else_block.map(Box::new)),
         span: (sloc..eloc),
@@ -214,7 +214,7 @@ ContinuedIfBlock: ast::Stmt = {
 };
 
 WhileStatement: ast::Stmt = {
-    <sloc:@L> "while" <condition:Expression<"no-inits">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
+    <sloc:@L> "while" <condition:Expression<"no-blocks">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::While(Box::new(condition), body),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
@@ -222,7 +222,7 @@ WhileStatement: ast::Stmt = {
 };
 
 ForStatement: ast::Stmt = {
-    <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression<"no-inits">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
+    <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression<"no-blocks">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
         kind: ast::StmtKind::For(pat, Box::new(iterator), body),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
@@ -231,12 +231,12 @@ ForStatement: ast::Stmt = {
 
 ControlFlowStmt: ast::Stmt = {
     <sloc:@L> "break" ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Break),
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Break)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
     <sloc:@L> "continue" ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::Continue),
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Continue)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }
@@ -538,35 +538,41 @@ Atom<What>: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <tyi:TypeOrArrayInit?> "{" <inits:OneOrMore<FieldOrDirectInit, ",">?> "}" <eloc:@R> if What != "no-inits" => ast::Expr {
+    <sloc:@L> <tyi:TypeOrArrayInit> "{" <inits:OneOrMore<FieldOrDirectInit, ",">?> "}" <eloc:@R> if What != "no-blocks" => ast::Expr {
         kind: ast::ExprKind::TypeInit(tyi.map(Box::new), inits.unwrap_or(Vec::new())),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id()
+    },
+    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> if What != "no-blocks" => ast::Expr { 
+        kind: ast::ExprKind::Block(stmts),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
 };
 
-TypeOrArrayInit: ast::TypeExpr = {
+TypeOrArrayInit: Option<ast::TypeExpr> = {
     <sloc:@L> <name:Name> <generic_args:("::" <@L> "<"  <OneOrMore<GenericArgument, ",">> ">" <@R>)?> <eloc:@R> => {
         if let Some((start, generic_args, end)) = generic_args {
-            return ast::TypeExpr {
+            return Some(ast::TypeExpr {
                 kind: ast::TypeExprKind::Generic(name, generic_args),
                 span: (start..end),
                 node_id: ctxt.make_node_id()
-            };
+            });
         }
-        ast::TypeExpr {
+        Some(ast::TypeExpr {
             kind: ast::TypeExprKind::Name(name),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
-        }
+        })
     },
     <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
-        ast::TypeExpr {
+        Some(ast::TypeExpr {
             kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
-        }
+        })
     },
+    "?" => None
 };
 
 FieldOrDirectInit: ast::TypeInit = {
