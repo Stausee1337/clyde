@@ -139,9 +139,9 @@ pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T
 }
 
 pub fn visit_fn<T: MutVisitor>(func: &mut Function, vis: &mut T) {
-    vis.visit_ty_expr(&mut func.returns);
-    visit_vec(&mut func.params, |p| vis.visit_param(p));
-    visit_vec(&mut func.generics, |generic| vis.visit_generic_param(generic));
+    vis.visit_ty_expr(&mut func.sig.returns);
+    visit_vec(&mut func.sig.params, |p| vis.visit_param(p));
+    visit_vec(&mut func.sig.generics, |generic| vis.visit_generic_param(generic));
     visit_option(&mut func.body, |body| vis.visit_expr(body));
 }
 
@@ -260,7 +260,6 @@ pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &
 pub fn noop_visit_argument<T: MutVisitor>(arg: &mut FunctionArgument, vis: &mut T) {
     match arg {
         FunctionArgument::Direct(expr) => vis.visit_expr(expr),
-        FunctionArgument::OutVar(pat) => vis.visit_pattern(pat),
         FunctionArgument::Keyword(_, expr) => vis.visit_expr(expr)
     }
 }

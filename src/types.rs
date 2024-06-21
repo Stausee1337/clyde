@@ -1,9 +1,9 @@
-use std::{mem::transmute, ops::Deref};
+use std::{mem::transmute, ops::Deref, fmt::Write, collections::HashSet};
 
 use bumpalo::Bump;
 use bitflags::bitflags;
 
-use crate::{ast::DefId, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}, diagnostics::DiagnosticsData};
+use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}, diagnostics::DiagnosticsData};
 
 bitflags! {
     #[derive(Debug, Hash)]
@@ -91,6 +91,20 @@ impl<'tcx> Deref for AdtDef<'tcx> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Signature<'tcx> {
+    pub returns: Ty<'tcx>,
+    pub params: &'tcx [Param<'tcx>],
+    pub name: Symbol,
+}
+
+#[derive(Clone, Copy)]
+pub struct Param<'tcx> {
+    pub name: Symbol,
+    pub ty: Ty<'tcx>,
+    pub node_id: NodeId
+}
+
 #[derive(Debug, Hash)]
 pub enum ConstInner {
     Direct,
@@ -108,6 +122,7 @@ pub enum TyKind<'tcx> {
     Refrence(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
     DynamicArray(Ty<'tcx>),
+    Function(DefId),
     Never,
     Err
 }
@@ -138,6 +153,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Refrence(ty) => write!(f, "*{ty}"),
             TyKind::Array(ty, _) => write!(f, "[?]{ty}"),
             TyKind::DynamicArray(ty) => write!(f, "[..]{ty}"),
+            TyKind::Function(_) => write!(f, "function"),
             TyKind::Err => write!(f, "Err"),
         }
     }
@@ -179,7 +195,7 @@ pub enum NumberSign {
 }
 
 #[repr(u32)]
-#[derive(Debug, Hash, Clone, Copy)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum Primitive {
     Bool, Void,
     SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint,
@@ -216,30 +232,46 @@ impl Primitive {
         if sign == NumberSign::Negative && matches!(self, Byte | UShort | Uint | ULong | NUint) {
             return false;
         }
-        let signed = match self {
-            SByte | Short | Int | Long | Nint => true,
-            Byte | UShort | Uint | ULong | NUint  => false,
-            _ => return false
-        };
 
-        let bits: u64 = match self {
-            SByte | Byte => 8,
-            Short | UShort => 16,
-            Int | Uint => 32,
-            Long | ULong => 64,
-            Nint | NUint => 64, // TODO: Decide based on platform
-            _ => unreachable!()
+        let signed = match self.signed() {
+            Some(signed) => signed,
+            None => return false,
         };
+        let bits = self.size() as u32;
 
         let range = if sign == NumberSign::Negative { // create lower range
             1 << (bits - 1)
         } else if signed { // create "small" upper range
             (1 << (bits - 1)) - 1
         } else { // create "big" upper range
-            (1 << bits) - 1
+            (1u64).checked_shl(bits).unwrap_or(0).wrapping_sub(1)
         };
 
         int <= range
+    }
+
+    pub fn signed(&self) -> Option<bool> {
+        use Primitive::*;
+        Some(match self {
+            SByte | Short | Int | Long | Nint => true,
+            Byte | UShort | Uint | ULong | NUint  => false,
+            _ => return None
+        })
+    }
+
+    pub fn size(&self) -> u8 {
+        use Primitive::*;
+        // TODO: Decide based on platform
+        // (currently only valid for 64bit platforms)
+        match self {
+            SByte | Byte => 8,
+            Short | UShort => 16,
+            Int | Uint => 32,
+            Long | ULong => 64,
+            Nint | NUint => 64, 
+            Bool => 8, Void => 0,
+            Char => 32, String => 128
+        }
     }
 }
 

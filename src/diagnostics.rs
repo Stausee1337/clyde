@@ -97,20 +97,24 @@ impl<'tcx> DiagnosticsData<'tcx> {
 
     pub fn print_diagnostics(&self) {
         for event in self.events.borrow().iter() {
-            let source_pos = event.location.pos_in_source(&self.source);
+            let source_positions = event.location.pos_in_source(&self.source);
             eprintln!("{}: {}:{}: {}",
                 event.kind,
                 self.filename,
-                source_pos.map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
+                source_positions.first()
+                    .map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
                     .unwrap_or(String::new()),
                 event.message);
             if event.location.has_span() {
-                let source_pos = source_pos.unwrap();
-                let lineno = source_pos.position.0.to_string();
-                eprintln!(" {lineno}|{line}", line = source_pos.line(&self.source));
-                eprintln!(" {npad}|{lpad}{span}",
-                    npad = " ".repeat(lineno.len()), lpad = " ".repeat(source_pos.position.1 - 1),
-                    span = "^".repeat(event.location.len().unwrap()));
+                for (idx, source_pos) in source_positions.iter().enumerate() {
+                    let lineno = source_pos.position.0.to_string();
+                    eprintln!(" {lineno}|{line}", line = source_pos.line(&self.source));
+                    if idx == 0 || idx == source_positions.len() - 1 {
+                        eprintln!(" {npad}|{lpad}{span}",
+                            npad = " ".repeat(lineno.len()), lpad = " ".repeat(source_pos.position.1 - 1),
+                            span = "^".repeat(source_pos.length));
+                    }
+                }
             }
         }
     }
@@ -186,27 +190,42 @@ enum Where {
 }
 
 impl Where {
-    fn pos_in_source(&self, source: &str) -> Option<SourcePosition> {
-        let pos = match self {
-            Where::Unspecified => return None,
-            Where::Position(pos) => *pos,
-            Where::Span(Range { start, .. }) => *start
+    fn pos_in_source(&self, source: &str) -> Vec<SourcePosition> {
+        let (start, end) = match self {
+            Where::Unspecified => return vec![],
+            Where::Position(pos) => (*pos, *pos),
+            Where::Span(Range { start, end }) => (*start, *end)
         };
 
         let mut bol = 0;
         let mut line = 1;
+        let mut positions = vec![];
+        let mut line_flushed = false;
         for (offset, char) in source.chars().enumerate() {
-            if offset == pos {
-                return Some(SourcePosition {
+            if offset >= start && offset <= end && !line_flushed {
+                positions.push(SourcePosition {
+                    bol,
+                    length: 0,
                     position: (line, offset - bol),
-                    bol
                 });
-            } else if char == '\n' {
+                line_flushed = true;
+            } else if offset > end {
+                if let Some(pos) = positions.last_mut() {
+                    pos.length = (offset - 1) - (pos.position.1 + bol);
+                }
+                break;
+            }
+
+            if char == '\n' {
+                if let Some(pos) = positions.last_mut() {
+                    pos.length = offset - (pos.position.1 + bol);
+                }
                 bol = offset;
                 line += 1;
+                line_flushed = false;
             }
         }
-        None
+        positions
     }
 
     fn has_span(&self) -> bool {
@@ -215,20 +234,13 @@ impl Where {
             _ => false
         }
     }
-
-    fn len(&self) -> Option<usize> {
-        Some(match self {
-            Where::Span(span) => span.len(),
-            Where::Position(..) => 0,
-            _ => return None
-        })
-    }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SourcePosition {
     position: (usize, usize),
-    bol: usize
+    bol: usize,
+    length: usize
 }
 
 impl SourcePosition {

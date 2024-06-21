@@ -110,11 +110,13 @@ define_queries! {
     [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
     [] fn adt_def(ast::DefId) -> types::AdtDef<'tcx>;
     [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
+    [] fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
 }
 
 providers! {
     @type_of(typecheck::type_of),
-    @typecheck(typecheck::typecheck)
+    @typecheck(typecheck::typecheck),
+    @fn_sig(typecheck::fn_sig)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(

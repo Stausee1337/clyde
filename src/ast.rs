@@ -31,7 +31,7 @@ impl<'ast> Node<'ast> {
                 ItemKind::Function(func) => {
                     if let Some(ref body) = func.body {
                         Some(Body {
-                            params: &func.params,
+                            params: &func.sig.params,
                             body
                         })
                     } else {
@@ -51,23 +51,13 @@ impl<'ast> Node<'ast> {
         }
     }
 
-    pub fn signature(self) -> Option<FnSignature<'ast>> {
+    pub fn signature(self) -> Option<&'ast FnSignature> {
         match self {
-            Node::Item(Item { kind: ItemKind::Function(func), .. }) => {
-                Some(FnSignature {
-                    ret_ty: &func.returns,
-                    params: &func.params
-                })
-            }
+            Node::Item(Item { kind: ItemKind::Function(func), .. }) =>
+                Some(&func.sig),
             _ => None
         }
     }
-}
-
-#[derive(Debug)]
-pub struct FnSignature<'ast> {
-    pub ret_ty: &'ast TypeExpr,
-    pub params:  &'ast [Param]
 }
 
 #[derive(Debug)]
@@ -216,12 +206,17 @@ pub struct VariantDef {
 
 #[derive(Debug)]
 pub struct Function {
+    pub sig: FnSignature,
     pub body: Option<Box<Expr>>,
-    pub generics: Vec<GenericParam>,
-    pub params: Vec<Param>,
-    pub returns: TypeExpr,
     pub span: Range<usize>,
     pub attributes: Vec<Attribute>
+}
+
+#[derive(Debug)]
+pub struct FnSignature {
+    pub returns: TypeExpr,
+    pub params: Vec<Param>,
+    pub generics: Vec<GenericParam>,
 }
 
 #[derive(Debug)]
@@ -334,15 +329,34 @@ pub enum BinaryOperator {
     BooleanAnd, BooleanOr
 }
 
+
+impl std::fmt::Display for BinaryOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use BinaryOperator::{
+            Plus, Minus, Mul, Div, Mod,
+            ShiftLeft, ShiftRight,
+            BitwiseAnd, BitwiseOr, BitwiseXor,
+            Equal, NotEqual, GreaterThan, GreaterEqual, LessThan, LessEqual,
+            BooleanAnd, BooleanOr
+        };
+        f.write_str(match self {
+            Plus => "+", Minus => "-", Mul => "*", Div => "/", Mod => "%",
+            ShiftLeft => "<<", ShiftRight => ">>",
+            BitwiseAnd => "&", BitwiseOr => "|", BitwiseXor => "^",
+            Equal => "==", NotEqual => "!=", GreaterThan => ">", GreaterEqual => ">=", LessThan => "<", LessEqual => "<=",
+            BooleanAnd => "&&", BooleanOr => "||"
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOperator {
-    BooleanNot, BitwiseInvert, Pos, Neg, Ref
+    BooleanNot, BitwiseInvert, Neg, Ref
 }
 
 #[derive(Debug)]
 pub enum FunctionArgument {
     Direct(Box<Expr>),
-    OutVar(Pattern),
     Keyword(Ident, Box<Expr>)
 }
 

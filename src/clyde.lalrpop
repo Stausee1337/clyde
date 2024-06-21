@@ -85,10 +85,13 @@ VariantDef: ast::VariantDef = {
 FunctionDef: ast::Item = {
     <sloc:@L> <ret_ty:TypeExpr> <ident:Ident> <generics:("<" <GenericParams> ">")?> 
     <p:Parameters> <body:Body> <eloc:@R> => {
-        let func = ast::Function {
+        let sig = ast::FnSignature {
             params: p.unwrap_or(Vec::new()),
             returns: ret_ty,
             generics: generics.unwrap_or(Vec::new()),
+        };
+        let func = ast::Function {
+            sig,
             span: (sloc..eloc),
             body,
             attributes: vec![]
@@ -450,7 +453,6 @@ UnaryExpr<What>: ast::Expr = {
 UnaryOp: ast::UnaryOperator = {
     "~" => ast::UnaryOperator::BitwiseInvert,
     "-" => ast::UnaryOperator::Neg,
-    "+" => ast::UnaryOperator::Pos,
     "&" => ast::UnaryOperator::Ref,
 };
 
@@ -471,8 +473,6 @@ AtomExpr<What>: ast::Expr = {
 FnArgument: ast::FunctionArgument = {
     <value:Expression<"all">> =>
         ast::FunctionArgument::Direct(Box::new(value)),
-    "out" "var" <pat:Pat> =>
-        ast::FunctionArgument::OutVar(pat),
     <arg:Ident> ":" <value:Expression<"all">> =>
         ast::FunctionArgument::Keyword(arg, Box::new(value))
 };

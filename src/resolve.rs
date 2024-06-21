@@ -264,22 +264,22 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &mut ast::Item) {
         match &mut item.kind {
             ast::ItemKind::Function(function) => {
-                if function.generics.len() > 0 {
-                    let first = function.generics.first().unwrap();
-                    let last = function.generics.last().unwrap();
+                if function.sig.generics.len() > 0 {
+                    let first = function.sig.generics.first().unwrap();
+                    let last = function.sig.generics.last().unwrap();
                     self.resolution.diagnostics
                         .fatal("function generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
-                self.visit_ty_expr(&mut function.returns);
+                self.visit_ty_expr(&mut function.sig.returns);
 
                 let Some(ref mut body) = function.body else {
-                    mut_visitor::visit_vec(&mut function.params, |p| self.visit_param(p));
+                    mut_visitor::visit_vec(&mut function.sig.params, |p| self.visit_param(p));
                     return;
                 };
 
                 self.with_rib(|this| {
-                    mut_visitor::visit_vec(&mut function.params, |p| this.visit_param(p));
+                    mut_visitor::visit_vec(&mut function.sig.params, |p| this.visit_param(p));
                     this.visit_expr(body);
                 });
             }

@@ -109,9 +109,9 @@ pub fn noop_visit_item_kind<T: NodeVisitor>(item_kind: &ItemKind, vis: &T) {
 }
 
 pub fn visit_fn<T: NodeVisitor>(func: &Function, vis: &T) {
-    vis.visit_ty_expr(&func.returns);
-    visit_vec(&func.params, |p| vis.visit_param(p));
-    visit_vec(&func.generics, |generic| vis.visit_generic_param(generic));
+    vis.visit_ty_expr(&func.sig.returns);
+    visit_vec(&func.sig.params, |p| vis.visit_param(p));
+    visit_vec(&func.sig.generics, |generic| vis.visit_generic_param(generic));
     visit_option(&func.body, |body| vis.visit_expr(body));
 }
 
@@ -230,7 +230,6 @@ pub fn noop_visit_ty_expr_kind<T: NodeVisitor>(ty_kind: &TypeExprKind, vis: &T) 
 pub fn noop_visit_argument<T: NodeVisitor>(arg: &FunctionArgument, vis: &T) {
     match arg {
         FunctionArgument::Direct(expr) => vis.visit_expr(expr),
-        FunctionArgument::OutVar(pat) => vis.visit_pattern(pat),
         FunctionArgument::Keyword(_, expr) => vis.visit_expr(expr)
     }
 }

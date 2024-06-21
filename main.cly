@@ -5,9 +5,13 @@ struct User {
 }
 
 void exit(int code);
-void println(*str message, int a);
+void println(*str message);
 
-int main(byte test) {
-    // println("Hello, World", test);
-    return test;
+int main(ulong argc) {
+    if argc <= 1 {
+        return 1;
+    }
+    println("Hello, World");
+
+    return 0;
 }
