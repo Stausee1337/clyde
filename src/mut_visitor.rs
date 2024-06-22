@@ -203,7 +203,7 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
             vis.visit_expr(base);
             visit_vec(args, |arg| vis.visit_expr(arg));
         }
-        ExprKind::Attribute(base, _) => vis.visit_expr(base),
+        ExprKind::Field(base, _) => vis.visit_expr(base),
         ExprKind::Constant(cnst) => vis.visit_const(cnst),
         ExprKind::String(_) => (),
         ExprKind::Name(name) => vis.visit_name(name),
@@ -254,6 +254,8 @@ pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &
                 ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
             }
         }
+        TypeExprKind::Slice(base) =>
+            vis.visit_ty_expr(base)
     }
 }
 

@@ -5,15 +5,14 @@ use bitflags::bitflags;
 
 use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}, diagnostics::DiagnosticsData};
 
-bitflags! {
-    #[derive(Debug, Hash)]
-    pub struct AdtFlags: u32 {
-        const ENUM = 0b01;
-        const STRUCT = 0b10;
-        const UNION = 0b11;
-    }
-}
 
+#[derive(Debug, Hash)]
+#[repr(u32)]
+pub enum AdtKind {
+    Enum,
+    Struct,
+    Union,
+}
 macro_rules! interners {
     ($($interner:ident : $fn:ident($ty:ty) -> $ret:ident;)*) => {
         $(
@@ -71,7 +70,24 @@ pub struct AdtDefInner {
     pub def: DefId,
     pub name: Symbol,
     fields: index_vec::IndexVec<FieldIdx, FieldDef>,
-    flags: AdtFlags,
+    pub kind: AdtKind,
+}
+
+impl AdtDefInner {
+    pub fn new(
+        def: DefId,
+        name: Symbol,
+        fields: index_vec::IndexVec<FieldIdx, FieldDef>,
+        kind: AdtKind
+    ) -> Self {
+        Self {
+            def, name, fields, kind
+        }
+    }
+
+    pub fn fields(&self) -> impl Iterator<Item = (FieldIdx, &FieldDef)> {
+        self.fields.iter_enumerated()
+    }
 }
 
 #[derive(Debug, Hash)]
@@ -120,6 +136,7 @@ pub enum TyKind<'tcx> {
     Primitive(Primitive),
     Adt(AdtDef<'tcx>),
     Refrence(Ty<'tcx>),
+    Slice(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
     DynamicArray(Ty<'tcx>),
     Function(DefId),
@@ -151,6 +168,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Primitive(p) => write!(f, "{p}"),
             TyKind::Adt(adt) => f.write_str(adt.name.get()),
             TyKind::Refrence(ty) => write!(f, "*{ty}"),
+            TyKind::Slice(ty) => write!(f, "[]{ty}"),
             TyKind::Array(ty, _) => write!(f, "[?]{ty}"),
             TyKind::DynamicArray(ty) => write!(f, "[..]{ty}"),
             TyKind::Function(_) => write!(f, "function"),
@@ -162,6 +180,10 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
 impl<'tcx> Ty<'tcx> {
     pub fn new_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, cnst: Const<'tcx>) -> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Array(ty, cnst))
+    }
+
+    pub fn new_slice(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
+        tcx.interners.intern_ty(TyKind::Slice(ty))
     }
 
     pub fn new_dyn_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
@@ -186,6 +208,25 @@ impl<'tcx> Ty<'tcx> {
 
     pub fn new_adt(tcx: TyCtxt<'tcx>, adt: AdtDef<'tcx>) -> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Adt(adt))
+    }
+
+    pub fn new_function(tcx: TyCtxt<'tcx>, def: DefId) -> Ty<'tcx> {
+        tcx.interners.intern_ty(TyKind::Function(def))
+    }
+
+    // Searches slice types for bendable types (Never, Err)
+    // while preferring Err over Never
+    pub fn with_bendable(types: &[Ty<'tcx>]) -> Option<Ty<'tcx>> {
+        let mut found = None;
+        for ty in types {
+            if let Ty(TyKind::Err) = ty {
+                return Some(*ty);
+            } else if let Ty(TyKind::Never) = ty {
+                found = Some(*ty);
+            }
+        }
+
+        return found;
     }
 }
 

@@ -17,7 +17,8 @@ pub enum Node<'ast> {
     Pattern(&'ast Pattern),
     SourceFile(&'ast SourceFile),
     Stmt(&'ast Stmt),
-    TypeExpr(&'ast TypeExpr)
+    TypeExpr(&'ast TypeExpr),
+    Field(&'ast FieldDef)
 }
 
 impl<'ast> Node<'ast> {
@@ -103,6 +104,11 @@ pub struct DefId {
     pub file: FileIdx
 }
 
+pub const DEF_ID_UNDEF: DefId = DefId {
+    index: DefIndex(u32::MAX),
+    file: FileIdx(u32::MAX)
+};
+
 impl From<DefIndex> for DefId {
     fn from(index: DefIndex) -> Self {
         Self { index, file: INPUT_FILE_IDX }
@@ -186,7 +192,8 @@ pub struct FieldDef {
     pub ty: TypeExpr,
     pub default_init: Option<Box<Expr>>,
     pub span: Range<usize>,
-    pub node_id: NodeId
+    pub node_id: NodeId,
+    pub def_id: DefId
 }
 
 #[derive(Debug)]
@@ -296,7 +303,7 @@ pub enum ExprKind {
     FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
     TypeInit(Option<Box<TypeExpr>>, Vec<TypeInit>),
     Subscript(Box<Expr>, Vec<Expr>),
-    Attribute(Box<Expr>, Ident),
+    Field(Box<Expr>, Ident),
     Constant(Constant),
     String(String),
     Name(QName),
@@ -395,6 +402,7 @@ pub enum TypeExprKind {
     Name(QName),
     Generic(QName, Vec<GenericArgument>),
     Array(Box<TypeExpr>, ArrayCapacity),
+    Slice(Box<TypeExpr>),
 }
 
 #[derive(Debug)]

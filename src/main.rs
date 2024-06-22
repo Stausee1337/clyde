@@ -31,6 +31,11 @@ fn main() -> ExitCode {
         gcx.enter(|tcx| {
             resolve::run_resolve(tcx, compiler.parse()?);
 
+            if gcx.has_fatal_errors() {
+                gcx.all_diagnostics(|diag| diag.print_diagnostics());
+                return Err(());
+            }
+
             // println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
             tcx.resolutions(()).declarations.iter_enumerated().for_each(|(index, _)| {
                 let def_id = ast::DefId { index, file: interface::INPUT_FILE_IDX };
@@ -42,10 +47,6 @@ fn main() -> ExitCode {
             Ok(())
         })?;
 
-        if gcx.has_fatal_errors() {
-            gcx.all_diagnostics(|diag| diag.print_diagnostics());
-            return Ok::<ExitCode, ()>(ExitCode::FAILURE);
-        }
 
         // lower()
 

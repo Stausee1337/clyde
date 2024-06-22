@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range, cell::OnceCell};
 
-use crate::{ast::{self, Resolution, DefinitionKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}, queries::queries::resolutions};
+use crate::{ast::{self, Resolution, DefinitionKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}};
 
 /// AST (&tree) 
 ///     |          |
@@ -144,6 +144,12 @@ impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
             ast::ItemKind::Err => ()
         } 
     }
+
+    fn visit_field_def(&mut self, field_def: &mut ast::FieldDef) {
+        self.visit_ty_expr(&mut field_def.ty);
+        mut_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
+        field_def.def_id = self.resolution.declarations.push(field_def.node_id).into();
+    }
 }
 
 #[derive(Default)]
@@ -256,6 +262,10 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         self.resolution.diagnostics
             .error(format!("could not find {space} {name}", space = pspaces[0], name = ident.symbol.get()))
             .with_span(ident.span.clone());
+        *name = ast::QName::Resolved {
+            ident,
+            res_kind: Resolution::Err
+        };
         false
     }
 }
@@ -406,7 +416,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                             .with_span(ty.span.clone());
                     }
                     ast::TypeExprKind::Ref(..) =>
-                        panic!("invalid state after parsing type init")
+                        panic!("invalid state after parsing type init"),
+                    ast::TypeExprKind::Slice(base) =>
+                        self.visit_ty_expr(base)
                 }
             }
             ast::ExprKind::FunctionCall(base, args, generic_args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
@@ -475,6 +487,8 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                 }
             }
+            ast::TypeExprKind::Slice(base) =>
+                self.visit_ty_expr(base)
         }
     }
 }
@@ -547,6 +561,15 @@ impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
         node_visitor::noop_visit_pattern_kind(&pattern.kind, self);
     }
 
+    fn visit_field_def(&self, field_def: &ast::FieldDef) { 
+        if field_def.node_id == self.needle {
+            self.node.set(ast::Node::Field(field_def).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        self.visit_ty_expr(&field_def.ty);
+        node_visitor::visit_option(&field_def.default_init, |default_init| self.visit_expr(default_init));
+    }
 }
 
 impl<'tcx> TyCtxt<'tcx> {

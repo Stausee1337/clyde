@@ -1,17 +1,32 @@
 
-struct User {
-    *str name;
-    int age;
+struct Vector2 {
+    byte x;
+    byte y;
 }
 
 void exit(int code);
-void println(*str message);
+void println(*str message, byte a);
 
-int main(ulong argc) {
-    if argc <= 1 {
+struct Slice {
+    nuint size;
+    *void data;
+}
+
+// nuint len([]*str slice) {
+//     var slice = pun(Slice)slice;
+//     return slice.size;
+// }
+
+int main([]*str argv) {
+    *Vector2 a;
+    println(argv[1], a.x);
+
+    if len(argv) <= 1 {
         return 1;
     }
-    println("Hello, World");
+    a.x = 12;
+
 
     return 0;
 }
+

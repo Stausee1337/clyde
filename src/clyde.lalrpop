@@ -56,7 +56,12 @@ StructDef: ast::Item = {
 
 StructField: ast::FieldDef = {
     <sloc:@L> <ty:TypeExpr> <name:Ident> <default_init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::FieldDef {
-        name, ty, default_init: default_init.map(Box::new), span: (sloc..eloc), node_id: ctxt.make_node_id(),
+        name,
+        ty,
+        default_init: default_init.map(Box::new),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id(),
+        def_id: ast::DEF_ID_UNDEF
     }
 };
 
@@ -182,7 +187,14 @@ SimpleTypeExpr: ast::TypeExpr = {
             node_id: ctxt.make_node_id()
         }
     },
-    <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
+    <sloc:@L> "[" <cap:ArrayCap?> "]" <base:TypeExpr> <eloc:@R> => {
+        let Some(cap) = cap else {
+            return ast::TypeExpr {
+                kind: ast::TypeExprKind::Slice(Box::new(base)),
+                span: (sloc..eloc),
+                node_id: ctxt.make_node_id()
+            };
+        };
         ast::TypeExpr {
             kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),
@@ -464,7 +476,7 @@ AtomExpr<What>: ast::Expr = {
         node_id: ctxt.make_node_id()
     },
     <sloc:@L> <base:AtomExpr<What>> "." <name:Ident> <eloc:@R> => ast::Expr {
-        kind: ast::ExprKind::Attribute(Box::new(base), name),
+        kind: ast::ExprKind::Field(Box::new(base), name),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
@@ -614,7 +626,14 @@ TypeExpr: ast::TypeExpr = {
             node_id: ctxt.make_node_id()
         }
     },
-    <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
+    <sloc:@L> "[" <cap:ArrayCap?> "]" <base:TypeExpr> <eloc:@R> => {
+        let Some(cap) = cap else {
+            return ast::TypeExpr {
+                kind: ast::TypeExprKind::Slice(Box::new(base)),
+                span: (sloc..eloc),
+                node_id: ctxt.make_node_id()
+            };
+        };
         ast::TypeExpr {
             kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),
