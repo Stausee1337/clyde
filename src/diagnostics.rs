@@ -96,7 +96,21 @@ impl<'tcx> DiagnosticsData<'tcx> {
     }
 
     pub fn print_diagnostics(&self) {
-        for event in self.events.borrow().iter() {
+        let mut events = self.events.take();
+        events.sort_by(|a, b| {
+            let pos_a = match &a.location {
+                Where::Span(span) => span.start,
+                Where::Position(pos) => *pos,
+                Where::Unspecified => usize::MAX
+            };
+            let pos_b = match &b.location {
+                Where::Span(span) => span.start,
+                Where::Position(pos) => *pos,
+                Where::Unspecified => usize::MAX
+            };
+            pos_a.cmp(&pos_b)
+        });
+        for event in &events {
             let source_positions = event.location.pos_in_source(&self.source);
             eprintln!("{}: {}:{}: {}",
                 event.kind,

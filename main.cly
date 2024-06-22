@@ -18,12 +18,12 @@ struct Slice {
 // }
 
 int main([]*str argv) {
-    *Vector2 a;
-    println(argv[1], a.x);
-
     if len(argv) <= 1 {
         return 1;
     }
+    *Vector2 a;
+    println(argv[1], a.x);
+
     a.x = 12;
 
 
