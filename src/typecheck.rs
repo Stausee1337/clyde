@@ -53,7 +53,7 @@ struct TypecheckCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
     ribs: Vec<Rib<'tcx>>,
     outer_rib: Option<Rib<'tcx>>,
-    field_idicies: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
+    field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     diagnostics: Diagnostics<'tcx>,
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
@@ -65,7 +65,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             tcx,
             ribs: Vec::new(),
             outer_rib: None,
-            field_idicies: Default::default(),
+            field_indices: Default::default(),
             lowering_ctxt: LoweringCtxt::new(tcx),
             diagnostics: tcx.diagnostics_for_file(interface::INPUT_FILE_IDX),
             associations: Default::default()
@@ -113,6 +113,37 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             assert_eq!(ty, prev, "tried to assoicate {node_id:?} twice with different types; First {prev:?} then {ty:?}");
             println!("[WARNING] unwanted attempt to associate {node_id:?} with {ty:?} twice")
         }
+    }
+
+    fn autoderef(&self, mut ty: Ty<'tcx>, level: i32) -> Option<Ty<'tcx>> {
+        let mut idx = 0;
+        while idx != level {
+            match ty {
+                Ty(types::TyKind::Refrence(base)) => {
+                    if idx == level - 1 {
+                        return Some(*base);
+                    }
+                    ty = *base;
+                },
+                Ty(types::TyKind::Err | types::TyKind::Never) =>
+                    return Some(ty),
+                _ => break
+            }
+            idx += 1;
+        }
+        if level < 0 { // autoderef case
+            return Some(ty);
+        }
+        None
+    }
+    
+    fn deref(&self, ty: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
+        let Some(deref) = self.autoderef(ty, 1) else {
+            self.diagnostics.error(format!("type {ty} cannot be derefrenced"))
+                .with_span(span);
+            return Ty::new_error(self.tcx);
+        };
+        deref
     }
 
     fn check_stmt_assign(&mut self, lhs: &'tcx ast::Expr, rhs: &'tcx ast::Expr) -> bool {
@@ -624,7 +655,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         if let Ty(types::TyKind::Never | types::TyKind::Err) = ty {
             return ty;
         }
-        let Ty(types::TyKind::Adt(adt_def)) = ty else {
+        let Ty(types::TyKind::Adt(adt_def)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             self.diagnostics.error(format!("fields/variants are only found on structs and enums, found {ty}"))
                 .with_span(expr.span.clone());
             return Ty::new_error(self.tcx);
@@ -647,7 +678,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return Ty::new_error(self.tcx);
         };
 
-        self.field_idicies.insert(expr.node_id, idx);
+        self.field_indices.insert(expr.node_id, idx);
         self.tcx.type_of(fdef.def)
     }
 
@@ -673,6 +704,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_binop(binop, expr.span.clone(), expected),
             ast::ExprKind::UnaryOp(expr, unop) => 
                 self.check_expr_unary(*unop, expr, expected),
+            ast::ExprKind::Deref(base) => {
+                let expectation = match expected {
+                    Some(ty) => Expectation::Guide(Ty::new_refrence(self.tcx, ty)),
+                    _ => Expectation::None
+                };
+                let ty = self.check_expr_with_expectation(base, expectation);
+                self.deref(ty, expr.span.clone())
+            }
             ast::ExprKind::Name(name) =>
                 self.check_expr_name(name),
             ast::ExprKind::Block(stmts) =>
