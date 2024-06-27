@@ -225,7 +225,7 @@ impl Where {
                 line_flushed = true;
             } else if offset > end {
                 if let Some(pos) = positions.last_mut() {
-                    pos.length = (offset - 1) - (pos.position.1 + bol);
+                    pos.length = (offset - 1) - (pos.position.1 + pos.bol);
                 }
                 break;
             }

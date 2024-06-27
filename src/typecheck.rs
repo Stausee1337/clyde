@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, ops::Range};
 
-use crate::{context::TyCtxt, types::{Ty, Const, ConstInner, Primitive, TyKind, NumberSign, self}, ast::{DefId, self, DefinitionKind, ControlFlow}, interface, diagnostics::Diagnostics, symbol};
+use crate::{context::TyCtxt, types::{Ty, Const, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, ControlFlow, TypeExpr}, interface, diagnostics::Diagnostics, symbol};
 
 struct Rib<'tcx> {
     kind: RibKind,
@@ -207,6 +207,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     fn check_stmt_local(&mut self,
         stmt: &'tcx ast::Stmt, expr: Option<&'tcx ast::Expr>, ty: Option<&'tcx ast::TypeExpr>) -> bool {
         let expected = ty.map(|ty| self.lowering_ctxt.lower_ty(&ty));
+
+        if let Some(expected) = expected {
+            if expected.is_incomplete() {
+                let span = unsafe { ty.unwrap_unchecked() }.span.clone();
+                self.diagnostics.fatal(format!("type infrence in local variables is not supported"))
+                    .with_span(span);
+            }
+        }
+
         if expected.is_none() && expr.is_none() {
             self.diagnostics.error("type-anonymous variable declarations require an init expresssion")
                 .with_span(stmt.span.clone());
@@ -222,7 +231,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 // eg. var test = todo();                                                        
                 return true;
             }
-            self.ty_assoc(stmt.node_id, ty);
+            self.ty_assoc(stmt.node_id, expected.unwrap_or(ty));
         } else if let Some(expected) = expected {
             // TODO: check if TyKind can acutally be instantiated like this:
             // Type var; So to speak, checking if a type is fully defaultable
@@ -230,6 +239,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         } else {
             unreachable!()
         }
+
         false
     }
 
@@ -292,7 +302,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_integer(&mut self, int: u64, sign: NumberSign, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
-        if let Some(Ty(TyKind::Primitive(primitive))) = expected {
+        if let Some(Ty(types::TyKind::Primitive(primitive))) = expected {
             if primitive.integer_fit(int, sign) {
                 return expected.unwrap();
             }
@@ -526,13 +536,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                       unop: ast::UnaryOperator, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         match unop {
             ast::UnaryOperator::Neg => {
+                use types::TyKind::{Err, Never, Primitive};
                 use types::Primitive::{SByte, Short, Int, Long, Nint};
+
                 let expectation = match expected {
                     Some(expected) => Expectation::Guide(expected),
                     None => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(expr, expectation);
-                let Ty(types::TyKind::Primitive(SByte | Short | Int | Long | Nint)) = ty else {
+                let Ty(Primitive(SByte | Short | Int | Long | Nint) | Err | Never) = ty else {
                     self.diagnostics.error(format!("negation `-` is not defined for type {ty}"))
                         .with_span(expr.span.clone());
                     return Ty::new_error(self.tcx);
@@ -540,13 +552,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ty
             }
             ast::UnaryOperator::BitwiseInvert => {
+                use types::TyKind::{Err, Never, Primitive};
                 use types::Primitive::{SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint};
+
                 let expectation = match expected {
                     Some(expected) => Expectation::Guide(expected),
                     None => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(expr, expectation);
-                let Ty(types::TyKind::Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint)) = ty else {
+                let Ty(Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint) | Err | Never) = ty else {
                     self.diagnostics.error(format!("invert `~` is not defined for type {ty}"))
                         .with_span(expr.span.clone());
                     return Ty::new_error(self.tcx);
@@ -563,6 +577,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     _ => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(expr, expectation);
+                if let Ty(types::TyKind::Err | types::TyKind::Never) = ty {
+                    return ty;
+                }
                 Ty::new_refrence(self.tcx, ty)
             }
         }
@@ -682,11 +699,113 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         self.tcx.type_of(fdef.def)
     }
 
+    fn check_expr_init(
+        &mut self, ty_epxr: Option<&'tcx TypeExpr>,
+        inits: &'tcx [ast::TypeInit], expected: Option<Ty<'tcx>>, span: Range<usize>) -> Ty<'tcx> {
+        let ty = ty_epxr.map(|expr| self.lowering_ctxt.lower_ty(expr));
+        
+        let Some(ty) = ty.or(expected) else {
+            self.diagnostics.error("can't infer type of anonymous init expresssion")
+                .with_span(span);
+            return Ty::new_error(self.tcx);
+        };
+
+        use types::TyKind;
+        match ty {
+            Ty(TyKind::Primitive(..)) => {
+                let start = span.start;
+                self.diagnostics.error(format!("expected struct, found primitive {ty}"))
+                    .with_span(span);
+                self.diagnostics.note("initialze primitive directly")
+                    .with_pos(start);
+            }
+            Ty(TyKind::Refrence(..)) => {
+                self.diagnostics.error(format!("expected struct, found {ty}"))
+                    .with_span(span);
+                return Ty::new_error(self.tcx);
+            }
+            Ty(TyKind::Slice(..)) => {
+                let start = span.start;
+                self.diagnostics.error(format!("expected struct, found slice {ty}"))
+                    .with_span(span);
+                self.diagnostics.note("initialize a fixed or dynamic array")
+                    .with_pos(start);
+            }
+            Ty(kind @ (TyKind::Array(base, _) | TyKind::DynamicArray(base))) => {
+                for init in inits {
+                    match init {
+                        ast::TypeInit::Direct(expr) => {
+                            self.check_expr_with_expectation(expr, Expectation::Coerce(*base));
+                        }
+                        ast::TypeInit::Field(ident, expr) => {
+                            self.diagnostics.error("field initializer in array initialization is invalid")
+                                .with_span(ident.span.start..expr.span.end);
+                        }
+                    }
+                }
+            }
+            Ty(TyKind::Adt(atd_def)) => match atd_def.kind {
+                types::AdtKind::Struct => {
+                    let fields: HashMap<_, _, ahash::RandomState> = atd_def.fields()
+                        .map(|(idx, fdef)| (fdef.symbol, (idx, fdef)))
+                        .collect();
+                    for init in inits {
+                        match init {
+                            ast::TypeInit::Field(ident, expr) => {
+                                let Some((idx, fdef)) = fields.get(&ident.symbol) else {
+                                    self.diagnostics.error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
+                                        .with_span(ident.span.clone());
+                                    continue;
+                                };
+                                let fty = self.tcx.type_of(fdef.def);
+                                self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
+                                self.field_indices.insert(expr.node_id, *idx);
+                            }
+                            ast::TypeInit::Direct(expr) if matches!(expr.kind, ast::ExprKind::Name(..)) => {
+                                let ident = match &expr.kind {
+                                    ast::ExprKind::Name(ast::QName::Unresolved(ident)) => ident,
+                                    ast::ExprKind::Name(ast::QName::Resolved { ident, .. }) => ident,
+                                    _ => unreachable!()
+                                };
+                                let Some((idx, fdef)) = fields.get(&ident.symbol) else {
+                                    self.diagnostics.error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
+                                        .with_span(ident.span.clone());
+                                    continue;
+                                };
+                                let fty = self.tcx.type_of(fdef.def);
+                                self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
+                                self.field_indices.insert(expr.node_id, *idx);
+                            }
+                            ast::TypeInit::Direct(expr) => {
+                                self.diagnostics.error("immediate initializer in struct initialization is invalid")
+                                    .with_span(expr.span.clone());
+                            }
+                        }
+                    }
+                }
+                types::AdtKind::Enum => {
+                    let start = span.start;
+                    self.diagnostics.error(format!("expected struct, found enum {ty}"))
+                        .with_span(span);
+                    self.diagnostics.note(format!("initialize an enum with {}.<variant> syntax", atd_def.name.get()))
+                        .with_pos(start);
+                }
+                types::AdtKind::Union =>
+                    panic!("unions are not even parsable with this parser"),
+                _ => todo!()
+            }
+            Ty(TyKind::Function(..)) => unreachable!(),
+            Ty(TyKind::Never | TyKind::Err) => ()
+        }
+
+        ty
+    }
+
     fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         use NumberSign::*;
         match &expr.kind {
             ast::ExprKind::String(..) => 
-                Ty::new_refrence(self.tcx, Ty::new_primitive(self.tcx, Primitive::String)),
+                Ty::new_primitive(self.tcx, Primitive::String),
             ast::ExprKind::Constant(ast::Constant::Boolean(..)) =>
                 Ty::new_primitive(self.tcx, Primitive::Bool),
             ast::ExprKind::Constant(ast::Constant::Integer(int)) =>
@@ -724,6 +843,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_subscript(base, args),
             ast::ExprKind::Field(base, field) =>
                 self.check_expr_field(base, field),
+            ast::ExprKind::TypeInit(ty_expr, init) =>
+                self.check_expr_init(ty_expr.as_deref(), init, expected, expr.span.clone()),
             _ => todo!("typecheck every kind of expression")
         }
     }
@@ -779,13 +900,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         self.ty_assoc(expr.node_id, ty); 
     }
 
-    fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
+    fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Range<usize>) {
         if found != expected {
             self.diagnostics.error(format!("mismatched types: expected {expected}, found {found}"))
                 .with_span(span);
-            return Ty::new_error(self.tcx);
         }
-        found
     }
 }
 
@@ -910,17 +1029,33 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx);
 
+    let diagnostics = tcx.diagnostics_for_file(interface::INPUT_FILE_IDX);
+
     match node {
         ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), ident, .. }) => {
-            let returns = ctxt.lower_ty(&func.sig.returns);
+            let mut returns = ctxt.lower_ty(&func.sig.returns);
+            if returns.is_incomplete() {
+                diagnostics.error(
+                    format!("type {returns} is incomplete, incomplete types are not allowed in function signatures"))
+                    .with_span(func.sig.returns.span.clone());
+                returns = Ty::new_error(tcx);
+            }
 
             let mut params = Vec::new();
             for param in &func.sig.params {
-                let ty = ctxt.lower_ty(&param.ty);
+                let mut ty = ctxt.lower_ty(&param.ty);
                 let name = match &param.pat.kind {
                     ast::PatternKind::Ident(ident) => ident.symbol,
                     _ => unreachable!()
                 };
+
+                if ty.is_incomplete() {
+                    diagnostics.error(format!("type {ty} is incomplete, incomplete types are not allowed in function signatures"))
+                        .with_span(param.ty.span.clone());
+                    ty = Ty::new_error(tcx);
+                }
+
+
                 params.push(types::Param {
                     name,
                     ty,

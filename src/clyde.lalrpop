@@ -577,7 +577,14 @@ TypeOrArrayInit: Option<ast::TypeExpr> = {
             node_id: ctxt.make_node_id()
         })
     },
-    <sloc:@L> "[" <cap:ArrayCap> "]" <base:TypeExpr> <eloc:@R> => {
+    <sloc:@L> "[" <cap:ArrayCap?> "]" <base:TypeExpr> <eloc:@R> => {
+        let Some(cap) = cap else {
+            return Some(ast::TypeExpr {
+                kind: ast::TypeExprKind::Slice(Box::new(base)),
+                span: (sloc..eloc),
+                node_id: ctxt.make_node_id()
+            });
+        };
         Some(ast::TypeExpr {
             kind: ast::TypeExprKind::Array(Box::new(base), cap),
             span: (sloc..eloc),

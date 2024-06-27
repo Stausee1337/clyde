@@ -5,7 +5,7 @@ struct Vector2 {
 }
 
 void exit(int code);
-void println(*str message, *Vector2 a);
+void println(str message, int k);
 
 struct Slice {
     nuint size;
@@ -17,17 +17,14 @@ struct Slice {
 //     return slice.size;
 // }
 
-int main([]*str argv) {
+int main([]str argv) {
     if len(argv) <= 1 {
         return 1;
     }
-    Vector2 a = ?{
-        x = 42,
-        y = 69
-    };
-    println(argv[1], &a);
 
-    x.test = 12;
+    println(argv[1], a);
+
+    [?]int a = [10]int { 42, 69, 1337 };
 
     return 0;
 }

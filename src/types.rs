@@ -29,7 +29,7 @@ macro_rules! interners {
 
 interners! {
     adt_defs: mk_adt_from_inner(AdtDefInner) -> AdtDef;
-    consts: mk_const_from_inner(ConstInner) -> Const;
+    consts: mk_const_from_inner(ConstInner<'tcx>) -> Const;
 }
 
 #[derive(Default)]
@@ -37,7 +37,7 @@ pub struct CtxtInterners<'tcx> {
     arena: Bump,
     types: SharedHashMap<&'tcx TyKind<'tcx>>,
     adt_defs: SharedHashMap<&'tcx AdtDefInner>,
-    consts: SharedHashMap<&'tcx ConstInner>,
+    consts: SharedHashMap<&'tcx ConstInner<'tcx>>,
 }
 
 impl<'tcx> CtxtInterners<'tcx> {
@@ -122,14 +122,13 @@ pub struct Param<'tcx> {
 }
 
 #[derive(Debug, Hash)]
-pub enum ConstInner {
-    Direct,
+pub enum ConstInner<'tcx> {
     Infer,
-    Err
+    Value(Ty<'tcx>)
 }
 
 #[derive(Debug, Hash, Clone, Copy)]
-pub struct Const<'tcx>(&'tcx ConstInner);
+pub struct Const<'tcx>(&'tcx ConstInner<'tcx>);
 
 #[derive(Debug, Hash)]
 pub enum TyKind<'tcx> {
@@ -214,8 +213,8 @@ impl<'tcx> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Function(def))
     }
 
-    // Searches slice types for bendable types (Never, Err)
-    // while preferring Err over Never
+    /// Searches slice types for bendable types (Never, Err)
+    /// while preferring Err over Never
     pub fn with_bendable(types: &[Ty<'tcx>]) -> Option<Ty<'tcx>> {
         let mut found = None;
         for ty in types {
@@ -227,6 +226,13 @@ impl<'tcx> Ty<'tcx> {
         }
 
         return found;
+    }
+
+    pub fn is_incomplete(&self) -> bool {
+        match self {
+            Ty(TyKind::Array(_, Const(ConstInner::Infer))) => true,
+            _ => false
+        }
     }
 }
 

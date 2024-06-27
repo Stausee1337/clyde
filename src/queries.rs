@@ -108,7 +108,6 @@ define_queries! {
     [feedable] fn file_ast(interface::FileIdx) -> &'tcx ast::SourceFile;
     [feedable] fn resolutions(()) -> &'tcx resolve::ResolutionResults;
     [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
-    [] fn adt_def(ast::DefId) -> types::AdtDef<'tcx>;
     [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
     [] fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
 }

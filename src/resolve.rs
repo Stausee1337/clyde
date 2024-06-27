@@ -388,11 +388,14 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
+    fn visit_name(&mut self, name: &mut ast::QName) {
+        self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], name);
+    }
+
     fn visit_expr(&mut self, expr: &mut ast::Expr) {
         match &mut expr.kind {
-            ast::ExprKind::Name(name) => {
-                self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], name);
-            }
+            ast::ExprKind::Name(name) =>
+                self.visit_name(name),
             ast::ExprKind::TypeInit(ty, fields) => {
                 mut_visitor::visit_vec(fields, |field| self.visit_type_init(field));
                 let Some(ty) = ty else {
@@ -410,6 +413,8 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                             ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                         }
                     }
+                    ast::TypeExprKind::Slice(ty) =>
+                        self.visit_ty_expr(ty),
                     ast::TypeExprKind::Generic(..) => {
                         self.resolution.diagnostics
                             .fatal("generic types are not supported yet")
@@ -417,8 +422,6 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     }
                     ast::TypeExprKind::Ref(..) =>
                         panic!("invalid state after parsing type init"),
-                    ast::TypeExprKind::Slice(base) =>
-                        self.visit_ty_expr(base)
                 }
             }
             ast::ExprKind::FunctionCall(base, args, generic_args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
