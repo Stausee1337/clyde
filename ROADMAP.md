@@ -5,8 +5,20 @@
 
 - Conceptually simplify the Parser (Remove Pattern)
 - Add typechecking for EVERY expression Cast, Tuple, ShorthandEnum, Range
-- Add implementation for LOOPs: For, While
+    - Cast: check if certain cast is avaliable (for now: primitive casts)
+    - Transmute: make sure types have the same size
+    - Range: only numbers/chars; both have the same type
+    - Tuple: Maybe remove for now?
+- Implement support for enums
+    - ShorthandEnum
+- Add implementation for LOOPs: While, For
+    - While: condition <-> bool, push loop rib, return type: never/void
+    (never only if it never brakes NOT never returns, so we can recommend #never)
+    - For: iterator needs to be array, dyn array, slice, range
+- Implement Nullables (also in the parser)
 - Implement SIMPLE Constant Evaluation (ArrayCapactiy)
+    - only expressions like BinOp, UnaryOp, TypeInit,
+    <int, bool, char> literal, Name, ShorhandEnum, Field (for Enums)
 
 ## Add IR
 Implementation should cover a simple, block based, statement based IR
@@ -125,4 +137,5 @@ There is a list of things that still need to be done for version 1 (in that orde
 5. [typechecking] Coercible types (eg. byte -> int, bool -> <number> conversions)
 6. Multi-file support
 7. Operator overloading
+8. Default structs and values for enums
 

@@ -157,11 +157,11 @@ pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T
             vis.visit_expr(condition);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
-        StmtKind::For(var, iterator, body) => {
+        StmtKind::For(_, iterator, body) => {
             vis.visit_expr(iterator);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
-        StmtKind::Local(var, ty, init) => {
+        StmtKind::Local(_, ty, init) => {
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(init, |init| vis.visit_expr(init));
         }
