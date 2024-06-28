@@ -3,6 +3,7 @@
 
 ## Obvious Problems / Flaws
 
+- Conceptually simplify the Parser (Remove Pattern)
 - Add typechecking for EVERY expression Cast, Tuple, ShorthandEnum, Range
 - Add implementation for LOOPs: For, While
 - Implement SIMPLE Constant Evaluation (ArrayCapactiy)

@@ -14,7 +14,6 @@ pub const DUMMY_SPAN: Range<usize> = 0..0;
 pub enum Node<'ast> {
     Expr(&'ast Expr),
     Item(&'ast Item),
-    Pattern(&'ast Pattern),
     SourceFile(&'ast SourceFile),
     Stmt(&'ast Stmt),
     TypeExpr(&'ast TypeExpr),
@@ -141,19 +140,6 @@ pub enum QName {
     },
 }
 
-#[derive(Debug)]
-pub struct Pattern {
-    pub kind: PatternKind,
-    pub span: Range<usize>,
-    pub node_id: NodeId
-}
-
-#[derive(Debug)]
-pub enum PatternKind {
-    Ident(Ident),
-    Tuple(Vec<Pattern>),
-    Literal(Box<Expr>),
-}
 
 #[derive(Debug)]
 pub struct SourceFile {
@@ -233,7 +219,7 @@ pub struct Attribute {
 
 #[derive(Debug)]
 pub struct Param {
-    pub pat: Pattern,
+    pub ident: Ident,
     pub ty: TypeExpr,
     pub span: Range<usize>,
     pub node_id: NodeId
@@ -252,8 +238,8 @@ pub enum StmtKind {
     Assign(Box<Expr>, Box<Expr>),
     If(Box<Expr>, Vec<Stmt>, Option<Box<Stmt>>),
     While(Box<Expr>, Vec<Stmt>),
-    For(Pattern, Box<Expr>, Vec<Stmt>),
-    Local(Pattern, Option<Box<TypeExpr>>, Option<Box<Expr>>),
+    For(Ident, Box<Expr>, Vec<Stmt>),
+    Local(Ident, Option<Box<TypeExpr>>, Option<Box<Expr>>),
     Return(Option<Box<Expr>>),
     ControlFlow(ControlFlow),
     Err

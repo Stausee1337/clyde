@@ -124,9 +124,9 @@ Parameters: Option<Vec<ast::Param>> = {
 };
 
 Paramter: ast::Param = {
-    <sloc:@L> <ty:TypeExpr> <pat:Pat> <eloc:@R>  => {
+    <sloc:@L> <ty:TypeExpr> <ident:Ident> <eloc:@R>  => {
         ast::Param {
-            pat,
+            ident,
             ty,
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
@@ -146,19 +146,14 @@ Statement: ast::Stmt = {
 };
 
 LocalStatement: ast::Stmt = {
-    <sloc:@L> "var" <pat:Pat> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::Local(pat, None, init.map(|e| Box::new(e))),
+    <sloc:@L> "var" <ident:Ident> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::Local(ident, None, init.map(|e| Box::new(e))),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
     <sloc:@L> <ty:SimpleTypeExpr> <name:Ident> <init:("=" <Expression<"all">>)?> ";" <eloc:@R> => {
-        let pat = ast::Pattern {
-            span: name.span.clone(),
-            kind: ast::PatternKind::Ident(name),
-            node_id: ctxt.make_node_id(),
-        };
         ast::Stmt {
-            kind: ast::StmtKind::Local(pat, Some(Box::new(ty)), init.map(|e| Box::new(e))),
+            kind: ast::StmtKind::Local(name, Some(Box::new(ty)), init.map(|e| Box::new(e))),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -237,8 +232,8 @@ WhileStatement: ast::Stmt = {
 };
 
 ForStatement: ast::Stmt = {
-    <sloc:@L> "for" <pat:Pat> "in" <iterator:Expression<"no-blocks">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::For(pat, Box::new(iterator), body),
+    <sloc:@L> "for" <ident:Ident> "in" <iterator:Expression<"no-blocks">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
+        kind: ast::StmtKind::For(ident, Box::new(iterator), body),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }
@@ -692,24 +687,6 @@ PatLit: ast::Expr = {
     },
     <sloc:@L> <str:string> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::String(str),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-};
-
-Pat: ast::Pattern = {
-    <ident:Ident> => ast::Pattern {
-        span: ident.span.clone(),
-        kind: ast::PatternKind::Ident(ident),
-        node_id: ctxt.make_node_id()
-    },
-    <sloc:@L> "(" <items:SeperatedList<Pat, ",">> ")" <eloc:@R> => ast::Pattern {
-        kind: ast::PatternKind::Tuple(items),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-    <sloc:@L> <lit:PatLit> <eloc:@R> => ast::Pattern {
-        kind: ast::PatternKind::Literal(Box::new(lit)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },

@@ -1044,10 +1044,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
             let mut params = Vec::new();
             for param in &func.sig.params {
                 let mut ty = ctxt.lower_ty(&param.ty);
-                let name = match &param.pat.kind {
-                    ast::PatternKind::Ident(ident) => ident.symbol,
-                    _ => unreachable!()
-                };
+                let name = param.ident.symbol;
 
                 if ty.is_incomplete() {
                     diagnostics.error(format!("type {ty} is incomplete, incomplete types are not allowed in function signatures"))

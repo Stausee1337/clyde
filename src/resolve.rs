@@ -339,28 +339,11 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
 
     fn visit_stmt(&mut self, stmt: &mut ast::Stmt) {
         match &mut stmt.kind {
-            ast::StmtKind::Local(pat, ret_ty, init) => {
-                let ident = match &pat.kind {
-                    ast::PatternKind::Ident(ident) => ident.clone(),
-                    ast::PatternKind::Tuple(..) => {
-                        self.resolution.diagnostics
-                            .fatal(format!("tuple pattern in function parameters are not supported yet"))
-                            .with_span(pat.span.clone());
-                        return;
-                    }
-                    ast::PatternKind::Literal(..) => { 
-                        self.resolution.diagnostics
-                            .error(format!("unsensible pattern found in variable declaration"))
-                            .with_span(pat.span.clone());
-                        stmt.kind = ast::StmtKind::Err;
-                        return;
-                    }
-                };
-
+            ast::StmtKind::Local(ident, ret_ty, init) => {
                 mut_visitor::visit_option(ret_ty, |ret_ty| self.visit_ty_expr(ret_ty));
                 mut_visitor::visit_option(init, |init| self.visit_expr(init));
 
-                self.define(ident, stmt.node_id);
+                self.define(ident.clone(), stmt.node_id);
             }
             ast::StmtKind::If(cond, body, else_body) => {
                 self.visit_expr(cond);
@@ -447,28 +430,13 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     }
 
     fn visit_param(&mut self, param: &mut ast::Param) {
-        let ident = match &param.pat.kind {
-            ast::PatternKind::Ident(ident) => ident.clone(),
-            ast::PatternKind::Tuple(..) => {
-                self.resolution.diagnostics
-                    .fatal(format!("tuple pattern in function parameters are not supported yet"))
-                    .with_span(param.pat.span.clone());
-                return;
-            }
-            ast::PatternKind::Literal(..) => {
-                self.resolution.diagnostics
-                    .error(format!("unsensible pattern found in function parameter"))
-                    .with_span(param.pat.span.clone());
-                return;
-            }
-        };
         self.visit_ty_expr(&mut param.ty);
 
         if !self.has_rib() {
             return;
         }
 
-        self.define(ident, param.node_id);
+        self.define(param.ident.clone(), param.node_id);
     }
 
     fn visit_ty_expr(&mut self, ty: &mut ast::TypeExpr) {
@@ -553,15 +521,6 @@ impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
             return;
         }
         node_visitor::noop_visit_ty_expr_kind(&ty.kind, self);
-    }
-
-    fn visit_pattern(&self, pattern: &ast::Pattern) {
-        if pattern.node_id == self.needle {
-            self.node.set(ast::Node::Pattern(pattern).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::noop_visit_pattern_kind(&pattern.kind, self);
     }
 
     fn visit_field_def(&self, field_def: &ast::FieldDef) { 

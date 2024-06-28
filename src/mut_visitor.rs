@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, Pattern, ExprKind, FunctionArgument, TypeInit, Constant, QName, PatternKind, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef};
+use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, ExprKind, FunctionArgument, TypeInit, Constant, QName, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef};
 
 
 pub trait MutVisitor: Sized {
@@ -55,10 +55,6 @@ pub trait MutVisitor: Sized {
 
     fn visit_ty_expr(&mut self, ty: &mut TypeExpr) {
         noop_visit_ty_expr_kind(&mut ty.kind, self);
-    }
-
-    fn visit_pattern(&mut self, pattern: &mut Pattern) {
-        noop_visit_pattern_kind(&mut pattern.kind, self);
     }
 
     fn visit_const(&mut self, cnst: &mut Constant) {
@@ -162,12 +158,10 @@ pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
         StmtKind::For(var, iterator, body) => {
-            vis.visit_pattern(var);
             vis.visit_expr(iterator);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
         StmtKind::Local(var, ty, init) => {
-            vis.visit_pattern(var);
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(init, |init| vis.visit_expr(init));
         }
@@ -228,16 +222,6 @@ pub fn noop_visit_generic_param_kind<T: MutVisitor>(gp_kind: &mut GenericParamKi
     }
 }
 
-
-pub fn noop_visit_pattern_kind<T: MutVisitor>(pat_kind: &mut PatternKind, vis: &mut T) {
-    match pat_kind {
-        PatternKind::Tuple(pats) =>
-            visit_vec(pats, |pat| vis.visit_pattern(pat)),
-        PatternKind::Literal(expr) => vis.visit_expr(expr),
-        PatternKind::Ident(_) => (),
-    }
-}
-
 pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &mut T) {
     match ty_kind {
         TypeExprKind::Ref(ty) => vis.visit_ty_expr(ty),
@@ -275,7 +259,6 @@ pub fn noop_visit_generic_argument<T: MutVisitor>(arg: &mut GenericArgument, vis
 }
 
 pub fn noop_visit_param<T: MutVisitor>(param: &mut Param, vis: &mut T) {
-    vis.visit_pattern(&mut param.pat);
     vis.visit_ty_expr(&mut param.ty);
 }
 
