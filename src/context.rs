@@ -82,7 +82,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn create_file(self, idx: Option<interface::FileIdx>) -> TyCtxtFeed<'tcx, interface::FileIdx> { 
         let key = idx.unwrap_or_else(|| self.caches.diagnostics_for_file.end());
         TyCtxtFeed { tcx: self, key }
-    }
+    }    
 
     pub fn globals(self) -> TyCtxtFeed<'tcx, ()> { 
         TyCtxtFeed { tcx: self, key: () }
@@ -92,7 +92,7 @@ impl<'tcx> TyCtxt<'tcx> {
 #[derive(Clone, Copy)]
 pub struct TyCtxtFeed<'tcx, K: Copy> {
    pub tcx: TyCtxt<'tcx>,
-   key: K
+   pub key: K
 }
 
 impl<'tcx, K: Copy> TyCtxtFeed<'tcx, K> {

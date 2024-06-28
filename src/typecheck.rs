@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, ops::Range};
 
-use crate::{context::TyCtxt, types::{Ty, Const, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, ControlFlow, TypeExpr}, interface, diagnostics::Diagnostics, symbol};
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr}, interface, diagnostics::Diagnostics};
 
 struct Rib<'tcx> {
     kind: RibKind,
@@ -375,7 +375,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
             ast::ExprKind::String(..) | ast::ExprKind::Name(..) |
             ast::ExprKind::ShorthandEnum(..) | ast::ExprKind::Deref(..) |
-            ast::ExprKind::Constant(..) | ast::ExprKind::Err => true
+            ast::ExprKind::Constant(..) | ast::ExprKind::Err => true,
         }
     }
 
@@ -743,6 +743,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         }
                     }
                 }
+                match kind {
+                    types::TyKind::Array(..) =>
+                        todo!("figure out what to do with constants"),
+                    _ => ()
+                }
             }
             Ty(TyKind::Adt(atd_def)) => match atd_def.kind {
                 types::AdtKind::Struct => {
@@ -801,6 +806,67 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         ty
     }
 
+    fn check_valid_cast(&self, from: Ty<'tcx>, to: Ty<'tcx>) -> bool {
+        use types::TyKind::{Err, Never, Primitive};
+        if let Ty(Err | Never) = from {
+            return true;
+        }
+        if let Ty(Err | Never) = to {
+            return true;
+        }
+
+        let Ty(Primitive(from)) = from else {
+            return false;
+        };
+
+        let Ty(Primitive(to)) = to else {
+            return false;
+        };
+
+        if from.signed().is_some() && to.signed().is_some() {
+            // both are numbers
+            // which are always castable between each other
+            return true;
+        }
+
+        // u32 <-> char conversions are also valid
+        return match (from, to) {
+            (types::Primitive::Uint, types::Primitive::Char) => true,
+            (types::Primitive::Char, types::Primitive::Uint) => true,
+            _ => false
+        };
+    }
+
+    fn check_expr_conv(
+        &mut self, expr: &'tcx ast::Expr, ty_expr: Option<&'tcx ast::TypeExpr>, conversion: ast::TypeConversion, expected: Option<Ty<'tcx>>, span: Range<usize>) -> Ty<'tcx> {
+
+        let ty = ty_expr.map(|expr| self.lowering_ctxt.lower_ty(expr));
+        
+        let Some(ty) = ty.or(expected) else {
+            self.diagnostics.error("can't infer type of auto cast")
+                .with_span(span);
+            return Ty::new_error(self.tcx);
+        };
+
+        let expr_ty = self.check_expr_with_expectation(expr, Expectation::None);
+
+        match conversion {
+            ast::TypeConversion::Cast => {
+                if !self.check_valid_cast(expr_ty, ty) {
+                    self.diagnostics.error(
+                        format!("no cast is defined from {expr_ty} to {ty}"))
+                        .with_span(span);
+                }
+            }
+            ast::TypeConversion::Transmute => {
+                let source_size = self.tcx.size_of(expr_ty);
+                let target_size = self.tcx.size_of(ty);
+            }
+        }
+
+        ty
+    }
+
     fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         use NumberSign::*;
         match &expr.kind {
@@ -845,6 +911,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_field(base, field),
             ast::ExprKind::TypeInit(ty_expr, init) =>
                 self.check_expr_init(ty_expr.as_deref(), init, expected, expr.span.clone()),
+            ast::ExprKind::Cast(conv, ty, kind) =>
+                self.check_expr_conv(conv, ty.as_deref(), *kind, expected, expr.span.clone()),
             _ => todo!("typecheck every kind of expression")
         }
     }
@@ -946,11 +1014,14 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 match &cap {
                     ast::ArrayCapacity::Discrete(..) | ast::ArrayCapacity::Infer => {
                         let ty = self.lower_ty(ty);
+                        if let Ty(types::TyKind::Err) = ty {
+                            return ty;
+                        }
 
                         let cap = if let ast::ArrayCapacity::Discrete(_expr) = cap {
-                            todo!("figure out what to do with constants");
+                            todo!("Figure out what to do with constants")
                         } else {
-                            self.tcx.mk_const_from_inner(ConstInner::Infer)
+                            self.tcx.mk_const_from_inner(ConstInner::Placeholder)
                         };
 
                         Ty::new_array(self.tcx, ty, cap)
@@ -963,6 +1034,9 @@ impl<'tcx> LoweringCtxt<'tcx> {
             }
             ast::TypeExprKind::Slice(ty) => {
                 let ty = self.lower_ty(ty);
+                if let Ty(types::TyKind::Err) = ty {
+                    return ty;
+                }
                 Ty::new_slice(self.tcx, ty)
             }
             ast::TypeExprKind::Generic(..) => panic!("lowering generic types is not supported yet")

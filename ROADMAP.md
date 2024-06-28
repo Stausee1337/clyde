@@ -15,7 +15,6 @@
     - While: condition <-> bool, push loop rib, return type: never/void
     (never only if it never brakes NOT never returns, so we can recommend #never)
     - For: iterator needs to be array, dyn array, slice, range
-- Implement Nullables (also in the parser)
 - Implement SIMPLE Constant Evaluation (ArrayCapactiy)
     - only expressions like BinOp, UnaryOp, TypeInit,
     <int, bool, char> literal, Name, ShorhandEnum, Field (for Enums)
@@ -32,7 +31,7 @@ int main(str[] argv) {
         return 1;
     }
 
-    File? file = file_open(argv[1], .Read);
+    File file = file_open(argv[1], .Read);
     if file == null {
         return 1;
     }
@@ -138,4 +137,5 @@ There is a list of things that still need to be done for version 1 (in that orde
 6. Multi-file support
 7. Operator overloading
 8. Default structs and values for enums
+9. Implement Nullables (also in the parser)
 

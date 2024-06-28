@@ -301,9 +301,9 @@ pub enum ExprKind {
     Err
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TypeConversion {
-    Cast, Pun
+    Cast, Transmute
 }
 
 #[derive(Debug)]

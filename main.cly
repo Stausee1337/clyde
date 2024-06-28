@@ -12,19 +12,15 @@ struct Slice {
     *void data;
 }
 
-// nuint len([]*str slice) {
-//     var slice = pun(Slice)slice;
-//     return slice.size;
-// }
+nuint len([]str slice) {
+    var slice = transmute(Slice)slice;
+    return slice.size;
+}
 
 int main([]str argv) {
     if len(argv) <= 1 {
         return 1;
     }
-
-    println(argv[1], a);
-
-    [?]int a = [10]int { 42, 69, 1337 };
 
     return 0;
 }

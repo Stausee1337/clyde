@@ -3,7 +3,7 @@ use std::{mem::transmute, ops::Deref, fmt::Write, collections::HashSet};
 use bumpalo::Bump;
 use bitflags::bitflags;
 
-use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}, diagnostics::DiagnosticsData};
+use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner, self}, diagnostics::DiagnosticsData};
 
 
 #[derive(Debug, Hash)]
@@ -122,13 +122,45 @@ pub struct Param<'tcx> {
 }
 
 #[derive(Debug, Hash)]
+pub struct Scalar {
+    size: u8,
+    data: u128
+}
+
+#[derive(Debug, Hash)]
+pub enum ValTree<'tcx> {
+    Scalar(Scalar),
+    Branch(&'tcx ValTree<'tcx>)
+}
+
+#[derive(Debug, Hash)]
 pub enum ConstInner<'tcx> {
-    Infer,
-    Value(Ty<'tcx>)
+    String(&'tcx str),
+    Value(Ty<'tcx>, ValTree<'tcx>),
+    Placeholder
 }
 
 #[derive(Debug, Hash, Clone, Copy)]
 pub struct Const<'tcx>(&'tcx ConstInner<'tcx>);
+
+impl<'tcx> Const<'tcx> {
+
+    pub fn try_as_usize(&self) -> Option<usize> {
+        match self.0 {
+            ConstInner::String(..) => None,
+            ConstInner::Placeholder => None,
+            ConstInner::Value(ty, val) => {
+                let Ty(TyKind::Primitive(Primitive::NUint)) = ty else {
+                    return None;
+                };
+                let ValTree::Scalar(Scalar { size: 8, data }) = val else {
+                    unreachable!("const nuint is not stored as a scalar of size 8");
+                };
+                Some(*data as usize)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Hash)]
 pub enum TyKind<'tcx> {
@@ -230,10 +262,110 @@ impl<'tcx> Ty<'tcx> {
 
     pub fn is_incomplete(&self) -> bool {
         match self {
-            Ty(TyKind::Array(_, Const(ConstInner::Infer))) => true,
+            Ty(TyKind::Array(_, Const(ConstInner::Placeholder))) => true,
             _ => false
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub enum Size {
+    Computable(usize),
+    Infinite
+}
+
+struct LayoutCtxt<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    history: Vec<Ty<'tcx>>,
+}
+
+impl<'tcx> LayoutCtxt<'tcx> {
+    const PTR_SIZE: usize = 8;
+
+    fn new(tcx: TyCtxt<'tcx>) -> Self {
+        Self {
+            tcx,
+            history: Vec::new()
+        }
+    }
+
+    fn calc_size_array(&mut self, base: Ty<'tcx>, cap: Const<'tcx>) -> Size {
+        match self.size_of(base) {
+            Size::Infinite => Size::Infinite,
+            Size::Computable(size) =>
+                Size::Computable(size * cap.try_as_usize().unwrap_or(0))
+        }
+    }
+
+    fn calc_size_adt(&mut self, def: AdtDef<'tcx>) -> Size {
+        match def.kind {
+            AdtKind::Enum => Size::Computable(Self::PTR_SIZE), // enums have PTR_SIZE for now
+            AdtKind::Struct => {
+                let mut offset = 0usize;
+                for (_idx, def) in def.fields() {
+                    let field_ty = self.tcx.type_of(def.def);
+                    let field_size = self.size_of(field_ty);
+                    let field_size = match field_size {
+                        Size::Computable(size) => size,
+                        Size::Infinite => return Size::Infinite
+                    };
+                    if offset % field_size != 0 {
+                        let padding = field_size - (offset % field_size);
+                        offset += padding;
+                    }
+                    offset += field_size;
+                }
+                if offset % Self::PTR_SIZE != 0 {
+                    let padding = Self::PTR_SIZE - (offset % Self::PTR_SIZE);
+                    offset += padding;
+                }
+                Size::Computable(offset)
+            }
+            AdtKind::Union =>
+                panic!("unions are not even parsable with this parser")
+        }
+    }
+
+    fn calc_size(&mut self, ty: Ty<'tcx>) -> Size {
+        match ty.0 {
+            TyKind::Adt(def) =>
+                self.calc_size_adt(*def),
+            TyKind::Array(base, cap) =>
+                self.calc_size_array(*base, *cap),
+            TyKind::Refrence(..) => Size::Computable(Self::PTR_SIZE), 
+            TyKind::DynamicArray(..) => Size::Computable(Self::PTR_SIZE * 3),
+            TyKind::Slice(..) => Size::Computable(Self::PTR_SIZE * 2),
+            TyKind::Function(..) | TyKind::Err | TyKind::Never => Size::Computable(0),
+            TyKind::Primitive(prim) => Size::Computable(prim.size() as usize),
+        }
+    }
+
+    fn size_of(&mut self, ty: Ty<'tcx>) -> Size {
+        if self.history.contains(&ty) {
+            // Ty is recursive
+            let feed = context::TyCtxtFeed { tcx: self.tcx, key: ty };
+            feed.size_of(Size::Infinite);
+            return Size::Infinite;
+        }
+        self.history.push(ty);
+        let size = self.calc_size(ty);
+        self.history.pop();
+        if !self.history.is_empty() { 
+            let feed = context::TyCtxtFeed { tcx: self.tcx, key: ty };
+            feed.size_of(size);
+        }
+        size
+    }
+}
+
+pub fn size_of<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Size {
+    let mut ctxt = LayoutCtxt::new(tcx);
+    ctxt.size_of(ty)
+}
+
+pub fn representable<'tcx>(tcx: TyCtxt<'tcx>, id: DefId) -> bool {
+    let ty = tcx.type_of(id);
+    matches!(tcx.size_of(ty), Size::Computable(..))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

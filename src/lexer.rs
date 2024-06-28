@@ -107,7 +107,7 @@ pub enum TokenKind {
     Static,
     #[token("cast")]
     Cast,
-    #[token("pun")]
+    #[token("transmute")]
     Pun,
     #[token("out")]
     Out,

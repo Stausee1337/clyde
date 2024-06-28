@@ -110,12 +110,16 @@ define_queries! {
     [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
     [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
     [] fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
+    [feedable] fn size_of(types::Ty<'tcx>) -> types::Size;
+    [] fn representable(ast::DefId) -> bool;
 }
 
 providers! {
     @type_of(typecheck::type_of),
     @typecheck(typecheck::typecheck),
-    @fn_sig(typecheck::fn_sig)
+    @fn_sig(typecheck::fn_sig),
+    @size_of(types::size_of),
+    @representable(types::representable)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(
@@ -159,9 +163,16 @@ pub mod caches {
         fn iter(&self, f: &mut dyn FnMut(&Self::Key, &Self::Value));
     }
 
-    #[derive(Default)]
     pub struct SimpleCache<K, V> {
         cache: RefCell<HashMap<K, V, ahash::RandomState>>,
+    }
+
+    impl<K, V> Default for SimpleCache<K, V> {
+        fn default() -> Self {
+            Self {
+                cache: RefCell::new(HashMap::default())
+            }
+        }
     }
 
     impl<K: Hash + Eq + Copy + Debug, V: Copy> QueryCache for SimpleCache<K, V> {
@@ -308,5 +319,9 @@ pub mod caches {
 
     impl Key for DefId {
         type Cache<V: Copy> = DefIdCache<V>;
+    }
+
+    impl<'tcx> Key for crate::types::Ty<'tcx> {
+        type Cache<V: Copy> = SimpleCache<crate::types::Ty<'tcx>, V>;
     }
 }

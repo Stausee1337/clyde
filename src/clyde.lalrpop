@@ -445,7 +445,7 @@ TypeOrAuto: Option<ast::TypeExpr> = {
 
 CastOrPun: ast::TypeConversion = {
     "cast" => ast::TypeConversion::Cast,
-    "pun" => ast::TypeConversion::Pun
+    "pun" => ast::TypeConversion::Transmute
 };
 
 UnaryExpr<What>: ast::Expr = {
