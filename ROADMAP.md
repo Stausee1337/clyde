@@ -8,7 +8,7 @@
     - Cast: check if certain cast is avaliable (for now: primitive casts)
     - Transmute: make sure types have the same size
     - Range: only numbers/chars; both have the same type
-    - Tuple: Maybe remove for now?
+    - Tuple: 
 - Implement support for enums
     - ShorthandEnum
 - Add implementation for LOOPs: While, For

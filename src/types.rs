@@ -167,6 +167,7 @@ pub enum TyKind<'tcx> {
     Primitive(Primitive),
     Adt(AdtDef<'tcx>),
     Refrence(Ty<'tcx>),
+    Range(Ty<'tcx>, bool),
     Slice(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
     DynamicArray(Ty<'tcx>),
@@ -203,6 +204,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Array(ty, _) => write!(f, "[?]{ty}"),
             TyKind::DynamicArray(ty) => write!(f, "[..]{ty}"),
             TyKind::Function(_) => write!(f, "function"),
+            TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
             TyKind::Err => write!(f, "Err"),
         }
     }
@@ -245,6 +247,10 @@ impl<'tcx> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Function(def))
     }
 
+    pub fn new_range(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, inclusive: bool) -> Ty<'tcx> {
+        tcx.interners.intern_ty(TyKind::Range(ty, inclusive))
+    }
+
     /// Searches slice types for bendable types (Never, Err)
     /// while preferring Err over Never
     pub fn with_bendable(types: &[Ty<'tcx>]) -> Option<Ty<'tcx>> {
@@ -268,10 +274,19 @@ impl<'tcx> Ty<'tcx> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Size {
     Computable(usize),
     Infinite
+}
+
+impl std::fmt::Display for Size {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Size::Computable(size) => write!(f, "{size} bytes"),
+            Size::Infinite => f.write_str("layout cycle dected in computation"),
+        }
+    }
 }
 
 struct LayoutCtxt<'tcx> {
@@ -326,41 +341,58 @@ impl<'tcx> LayoutCtxt<'tcx> {
         }
     }
 
+    fn calc_size_range(&mut self, ty: Ty<'tcx>) -> Size {
+        let field_size = self.size_of(ty);
+        let field_size = match field_size {
+            Size::Computable(size) => size,
+            Size::Infinite => return Size::Infinite
+        };
+        let mut offset = field_size;
+        if offset % field_size != 0 {
+            let padding = field_size - (offset % field_size);
+            offset += padding;
+        }
+        offset += field_size;
+        if offset % Self::PTR_SIZE != 0 {
+            let padding = Self::PTR_SIZE - (offset % Self::PTR_SIZE);
+            offset += padding;
+        }
+
+        Size::Computable(offset)
+    }
+
     fn calc_size(&mut self, ty: Ty<'tcx>) -> Size {
         match ty.0 {
             TyKind::Adt(def) =>
                 self.calc_size_adt(*def),
             TyKind::Array(base, cap) =>
                 self.calc_size_array(*base, *cap),
+            TyKind::Range(ty, _) =>
+                self.calc_size_range(*ty),
             TyKind::Refrence(..) => Size::Computable(Self::PTR_SIZE), 
             TyKind::DynamicArray(..) => Size::Computable(Self::PTR_SIZE * 3),
             TyKind::Slice(..) => Size::Computable(Self::PTR_SIZE * 2),
             TyKind::Function(..) | TyKind::Err | TyKind::Never => Size::Computable(0),
-            TyKind::Primitive(prim) => Size::Computable(prim.size() as usize),
+            TyKind::Primitive(prim) => Size::Computable(prim.size() as usize / 8),
         }
     }
 
     fn size_of(&mut self, ty: Ty<'tcx>) -> Size {
         if self.history.contains(&ty) {
             // Ty is recursive
-            let feed = context::TyCtxtFeed { tcx: self.tcx, key: ty };
-            feed.size_of(Size::Infinite);
             return Size::Infinite;
         }
         self.history.push(ty);
         let size = self.calc_size(ty);
         self.history.pop();
-        if !self.history.is_empty() { 
-            let feed = context::TyCtxtFeed { tcx: self.tcx, key: ty };
-            feed.size_of(size);
-        }
         size
     }
 }
 
 pub fn size_of<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Size {
     let mut ctxt = LayoutCtxt::new(tcx);
-    ctxt.size_of(ty)
+    let size = ctxt.size_of(ty);
+    size
 }
 
 pub fn representable<'tcx>(tcx: TyCtxt<'tcx>, id: DefId) -> bool {

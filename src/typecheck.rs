@@ -797,9 +797,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
                 types::AdtKind::Union =>
                     panic!("unions are not even parsable with this parser"),
-                _ => todo!()
             }
             Ty(TyKind::Function(..)) => unreachable!(),
+            Ty(TyKind::Range(..)) => unreachable!(),
             Ty(TyKind::Never | TyKind::Err) => ()
         }
 
@@ -843,7 +843,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = ty_expr.map(|expr| self.lowering_ctxt.lower_ty(expr));
         
         let Some(ty) = ty.or(expected) else {
-            self.diagnostics.error("can't infer type of auto cast")
+            let tc = match conversion {
+                ast::TypeConversion::Cast => "cast",
+                ast::TypeConversion::Transmute => "transmute",
+            };
+            self.diagnostics.error(format!("can't infer type of auto {}", tc))
                 .with_span(span);
             return Ty::new_error(self.tcx);
         };
@@ -861,6 +865,22 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::TypeConversion::Transmute => {
                 let source_size = self.tcx.size_of(expr_ty);
                 let target_size = self.tcx.size_of(ty);
+
+                if source_size != target_size {
+                    let target_start = match ty_expr {
+                        Some(ty) => ty.span.start,
+                        None => span.start
+                    };
+                    self.diagnostics.error(
+                        format!("cannot transmute types of different sizes"))
+                        .with_span(span);
+                    self.diagnostics.note(
+                        format!("target size: {target_size}"))
+                        .with_pos(target_start);
+                    self.diagnostics.note(
+                        format!("source size: {source_size}"))
+                        .with_pos(expr.span.start);
+                }
             }
         }
 
@@ -913,6 +933,54 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_init(ty_expr.as_deref(), init, expected, expr.span.clone()),
             ast::ExprKind::Cast(conv, ty, kind) =>
                 self.check_expr_conv(conv, ty.as_deref(), *kind, expected, expr.span.clone()),
+            ast::ExprKind::Range(start, end, inclusive) => {
+                {
+                    let mut start = &start;
+                    let mut end = &end;
+                    if !self.check_expr_ty_definite(&start.kind) && self.check_expr_ty_definite(&end.kind) {
+                        (start, end) = (end, start);
+                    }
+
+                    let nuint = Ty::new_primitive(self.tcx, types::Primitive::NUint);
+                    let expectation = Expectation::Guide(nuint);
+                    let start_ty = self.check_expr_with_expectation(start, expectation);
+                    self.check_expr_with_expectation(end, Expectation::Guide(start_ty));
+                }
+                use types::{
+                    TyKind::{Never, Err, Primitive},
+                    Primitive::{SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint, Char}
+                };
+
+                let start_ty = unsafe { *self.associations.get(&start.node_id).unwrap_unchecked() };
+                let end_ty = unsafe { *self.associations.get(&end.node_id).unwrap_unchecked() };
+                let mut has_error = false;
+                if start_ty != end_ty {
+                    self.maybe_emit_type_error(end_ty, start_ty, expr.span.clone());
+                    has_error = true;
+                }
+                if !matches!(
+                    start_ty, 
+                    Ty(Never | Err | 
+                       Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
+                    self.diagnostics.error(
+                        format!("type {start_ty} is not steppable")
+                    ).with_span(start.span.clone());
+                    has_error = true;
+                }
+                if !matches!(
+                    end_ty, 
+                    Ty(Never | Err | 
+                       Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
+                    self.diagnostics.error(
+                        format!("type {end_ty} is not steppable")
+                    ).with_span(end.span.clone());
+                    has_error = true;
+                }
+                if has_error {
+                    return Ty::new_error(self.tcx);
+                }
+                Ty::new_range(self.tcx, start_ty, *inclusive)
+            }
             _ => todo!("typecheck every kind of expression")
         }
     }

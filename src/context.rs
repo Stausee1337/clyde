@@ -92,7 +92,7 @@ impl<'tcx> TyCtxt<'tcx> {
 #[derive(Clone, Copy)]
 pub struct TyCtxtFeed<'tcx, K: Copy> {
    pub tcx: TyCtxt<'tcx>,
-   pub key: K
+   key: K
 }
 
 impl<'tcx, K: Copy> TyCtxtFeed<'tcx, K> {
