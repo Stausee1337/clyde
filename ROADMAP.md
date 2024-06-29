@@ -11,6 +11,7 @@
     - Tuple: 
 - Implement support for enums
     - ShorthandEnum
+- Support for `null` (finally)
 - Add implementation for LOOPs: While, For
     - While: condition <-> bool, push loop rib, return type: never/void
     (never only if it never brakes NOT never returns, so we can recommend #never)

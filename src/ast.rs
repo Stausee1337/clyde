@@ -289,7 +289,7 @@ pub enum ExprKind {
     FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
     TypeInit(Option<Box<TypeExpr>>, Vec<TypeInit>),
     Subscript(Box<Expr>, Vec<Expr>),
-    Field(Box<Expr>, Ident),
+    Field(Box<Expr>, FieldIdent),
     Constant(Constant),
     String(String),
     Name(QName),
@@ -299,6 +299,15 @@ pub enum ExprKind {
     Deref(Box<Expr>),
     Block(Vec<Stmt>),
     Err
+}
+
+#[derive(Debug)]
+pub enum FieldIdent {
+    Named(Ident),
+    Tuple {
+        value: u64,
+        span: Range<usize>
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -389,6 +398,7 @@ pub enum TypeExprKind {
     Generic(QName, Vec<GenericArgument>),
     Array(Box<TypeExpr>, ArrayCapacity),
     Slice(Box<TypeExpr>),
+    Tuple(Vec<TypeExpr>),
 }
 
 #[derive(Debug)]

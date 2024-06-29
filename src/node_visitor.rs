@@ -127,11 +127,11 @@ pub fn noop_visit_stmt_kind<T: NodeVisitor>(stmt_kind: &StmtKind, vis: &T) {
             vis.visit_expr(condition);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
-        StmtKind::For(var, iterator, body) => {
+        StmtKind::For(_var, iterator, body) => {
             vis.visit_expr(iterator);
             visit_vec(body, |stmt| vis.visit_stmt(stmt));
         }
-        StmtKind::Local(var, ty, init) => {
+        StmtKind::Local(_var, ty, init) => {
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(init, |init| vis.visit_expr(init));
         }
@@ -210,7 +210,9 @@ pub fn noop_visit_ty_expr_kind<T: NodeVisitor>(ty_kind: &TypeExprKind, vis: &T) 
             }
         }
         TypeExprKind::Slice(base) =>
-            vis.visit_ty_expr(base)
+            vis.visit_ty_expr(base),
+        TypeExprKind::Tuple(tys) =>
+            visit_vec(tys, |ty| vis.visit_ty_expr(ty))
     }
 }
 

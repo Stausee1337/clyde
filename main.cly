@@ -5,7 +5,7 @@ struct Vector2 {
 }
 
 void exit(int code);
-void println(str message, int k);
+void println(str message, (byte, byte) tpl);
 
 struct Slice {
     nuint size;
@@ -21,8 +21,9 @@ int main([]str argv) {
     if len(argv) <= 1 {
         return 1;
     }
+
+    println("Hello, World", (12, 1));
     
-    var x = argv.0;
 
     return 0;
 }

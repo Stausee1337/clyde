@@ -403,7 +403,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                             .fatal("generic types are not supported yet")
                             .with_span(ty.span.clone());
                     }
-                    ast::TypeExprKind::Ref(..) =>
+                    ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Tuple(..) =>
                         panic!("invalid state after parsing type init"),
                 }
             }
@@ -458,8 +458,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                 }
             }
-            ast::TypeExprKind::Slice(base) =>
-                self.visit_ty_expr(base)
+            k @ _ => mut_visitor::noop_visit_ty_expr_kind(k, self)
         }
     }
 }

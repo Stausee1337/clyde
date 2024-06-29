@@ -170,6 +170,7 @@ pub enum TyKind<'tcx> {
     Range(Ty<'tcx>, bool),
     Slice(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
+    Tuple(Vec<Ty<'tcx>>),
     DynamicArray(Ty<'tcx>),
     Function(DefId),
     Never,
@@ -205,6 +206,17 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::DynamicArray(ty) => write!(f, "[..]{ty}"),
             TyKind::Function(_) => write!(f, "function"),
             TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
+            TyKind::Tuple(tys) => {
+                f.write_str("(")?;
+                for (idx, ty) in tys.iter().enumerate() {
+                    write!(f, "{ty}");
+                    if idx != tys.len() - 1 {        
+                        f.write_str(", ")?;
+                    }
+                }
+                f.write_str(")")?;
+                Ok(())
+            }
             TyKind::Err => write!(f, "Err"),
         }
     }
@@ -249,6 +261,10 @@ impl<'tcx> Ty<'tcx> {
 
     pub fn new_range(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, inclusive: bool) -> Ty<'tcx> {
         tcx.interners.intern_ty(TyKind::Range(ty, inclusive))
+    }
+
+    pub fn new_tuple(tcx: TyCtxt<'tcx>, tys: Vec<Ty<'tcx>>) -> Ty<'tcx> {
+        tcx.interners.intern_ty(TyKind::Tuple(tys))
     }
 
     /// Searches slice types for bendable types (Never, Err)
@@ -361,10 +377,33 @@ impl<'tcx> LayoutCtxt<'tcx> {
         Size::Computable(offset)
     }
 
+    fn calc_size_tuple(&mut self, tys: &[Ty<'tcx>]) -> Size {
+        let mut offset = 0usize;
+        for ty in tys {
+            let field_size = self.size_of(*ty);
+            let field_size = match field_size {
+                Size::Computable(size) => size,
+                Size::Infinite => return Size::Infinite
+            };
+            if offset % field_size != 0 {
+                let padding = field_size - (offset % field_size);
+                offset += padding;
+            }
+            offset += field_size;
+        }
+        if offset % Self::PTR_SIZE != 0 {
+            let padding = Self::PTR_SIZE - (offset % Self::PTR_SIZE);
+            offset += padding;
+        }
+        Size::Computable(offset)
+    }
+
     fn calc_size(&mut self, ty: Ty<'tcx>) -> Size {
         match ty.0 {
             TyKind::Adt(def) =>
                 self.calc_size_adt(*def),
+            TyKind::Tuple(tys) =>
+                self.calc_size_tuple(tys),
             TyKind::Array(base, cap) =>
                 self.calc_size_array(*base, *cap),
             TyKind::Range(ty, _) =>

@@ -667,13 +667,34 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         Ty::new_error(self.tcx)
     }
 
-    fn check_expr_field(&mut self, expr: &'tcx ast::Expr, field: &'tcx ast::Ident) -> Ty<'tcx> {
+    fn check_expr_ftuple(&mut self, ty: Ty<'tcx>, idx: usize, span: Range<usize>) -> Ty<'tcx> {
+        let Ty(types::TyKind::Tuple(tys)) = self.autoderef(ty, -1).unwrap_or(ty) else {
+            self.diagnostics.error(format!("unnamed fields are only found on tuples {ty}"))
+                .with_span(span.clone());
+            return Ty::new_error(self.tcx);
+        };
+
+        if idx >= tys.len() {
+            self.diagnostics.error(format!("can't find field `{idx}` on {ty}"))
+                .with_span(span.clone());
+            return Ty::new_error(self.tcx);
+        }
+
+        tys[idx]
+    }
+
+    fn check_expr_field(&mut self, expr: &'tcx ast::Expr, field: &'tcx ast::FieldIdent) -> Ty<'tcx> {
         let ty = self.check_expr_with_expectation(expr, Expectation::None); 
         if let Ty(types::TyKind::Never | types::TyKind::Err) = ty {
             return ty;
         }
+        let field = match field {
+            ast::FieldIdent::Named(ident) => ident,
+            ast::FieldIdent::Tuple { value, span } =>
+                return self.check_expr_ftuple(ty, *value as usize, span.clone()),
+        };
         let Ty(types::TyKind::Adt(adt_def)) = self.autoderef(ty, -1).unwrap_or(ty) else {
-            self.diagnostics.error(format!("fields/variants are only found on structs and enums, found {ty}"))
+            self.diagnostics.error(format!("fields/variants are only found on structs and enums {ty}"))
                 .with_span(expr.span.clone());
             return Ty::new_error(self.tcx);
         };
@@ -729,6 +750,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.diagnostics.error(format!("expected struct, found slice {ty}"))
                     .with_span(span);
                 self.diagnostics.note("initialize a fixed or dynamic array")
+                    .with_pos(start);
+            }
+            Ty(TyKind::Tuple(..)) => {
+                let start = span.start;
+                self.diagnostics.error(format!("expected struct, found tuple {ty}"))
+                    .with_span(span);
+                self.diagnostics.note("initialize tuple using tuple expression (<0>, <1>, ...)")
                     .with_pos(start);
             }
             Ty(kind @ (TyKind::Array(base, _) | TyKind::DynamicArray(base))) => {
@@ -887,6 +915,26 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         ty
     }
 
+    fn check_expr_tuple(&mut self, exprs: &'tcx [ast::Expr], expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
+        let expected_list = match expected {
+            Some(Ty(types::TyKind::Tuple(tys))) => Some(tys),
+            _ => None,
+        };
+        let mut tys = Vec::new();
+        if let Some(expected_list) = expected_list {
+            for (expr, exp) in exprs.iter().zip(expected_list) {
+                let ty = self.check_expr_with_expectation(expr, Expectation::Guide(*exp));
+                tys.push(ty);
+            }
+        } else {
+            for expr in exprs {
+                let ty = self.check_expr_with_expectation(expr, Expectation::None);
+                tys.push(ty);
+            }
+        }
+        Ty::new_tuple(self.tcx, tys)
+    }
+
     fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         use NumberSign::*;
         match &expr.kind {
@@ -981,6 +1029,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
                 Ty::new_range(self.tcx, start_ty, *inclusive)
             }
+            ast::ExprKind::Tuple(exprs) =>
+                self.check_expr_tuple(exprs, expected),
             _ => todo!("typecheck every kind of expression")
         }
     }
@@ -1106,6 +1156,17 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     return ty;
                 }
                 Ty::new_slice(self.tcx, ty)
+            }
+            ast::TypeExprKind::Tuple(exprs) => {
+                let mut tys = Vec::new();
+                for expr in exprs {
+                    let ty = self.lower_ty(expr);
+                    if let Ty(types::TyKind::Err) = ty {
+                        return ty;
+                    }
+                    tys.push(ty);
+                }
+                Ty::new_tuple(self.tcx, tys)
             }
             ast::TypeExprKind::Generic(..) => panic!("lowering generic types is not supported yet")
         }

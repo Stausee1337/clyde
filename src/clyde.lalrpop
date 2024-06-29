@@ -470,11 +470,19 @@ AtomExpr<What>: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> <base:AtomExpr<What>> "." <name:Ident> <eloc:@R> => ast::Expr {
+    <sloc:@L> <base:AtomExpr<What>> "." <name:FieldIdent> <eloc:@R> => ast::Expr {
         kind: ast::ExprKind::Field(Box::new(base), name),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
+};
+
+FieldIdent: ast::FieldIdent = {
+    <name:Ident> => ast::FieldIdent::Named(name),
+    <sloc:@L> <value:integer> <eloc:@R> => ast::FieldIdent::Tuple {
+        value,
+        span: (sloc..eloc)
+    }
 };
 
 FnArgument: ast::FunctionArgument = {
@@ -638,6 +646,16 @@ TypeExpr: ast::TypeExpr = {
         };
         ast::TypeExpr {
             kind: ast::TypeExprKind::Array(Box::new(base), cap),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    },
+    <sloc:@L> "(" <mut tys:OneOrMore<TypeExpr, ",">> ")" <eloc:@R> => {
+        if let [_] = tys.as_slice() {
+            return tys.pop().unwrap();
+        }
+        ast::TypeExpr {
+            kind: ast::TypeExprKind::Tuple(tys),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
