@@ -17,7 +17,8 @@ pub enum Node<'ast> {
     SourceFile(&'ast SourceFile),
     Stmt(&'ast Stmt),
     TypeExpr(&'ast TypeExpr),
-    Field(&'ast FieldDef)
+    Field(&'ast FieldDef),
+    Variant(&'ast VariantDef),
 }
 
 impl<'ast> Node<'ast> {
@@ -140,6 +141,14 @@ pub enum QName {
     },
 }
 
+impl QName {
+    pub fn ident(&self) -> &Ident {
+        match self {
+            QName::Unresolved(ident) => ident,
+            QName::Resolved { ident, .. } => ident,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct SourceFile {
@@ -194,7 +203,8 @@ pub struct VariantDef {
     pub name: Ident,
     pub sset: Option<Box<Expr>>,
     pub span: Range<usize>,
-    pub node_id: NodeId
+    pub node_id: NodeId,
+    pub def_id: DefId
 }
 
 #[derive(Debug)]
@@ -294,6 +304,7 @@ pub enum ExprKind {
     String(String),
     Name(QName),
     Tuple(Vec<Expr>),
+    EnumVariant(Box<TypeExpr>, Ident),
     ShorthandEnum(Ident),
     Range(Box<Expr>, Box<Expr>, bool),
     Deref(Box<Expr>),

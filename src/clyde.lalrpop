@@ -83,7 +83,11 @@ EnumDef: ast::Item = {
 
 VariantDef: ast::VariantDef = {
     <sloc:@L> <name:Ident> <sset:("=" <Expression<"all">>)?> <eloc:@R> => ast::VariantDef {
-        name, sset: sset.map(Box::new), span: (sloc..eloc), node_id: ctxt.make_node_id(),
+        name,
+        sset: sset.map(Box::new),
+        span: (sloc..eloc),
+        node_id: ctxt.make_node_id(),
+        def_id: ast::DEF_ID_UNDEF
     }
 };
 

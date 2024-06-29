@@ -210,6 +210,7 @@ pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T
         }
         ExprKind::Deref(expr) => vis.visit_expr(expr),
         ExprKind::Block(stmts) => visit_vec(stmts, |stmt| vis.visit_stmt(stmt)),
+        ExprKind::EnumVariant(ty, _) => vis.visit_ty_expr(ty),
         ExprKind::Err => ()
     }
 }

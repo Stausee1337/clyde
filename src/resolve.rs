@@ -150,6 +150,11 @@ impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
         mut_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
         field_def.def_id = self.resolution.declarations.push(field_def.node_id).into();
     }
+
+    fn visit_variant_def(&mut self, variant_def: &mut ast::VariantDef) {
+        mut_visitor::visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
+        variant_def.def_id = self.resolution.declarations.push(variant_def.node_id).into();
+    }
 }
 
 #[derive(Default)]
@@ -425,6 +430,39 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     mut_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
                 });
             }
+            ast::ExprKind::Field(base, ident) => match (base.as_mut(), ident) {
+                (ast::Expr { kind: ast::ExprKind::Name(name), node_id: spare_id, .. }, ast::FieldIdent::Named(variant)) => {
+                    let res = if name.ident().symbol.get().chars().nth(0).unwrap().is_uppercase() {
+                        // types (enums) get higher priority if the beginning char of the name is
+                        // uppercase
+                        self.resolve_priority(&[NameSpace::Type, NameSpace::Variable, NameSpace::Function], name)
+                    } else {
+                        self.resolve_priority(&[NameSpace::Variable, NameSpace::Function, NameSpace::Type], name)
+                    };
+                    if let ast::QName::Resolved { res_kind: ast::Resolution::Def(_, ast::DefinitionKind::Enum), .. }
+                        = name {
+                        assert!(res);
+                        let span = expr.span.clone();
+                        let node_id = expr.node_id;
+
+                        let enm = {
+                            let span = name.ident().span.clone();
+                            ast::TypeExpr {
+                                span,
+                                kind: ast::TypeExprKind::Name(name.clone()),
+                                node_id: *spare_id
+                            }
+                        };
+
+                        *expr = ast::Expr {
+                            kind: ast::ExprKind::EnumVariant(Box::new(enm), variant.clone()),
+                            span,
+                            node_id
+                        };
+                    }
+                }
+                _ => self.visit_expr(base)
+            },
             _ => mut_visitor::noop_visit_expr_kind(&mut expr.kind, self)
         }
     }
@@ -530,6 +568,15 @@ impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
         }
         self.visit_ty_expr(&field_def.ty);
         node_visitor::visit_option(&field_def.default_init, |default_init| self.visit_expr(default_init));
+    }
+
+    fn visit_variant_def(&self, variant_def: &ast::VariantDef) { 
+        if variant_def.node_id == self.needle {
+            self.node.set(ast::Node::Variant(variant_def).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        node_visitor::visit_option(&variant_def.sset, |sset| self.visit_expr(sset));
     }
 }
 
