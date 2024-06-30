@@ -21,7 +21,7 @@ nuint len([]str slice) {
 int main([]str argv) {
     nuint idx = 0;
     for arg in argv {
-        println(arg[0]);
+        println(arg);
     }
     return 0;
 }

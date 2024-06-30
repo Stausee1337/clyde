@@ -110,7 +110,7 @@ define_queries! {
     [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
     [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
     [] fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
-    [feedable] fn size_of(types::Ty<'tcx>) -> types::Size;
+    [] fn size_of(types::Ty<'tcx>) -> types::Size;
     [] fn representable(ast::DefId) -> bool;
 }
 
@@ -148,7 +148,7 @@ consider feeding the query first, using feed.{name}(...) on its associated feeda
 }
 
 pub mod caches {
-    use std::{fmt::Debug, hash::Hash, collections::HashMap, cell::{RefCell, OnceCell}, borrow::Borrow};
+    use std::{fmt::Debug, hash::Hash, collections::HashMap, cell::{RefCell, OnceCell}};
 
     use index_vec::IndexVec;
 

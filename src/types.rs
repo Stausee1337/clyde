@@ -1,9 +1,8 @@
-use std::{mem::transmute, ops::Deref, fmt::Write, collections::HashSet};
+use std::{mem::transmute, ops::Deref};
 
 use bumpalo::Bump;
-use bitflags::bitflags;
 
-use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner, self}, diagnostics::DiagnosticsData};
+use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}};
 
 
 #[derive(Debug, Hash)]

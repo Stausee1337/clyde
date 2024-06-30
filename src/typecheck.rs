@@ -19,13 +19,17 @@ impl<'tcx> From<Option<Ty<'tcx>>> for Expectation<'tcx> {
     }
 }
 
-
+/// FIXME: This is very fishy (because I copied the Diverges
+/// handling from rustc). The only reason the correct statements
+/// show up in the `NOTE: ...` diagnostics is because thier
+/// span are typically longer, than the shorter more nested
+/// onse. Eventhough this really *should always* hold,
+/// I'm not to happy with it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 struct DSpan(usize, usize);
 
 impl Ord for DSpan {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // (self.1 - self.0).partial_cmp(&(other.1 - other.0))
         (self.1 - self.0).cmp(&(other.1 - other.0))
     }
 }
