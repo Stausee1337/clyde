@@ -1,13 +1,7 @@
 use core::panic;
-use std::{collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range, cell::Cell};
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr}, interface, diagnostics::Diagnostics};
-
-struct Rib<'tcx> {
-    kind: RibKind,
-    owner: ast::NodeId,
-    expected_ty: Option<Ty<'tcx>>
-}
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, interface, diagnostics::Diagnostics};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -25,34 +19,41 @@ impl<'tcx> From<Option<Ty<'tcx>>> for Expectation<'tcx> {
     }
 }
 
-#[derive(PartialEq, Eq)]
-enum RibKind {
-    If, Loop, Block,
-}
 
-#[derive(Default)]
-struct DivergingTy<'tcx> {
-    result_ty: Option<Ty<'tcx>>,
-    // ONLY true if a statement diverges COMPLETELY,
-    // and does no longer continue on the applications
-    // main path in ANY way!
-    // eg. if ... { return ...; } would have this property `true`
-    diverges: bool
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
+struct DSpan(usize, usize);
 
-impl<'tcx> DivergingTy<'tcx> {
-    fn never_diverges(tcx: TyCtxt<'tcx>, diverges: bool) -> Self {
-        Self {
-            result_ty: Some(Ty::new_never(tcx)),
-            diverges
-        }
+impl Ord for DSpan {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // (self.1 - self.0).partial_cmp(&(other.1 - other.0))
+        (self.1 - self.0).cmp(&(other.1 - other.0))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Diverges {
+    Maybe,
+    Always(DSpan),
+    WarnedAlways
+}
+
+impl Diverges {
+    fn always(span: Range<usize>) -> Self {
+        Self::Always(DSpan(span.start, span.end))
+    }
+}
+
+#[derive(Debug)]
+struct LoopCtxt {
+    owner: NodeId,
+    may_break: bool
 }
 
 struct TypecheckCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
-    ribs: Vec<Rib<'tcx>>,
-    outer_rib: Option<Rib<'tcx>>,
+    return_ty: Option<Ty<'tcx>>,
+    diverges: Cell<Diverges>,
+    loop_stack: Vec<LoopCtxt>,
     field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     diagnostics: Diagnostics<'tcx>,
@@ -64,8 +65,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     fn new(tcx: TyCtxt<'tcx>) -> Self {
         Self {
             tcx,
-            ribs: Vec::new(),
-            outer_rib: None,
+            return_ty: None,
+            diverges: Cell::new(Diverges::Maybe),
+            loop_stack: Vec::new(),
             field_indices: Default::default(),
             variant_translations: Default::default(),
             lowering_ctxt: LoweringCtxt::new(tcx),
@@ -74,40 +76,20 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
     }
 
-    fn with_rib<T, F: FnOnce(&mut Self) -> T>(
-        &mut self,
-        kind: RibKind,
-        owner: ast::NodeId,
-        expected_ty: Option<Ty<'tcx>>,
-        do_work: F
-    ) -> T {
-        let is_outer_rib = self.outer_rib
-            .as_ref()
-            .map(|rib| rib.owner == owner)
-            .unwrap_or(false);
-        if !is_outer_rib {
-            self.ribs.push(Rib { kind, owner, expected_ty });
-        } else {
-            let rib_ty = self.outer_rib.as_ref().unwrap().expected_ty;
-            assert_eq!(expected_ty, rib_ty, "Expected type of owning root block is unequal to expected type of outer_rib");
-        }
+    fn enter_loop_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, ctxt: LoopCtxt, do_work: F) -> (LoopCtxt, T) {
+        self.loop_stack.push(ctxt);
         let rv = do_work(self);
-        if !is_outer_rib {
-            self.ribs.pop();
-        }
-        rv
+        let ctxt = self.loop_stack.pop().unwrap();
+        (ctxt, rv)
     }
 
-    fn find_rib(&mut self, kind: RibKind) -> Option<&Rib<'tcx>> {
-        let mut result = None;
-        for rib in self.ribs.iter() {
-            if rib.kind == kind {
-                result = Some(rib);
-                break;
+    fn loop_ctxt(&mut self, owner: NodeId) -> Option<&mut LoopCtxt> {
+        for ctxt in &mut self.loop_stack {
+            if ctxt.owner == owner {
+                return Some(ctxt);
             }
         }
-
-        result
+        None
     }
 
     fn ty_assoc(&mut self, node_id: ast::NodeId, ty: Ty<'tcx>) {
@@ -148,7 +130,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         deref
     }
 
-    fn check_stmt_assign(&mut self, lhs: &'tcx ast::Expr, rhs: &'tcx ast::Expr) -> bool {
+    fn check_stmt_assign(&mut self, lhs: &'tcx ast::Expr, rhs: &'tcx ast::Expr) {
         let is_valid_lhs = {
             use ast::ExprKind::{Subscript, Field, Name, Deref};
             matches!(lhs.kind, Subscript(..) | Field(..) | Name(..) | Deref(..)) 
@@ -159,55 +141,115 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
         let lhs_ty = self.check_expr_with_expectation(lhs, Expectation::None);
         if let Ty(types::TyKind::Never) = self.check_expr_with_expectation(rhs, Expectation::Coerce(lhs_ty)) {
-            return true;
+            self.diverges.set(Diverges::always(rhs.span.clone()));
         }
-        false
     }
 
     fn check_stmt_if(
         &mut self,
-        condition: &'tcx ast::Expr, body: &'tcx [ast::Stmt], else_branch: Option<&'tcx ast::Stmt>, owner: ast::NodeId) -> DivergingTy<'tcx> {
+        condition: &'tcx ast::Expr, body: &'tcx ast::Block, else_branch: Option<&'tcx ast::Stmt>) -> Ty<'tcx> {
         self.check_expr_with_expectation(
             condition, Expectation::Coerce(Ty::new_primitive(self.tcx, types::Primitive::Bool)));
 
-        let mut body_ty = self.with_rib(RibKind::If, owner, None, |this| this.visit_block(body));
+        self.maybe_warn_unreachable(body.span.clone(), "block");
+
+        let cond_diverges = self.diverges.replace(Diverges::Maybe);
+
+        let mut body_ty = self.check_block(body, Expectation::None);
+        let body_diverges = self.diverges.replace(Diverges::Maybe);
+
 
         if let Some(else_branch) = else_branch {
-            let else_ty = match &else_branch.kind {
-                ast::StmtKind::If(condition, body, branch) =>
-                    self.check_stmt_if(condition, body, branch.as_deref(), else_branch.node_id),
-                ast::StmtKind::Expr(expr) if matches!(expr.kind, ast::ExprKind::Block(..)) => {
-                    let else_body = match &expr.kind {
-                        ast::ExprKind::Block(block) => block,
-                        _ => unreachable!()
-                    };
-                    
-                    self.visit_block(else_body)
-                }
-                _ => unreachable!()
-            };
+            let else_ty = self.check_stmt(else_branch);
+            let else_diverges = self.diverges.get();
 
-            let result_ty = match Option::zip(body_ty.result_ty, else_ty.result_ty) {
-                Some((body_ty, else_ty)) => {
-                    self.maybe_emit_type_error(else_ty, body_ty, else_branch.span.clone());
-                    Some(body_ty)
-                }
-                None => None,
-            };
+            body_ty = self.maybe_emit_type_error(else_ty, body_ty, else_branch.span.clone());
 
-            body_ty = DivergingTy {
-                result_ty,
-                diverges: body_ty.diverges && else_ty.diverges
-            };
+            self.diverges.set(std::cmp::max(cond_diverges, std::cmp::min(body_diverges, else_diverges)));
         } else {
-            body_ty.diverges = false;
+            self.diverges.set(cond_diverges);
+            body_ty = Ty::new_primitive(self.tcx, types::Primitive::Void);
         }
+
+        // self.diverges.set(std::cmp::max(self.diverges.get(), prev_diverge));
 
         body_ty
     }
 
+    fn check_stmt_while(&mut self,
+            condition: &'tcx ast::Expr, body: &'tcx ast::Block) -> Ty<'tcx> {
+
+        let bool = Ty::new_primitive(self.tcx, types::Primitive::Bool);
+        let res = self.check_expr_with_expectation(condition, Expectation::Coerce(bool));
+
+        self.maybe_warn_unreachable(body.span.clone(), "block");
+
+        let cond_diverges = self.diverges.replace(Diverges::Maybe);
+
+        let mut endless = false;
+        // TODO: repace with propper compile time constant evaluation
+        if res == bool && matches!(condition.kind, ast::ExprKind::Constant(ast::Constant::Boolean(true))) {
+            endless = true;
+        }
+
+        let ctxt = LoopCtxt {
+            owner: body.node_id, may_break: false
+        };
+
+        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
+        let (ctxt, ()) = self.enter_loop_ctxt(ctxt, |this| {
+            this.check_block(body, Expectation::Coerce(void));
+        });
+
+        if !endless || ctxt.may_break {
+            self.diverges.set(std::cmp::max(cond_diverges, Diverges::Maybe));
+            return Ty::new_primitive(self.tcx, types::Primitive::Void);
+        }
+
+        Ty::new_never(self.tcx)
+    }
+
+    fn check_stmt_for(&mut self, iter: &'tcx ast::Expr, body: &'tcx ast::Block, node_id: NodeId) {
+
+        let iter_ty  = self.check_expr_with_expectation(iter, Expectation::None);
+
+        self.maybe_warn_unreachable(body.span.clone(), "block");
+
+        let iter_diverges = self.diverges.replace(Diverges::Maybe);
+
+        let base = {
+            use types::TyKind::{Never, Err, Slice, Array, DynamicArray, Range, Refrence};
+
+            if let Ty(Never | Err) = iter_ty {
+                iter_ty
+            } else if let Ty(Slice(base) | Array(base, _) | DynamicArray(base) | Range(base, _)) = self.autoderef(iter_ty, 1).unwrap_or(iter_ty) {
+                if let Ty(Refrence(..)) = iter_ty {
+                    Ty::new_refrence(self.tcx, *base)
+                } else {
+                    *base
+                }
+            } else {
+                self.diagnostics.error(format!("expected iterable, found {iter_ty}"));
+                Ty::new_error(self.tcx)
+            }
+        };
+
+        self.ty_assoc(node_id, base);
+
+        let ctxt = LoopCtxt {
+            owner: body.node_id, may_break: false
+        };
+
+        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
+        let (_, ()) = self.enter_loop_ctxt(ctxt, |this| {
+            this.check_block(body, Expectation::Coerce(void));
+        });
+
+        self.diverges.set(std::cmp::max(iter_diverges, Diverges::Maybe));
+    }
+
     fn check_stmt_local(&mut self,
-        stmt: &'tcx ast::Stmt, expr: Option<&'tcx ast::Expr>, ty: Option<&'tcx ast::TypeExpr>) -> bool {
+        stmt: &'tcx ast::Stmt, expr: Option<&'tcx ast::Expr>, ty: Option<&'tcx ast::TypeExpr>) {
         let expected = ty.map(|ty| self.lowering_ctxt.lower_ty(&ty));
 
         if let Some(expected) = expected {
@@ -222,7 +264,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             self.diagnostics.error("type-anonymous variable declarations require an init expresssion")
                 .with_span(stmt.span.clone());
             self.ty_assoc(stmt.node_id, Ty::new_error(self.tcx));
-            return false;
+            return;
         } else if let Some(expr) = expr {
             let ty = self.check_expr_with_expectation(expr, expected.into());
             if let Ty(types::TyKind::Never) = ty {
@@ -230,8 +272,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 // TODO: figure out what really to do with that
                 // maybe some sort of a `Bendable` TyKind, for this
                 // specific situations. For now its `Never`
-                // eg. var test = todo();                                                        
-                return true;
+                // eg. var test = todo();
+                self.diverges.set(Diverges::always(stmt.span.clone()));
+                return;
             }
             self.ty_assoc(stmt.node_id, expected.unwrap_or(ty));
         } else if let Some(expected) = expected {
@@ -241,32 +284,35 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         } else {
             unreachable!()
         }
-
-        false
     }
 
-    fn check_stmt(&mut self, stmt: &'tcx ast::Stmt) -> DivergingTy<'tcx> {
+    fn check_stmt(&mut self, stmt: &'tcx ast::Stmt) -> Ty<'tcx> {
         match &stmt.kind {
             ast::StmtKind::Expr(expr) => {
                 let ty = self.check_expr_with_expectation(expr, Expectation::None);
                 if let Ty(types::TyKind::Never) = ty {
-                    return DivergingTy::never_diverges(self.tcx, true);
+                    return ty;
                 }
             }
             ast::StmtKind::Assign(lhs, rhs) =>
-                return DivergingTy::never_diverges(self.tcx, self.check_stmt_assign(lhs, rhs)),
+                self.check_stmt_assign(lhs, rhs), 
             ast::StmtKind::If(condition, body, branch) =>
-                return self.check_stmt_if(condition, body, branch.as_deref(), stmt.node_id),
+                return self.check_stmt_if(condition, body, branch.as_deref()),
+            ast::StmtKind::While(condition, body) =>
+                return self.check_stmt_while(condition, body),
+            ast::StmtKind::For(_, iter, body) =>
+                self.check_stmt_for(iter, body, stmt.node_id),
             ast::StmtKind::Local(_, ty, expr) =>
-                return DivergingTy::never_diverges(
-                    self.tcx, self.check_stmt_local(stmt, expr.as_deref(), ty.as_deref())),
+                self.check_stmt_local(stmt, expr.as_deref(), ty.as_deref()),
+            ast::StmtKind::Block(block) =>
+                return self.check_block(block, Expectation::None),
             ast::StmtKind::Return(expr) => {
-                let Some(Some(return_ty)) = self.outer_rib.as_ref().map(|rib| rib.expected_ty) else {
+                let Some(return_ty) = self.return_ty else {
                     self.diagnostics.error("`return` found outside of function body")
                         .with_span(stmt.span.clone());
                     self.diagnostics.note("use break ...; for producing values")
                         .with_span(stmt.span.clone());
-                    return DivergingTy::default();
+                    return Ty::new_error(self.tcx);
                 };
                 let ty = expr
                     .as_ref()
@@ -280,27 +326,22 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     }
                 };
                 self.ty_assoc(stmt.node_id, ty);
-                return DivergingTy {
-                    diverges: true,
-                    result_ty: Some(Ty::new_never(self.tcx))
-                };
+                return Ty::new_never(self.tcx);
             }
             ast::StmtKind::ControlFlow(flow) => {
-                let Some(lop) = self.find_rib(RibKind::Loop) else {
-                    self.diagnostics.error(format!("`{}` found outside of loop", flow.kind))
-                        .with_span(stmt.span.clone());
-                    return DivergingTy::default();
-                };
-                flow.res.set(lop.owner).unwrap();
-                return DivergingTy {
-                    result_ty: None,
-                    diverges: true
-                };
+                if let Ok(owner) = flow.destination {
+                    if flow.kind == ast::ControlFlowKind::Break {
+                        let ctxt = self.loop_ctxt(owner).expect("loop destination for break;");
+                        ctxt.may_break = true;
+                    }
+                    return Ty::new_never(self.tcx);
+                } else {
+                    return Ty::new_error(self.tcx);
+                }
             }
             ast::StmtKind::Err => (),
-            _ => todo!("Unimplemented Stmt Kind")
         }
-        DivergingTy::default()
+        Ty::new_primitive(self.tcx, types::Primitive::Void)
     }
 
     fn check_expr_integer(&mut self, int: u64, sign: NumberSign, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
@@ -317,37 +358,30 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         panic!("u64 to big for ulong ???")
     }
 
-    fn visit_block(&mut self, stmts: &'tcx [ast::Stmt]) -> DivergingTy<'tcx> {
-        let mut iterator = stmts.iter();
-        let mut result_ty = None;
-        let mut diverges = false;
-        for stmt in &mut iterator {
-            let result = self.check_stmt(stmt);
-            if result.diverges {
-                diverges = true;
-                result_ty = result.result_ty;
-                break;
+    fn check_block(&mut self, block: &'tcx ast::Block, expectation: Expectation<'tcx>) -> Ty<'tcx> {
+        for stmt in &block.stmts {
+            self.maybe_warn_unreachable(stmt.span.clone(), "statement");
+
+            let prev_diverge = self.diverges.replace(Diverges::Maybe);
+            if let Ty(types::TyKind::Never) = self.check_stmt(stmt) {
+                self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::always(stmt.span.clone())));
             }
+
+            self.diverges.set(std::cmp::max(self.diverges.get(), prev_diverge));
         }
 
-        if result_ty.is_some() {
-            if let Some(stmt) = iterator.next() {
-                self.diagnostics.warning("this code is unreachable")
-                    .with_span(stmt.span.clone());
-            }
-        }
-
-        return DivergingTy {
-            diverges,
-            result_ty
+        let ty = if let Diverges::Maybe = self.diverges.get() {
+            Ty::new_primitive(self.tcx, types::Primitive::Void)
+        } else {
+            Ty::new_never(self.tcx)
         };
-    }
 
-    fn check_expr_block(&mut self, stmts: &'tcx [ast::Stmt], owner: ast::NodeId, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
-        self.with_rib(RibKind::Block, owner, expected, |this| {
-            let result_ty = this.visit_block(stmts).result_ty;
-            result_ty.unwrap_or_else(|| Ty::new_primitive(this.tcx, types::Primitive::Void))
-        })
+
+        if let Expectation::Coerce(expected) = expectation {
+            self.maybe_emit_type_error(ty, expected, block.span.clone())
+        } else {
+            ty
+        }
     }
 
     /// Checks wether a specific Expr has a definite type, basically checking for integer
@@ -1027,8 +1061,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             ast::ExprKind::Name(name) =>
                 self.check_expr_name(name),
-            ast::ExprKind::Block(stmts) =>
-                self.check_expr_block(stmts, expr.node_id, expected),
+            ast::ExprKind::Block(block) =>
+                self.check_block(block, Expectation::None), 
             ast::ExprKind::Err =>
                 Ty::new_error(self.tcx),
             ast::ExprKind::FunctionCall(base, args, _) =>
@@ -1120,22 +1154,30 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             Expectation::None => None,
             Expectation::Guide(ty) | Expectation::Coerce(ty) => Some(ty)
         };
-        let ty = self.check_expr(&expr, expected);
+
+        let prev_diverge = self.diverges.get();
+        self.diverges.set(Diverges::Maybe);
+        let ty = self.check_expr(&expr, expected); 
 
         if let Expectation::Coerce(expected) = expectation {
             self.maybe_emit_type_error(ty, expected, expr.span.clone());
         }
 
+        self.maybe_warn_unreachable(expr.span.clone(), "expression");
+
+        if let Ty(types::TyKind::Never) = ty {
+            self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::always(expr.span.clone())));
+        }
+
         self.ty_assoc(expr.node_id, ty);
+
+        self.diverges.set(std::cmp::max(self.diverges.get(), prev_diverge));
+
         ty
     }
 
     fn check_return_ty(&mut self, expr: &'tcx ast::Expr, ret_ty: Ty<'tcx>, ret_ty_span: Range<usize>) {
-        self.outer_rib = Some(Rib {
-            kind: RibKind::Block,
-            owner: expr.node_id,
-            expected_ty: Some(ret_ty)
-        });
+        self.return_ty = Some(ret_ty);
 
         let ty = self.check_expr(&expr, Some(ret_ty));
         self.maybe_emit_type_error(ty, ret_ty, ret_ty_span);
@@ -1149,11 +1191,23 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         self.ty_assoc(expr.node_id, ty); 
     }
 
-    fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Range<usize>) {
+    fn maybe_warn_unreachable(&self, span: Range<usize>, what: &'static str) {
+        if let Diverges::Always(DSpan(start, end)) = self.diverges.get() {
+            self.diagnostics.warning(format!("unreachable {what}"))
+                .with_span(span);
+            self.diagnostics.note("any code following this expression is unreachable")
+                .with_span(start..end);
+            self.diverges.set(Diverges::WarnedAlways);
+        }
+    }
+
+    fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
         if found != expected {
             self.diagnostics.error(format!("mismatched types: expected {expected}, found {found}"))
                 .with_span(span);
+            return Ty::new_error(self.tcx);
         }
+        found
     }
 }
 

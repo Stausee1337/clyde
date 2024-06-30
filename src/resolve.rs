@@ -164,14 +164,16 @@ struct Rib {
 
 struct NameResolutionPass<'r, 'tcx> {
     resolution: &'r mut ResolutionState<'tcx>,
-    ribs: Vec<Rib>
+    ribs: Vec<Rib>,
+    loop_owners: Vec<NodeId>
 }
 
 impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
     fn new(resolution: &'r mut ResolutionState<'tcx>) -> Self {
         Self {
             resolution,
-            ribs: Default::default()
+            ribs: Default::default(),
+            loop_owners: Vec::new()
         }
     }
 
@@ -179,6 +181,12 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         self.ribs.push(Rib::default());
         do_work(self);
         self.ribs.pop();
+    }
+
+    fn enter_loop_ctxt<F: FnOnce(&mut Self)>(&mut self, owner: ast::NodeId, do_work: F) {
+        self.loop_owners.push(owner);
+        do_work(self);
+        self.loop_owners.pop();
     }
 
     fn has_rib(&self) -> bool {
@@ -353,27 +361,34 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
             ast::StmtKind::If(cond, body, else_body) => {
                 self.visit_expr(cond);
                 self.with_rib(|this| {
-                    mut_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
+                    this.visit_block(body);
                 });
                 mut_visitor::visit_option(else_body, |else_body| self.visit_stmt(else_body))
             }
             ast::StmtKind::While(cond, body) => {
                 self.visit_expr(cond);
                 self.with_rib(|this| {
-                    mut_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
+                    this.enter_loop_ctxt(body.node_id, |this| this.visit_block(body));
                 });
             }
-            ast::StmtKind::For(..) => {
-                self.resolution.diagnostics
-                    .fatal("for loops are not supported yet")
-                    .with_span(stmt.span.clone());
-                self.resolution.diagnostics
-                    .note("consider using while loops for now")
-                    .with_pos(stmt.span.start);
-                stmt.kind = ast::StmtKind::Err;
+            ast::StmtKind::For(ident, iter, body) => {
+                self.define(ident.clone(), stmt.node_id);
+                self.visit_expr(iter);
+                self.with_rib(|this| {
+                    this.enter_loop_ctxt(body.node_id, |this| this.visit_block(body));
+                });
             }
             _ => mut_visitor::noop_visit_stmt_kind(&mut stmt.kind, self),
         }
+    }
+
+    fn visit_control_flow(&mut self, control_flow: &mut ast::ControlFlow) {
+        let Some(owner) = self.loop_owners.last() else {
+            self.resolution.diagnostics.error(format!("`{}` found outside of loop", control_flow.kind))
+                .with_span(control_flow.span.clone());
+            return;
+        };
+        control_flow.destination = Ok(*owner);
     }
 
     fn visit_name(&mut self, name: &mut ast::QName) {
@@ -427,7 +442,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
             }
             ast::ExprKind::Block(body) => {
                 self.with_rib(|this| {
-                    mut_visitor::visit_vec(body, |stmt| this.visit_stmt(stmt));
+                    this.visit_block(body);
                 });
             }
             ast::ExprKind::Field(base, ident) => match (base.as_mut(), ident) {

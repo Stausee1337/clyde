@@ -236,6 +236,13 @@ pub struct Param {
 }
 
 #[derive(Debug)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    pub span: Range<usize>,
+    pub node_id: NodeId,
+}
+
+#[derive(Debug)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Range<usize>,
@@ -245,10 +252,11 @@ pub struct Stmt {
 #[derive(Debug)]
 pub enum StmtKind {
     Expr(Box<Expr>),
+    Block(Block),
     Assign(Box<Expr>, Box<Expr>),
-    If(Box<Expr>, Vec<Stmt>, Option<Box<Stmt>>),
-    While(Box<Expr>, Vec<Stmt>),
-    For(Ident, Box<Expr>, Vec<Stmt>),
+    If(Box<Expr>, Block, Option<Box<Stmt>>),
+    While(Box<Expr>, Block),
+    For(Ident, Box<Expr>, Block),
     Local(Ident, Option<Box<TypeExpr>>, Option<Box<Expr>>),
     Return(Option<Box<Expr>>),
     ControlFlow(ControlFlow),
@@ -256,21 +264,25 @@ pub enum StmtKind {
 }
 
 #[derive(Debug)]
+pub struct OutsideLoopScope;
+
+#[derive(Debug)]
 pub struct ControlFlow {
     pub kind: ControlFlowKind,
-    pub res: OnceCell<NodeId>
+    pub destination: Result<NodeId, OutsideLoopScope>,
+    pub span: Range<usize>,
 }
 
 impl ControlFlow {
-    pub fn new(kind: ControlFlowKind) -> ControlFlow {
+    pub fn new(kind: ControlFlowKind, span: Range<usize>,) -> ControlFlow { 
         ControlFlow {
-            kind,
-            res: OnceCell::new()
+            kind, span,
+            destination: Err(OutsideLoopScope) 
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlFlowKind {
     Break, Continue
 }
@@ -308,7 +320,7 @@ pub enum ExprKind {
     ShorthandEnum(Ident),
     Range(Box<Expr>, Box<Expr>, bool),
     Deref(Box<Expr>),
-    Block(Vec<Stmt>),
+    Block(Block),
     Err
 }
 

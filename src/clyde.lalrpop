@@ -102,7 +102,7 @@ FunctionDef: ast::Item = {
         let func = ast::Function {
             sig,
             span: (sloc..eloc),
-            body,
+            body: body.map(Box::new),
             attributes: vec![]
         };
         ast::Item {
@@ -114,12 +114,19 @@ FunctionDef: ast::Item = {
     },
 };
 
-Body: Option<Box<ast::Expr>> = {
-    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> => Some(Box::new(ast::Expr { 
-        kind: ast::ExprKind::Block(stmts),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    })),
+Body: Option<ast::Expr> = {
+    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> => Some({
+        let block = ast::Block {
+            stmts,
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id(),
+        };
+        ast::Expr { 
+            kind: ast::ExprKind::Block(block),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    }),
     ";" => None,
 };
 
@@ -203,23 +210,30 @@ SimpleTypeExpr: ast::TypeExpr = {
 };
 
 IfStatement: ast::Stmt = {
-    <sloc:@L> "if" <condition:Expression<"no-blocks">> "{" <bif:Statement*> "}"
-    <else_block:("else" <ContinuedIfBlock>)?> <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::If(Box::new(condition), bif, else_block.map(Box::new)),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
-};
-
-ContinuedIfBlock: ast::Stmt = {
-    <sloc:@L> "{" <body:Statement*> "}" <eloc:@R> => {
-        let body = ast::Expr {
-            kind: ast::ExprKind::Block(body),
+    <sloc:@L> "if" <condition:Expression<"no-blocks">> "{" <stmts:Statement*> "}"
+    <else_block:("else" <ContinuedIfBlock>)?> <eloc:@R> => {
+        let block = ast::Block {
+            stmts,
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         };
         ast::Stmt {
-            kind: ast::StmtKind::Expr(Box::new(body)),
+            kind: ast::StmtKind::If(Box::new(condition), block, else_block.map(Box::new)),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    }
+};
+
+ContinuedIfBlock: ast::Stmt = {
+    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> => {
+        let block = ast::Block {
+            stmts,
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        };
+        ast::Stmt {
+            kind: ast::StmtKind::Block(block),
             span: (sloc..eloc),
             node_id: ctxt.make_node_id()
         }
@@ -228,29 +242,43 @@ ContinuedIfBlock: ast::Stmt = {
 };
 
 WhileStatement: ast::Stmt = {
-    <sloc:@L> "while" <condition:Expression<"no-blocks">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::While(Box::new(condition), body),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
+    <sloc:@L> "while" <condition:Expression<"no-blocks">> "{" <stmts:Statement*> "}" <eloc:@R> => {
+        let block = ast::Block {
+            stmts,
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        };
+        ast::Stmt {
+            kind: ast::StmtKind::While(Box::new(condition), block),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
     }
 };
 
 ForStatement: ast::Stmt = {
-    <sloc:@L> "for" <ident:Ident> "in" <iterator:Expression<"no-blocks">> "{" <body:Statement*> "}" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::For(ident, Box::new(iterator), body),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
+    <sloc:@L> "for" <ident:Ident> "in" <iterator:Expression<"no-blocks">> "{" <stmts:Statement*> "}" <eloc:@R> => {
+        let block = ast::Block {
+            stmts,
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        };
+        ast::Stmt {
+            kind: ast::StmtKind::For(ident, Box::new(iterator), block),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
     }
 };
 
 ControlFlowStmt: ast::Stmt = {
     <sloc:@L> "break" ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Break)),
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Break, (sloc..eloc))),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
     <sloc:@L> "continue" ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Continue)),
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Continue, (sloc..eloc))),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }
@@ -562,11 +590,18 @@ Atom<What>: ast::Expr = {
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
-    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> if What != "no-blocks" => ast::Expr { 
-        kind: ast::ExprKind::Block(stmts),
-        span: (sloc..eloc),
-        node_id: ctxt.make_node_id()
-    },
+    <sloc:@L> "{" <stmts:Statement*> "}" <eloc:@R> if What != "no-blocks" => {
+        let block = ast::Block {
+            stmts,
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        };
+        ast::Expr { 
+            kind: ast::ExprKind::Block(block),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id()
+        }
+    }
 };
 
 TypeOrArrayInit: Option<ast::TypeExpr> = {

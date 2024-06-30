@@ -209,7 +209,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Tuple(tys) => {
                 f.write_str("(")?;
                 for (idx, ty) in tys.iter().enumerate() {
-                    write!(f, "{ty}");
+                    write!(f, "{ty}")?;
                     if idx != tys.len() - 1 {        
                         f.write_str(", ")?;
                     }

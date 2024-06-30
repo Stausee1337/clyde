@@ -10,7 +10,7 @@ struct Vector2 {
 }
 
 void exit(int code);
-void println(str message, int k);
+void println(str message);
 (int, int) file_open(str path, OpenMode mode);
 
 nuint len([]str slice) {
@@ -19,14 +19,10 @@ nuint len([]str slice) {
 }
 
 int main([]str argv) {
-    if len(argv) <= 1 {
-        return 1;
-    } 
-
-    OpenMode t = .Writing;
-    var res = file_open("main.cly", t);
-    println("main.cly", res.0);
-
+    nuint idx = 0;
+    for arg in argv {
+        println(arg[0]);
+    }
     return 0;
 }
 

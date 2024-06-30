@@ -1,5 +1,5 @@
 
-use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, ExprKind, FunctionArgument, TypeInit, Constant, QName, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef};
+use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, ExprKind, FunctionArgument, TypeInit, Constant, QName, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef, Block};
 
 pub trait NodeVisitor: Sized {
     fn visit(&self, tree: &SourceFile) {
@@ -53,6 +53,10 @@ pub trait NodeVisitor: Sized {
 
     fn visit_ty_expr(&self, ty: &TypeExpr) {
         noop_visit_ty_expr_kind(&ty.kind, self);
+    }
+
+    fn visit_block(&self, block: &Block) {
+        visit_vec(&block.stmts, |stmt| self.visit_stmt(stmt));
     }
 
     fn visit_const(&self, cnst: &Constant) {
@@ -120,18 +124,18 @@ pub fn noop_visit_stmt_kind<T: NodeVisitor>(stmt_kind: &StmtKind, vis: &T) {
         }
         StmtKind::If(condition, if_body, else_body) => {
             vis.visit_expr(condition);
-            visit_vec(if_body, |stmt| vis.visit_stmt(stmt));
+            vis.visit_block(if_body);
             visit_option(else_body, |else_body| vis.visit_stmt(else_body));
         }
         StmtKind::While(condition, body) => {
             vis.visit_expr(condition);
-            visit_vec(body, |stmt| vis.visit_stmt(stmt));
+            vis.visit_block(body);
         }
-        StmtKind::For(_var, iterator, body) => {
+        StmtKind::For(_, iterator, body) => {
             vis.visit_expr(iterator);
-            visit_vec(body, |stmt| vis.visit_stmt(stmt));
+            vis.visit_block(body);
         }
-        StmtKind::Local(_var, ty, init) => {
+        StmtKind::Local(_, ty, init) => {
             visit_option(ty, |ty| vis.visit_ty_expr(ty));
             visit_option(init, |init| vis.visit_expr(init));
         }
@@ -139,6 +143,7 @@ pub fn noop_visit_stmt_kind<T: NodeVisitor>(stmt_kind: &StmtKind, vis: &T) {
             visit_option(expr, |expr| vis.visit_expr(expr));
         }
         StmtKind::ControlFlow(cf) => vis.visit_control_flow(cf),
+        StmtKind::Block(block) => vis.visit_block(block),
         StmtKind::Err => ()
     }
 }
@@ -179,7 +184,7 @@ pub fn noop_visit_expr_kind<T: NodeVisitor>(expr_kind: &ExprKind, vis: &T) {
             vis.visit_expr(end);
         }
         ExprKind::Deref(expr) => vis.visit_expr(expr),
-        ExprKind::Block(stmts) => visit_vec(stmts, |stmt| vis.visit_stmt(stmt)),
+        ExprKind::Block(block) => vis.visit_block(block),
         ExprKind::EnumVariant(ty, _) => vis.visit_ty_expr(ty),
         ExprKind::Err => ()
     }
