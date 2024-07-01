@@ -349,9 +349,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_integer(&mut self, int: u64, sign: NumberSign, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
-        if let Some(Ty(types::TyKind::Primitive(primitive))) = expected {
+        if let Some(expected @ Ty(types::TyKind::Primitive(primitive))) = expected {
             if primitive.integer_fit(int, sign) {
-                return expected.unwrap();
+                return expected;
             }
         }
         for primitive in [Primitive::Int, Primitive::Long, Primitive::ULong] {
@@ -856,9 +856,18 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         }
                     }
                 }
+                
+                let count = inits.len();
                 match kind {
-                    types::TyKind::Array(..) =>
-                        todo!("figure out what to do with constants"),
+                    types::TyKind::Array(_, capcity) => {
+                        let capacity = capcity.try_as_usize()
+                            .expect("array has capacity of usize");
+                        if count != 0 && count != 1 && count != capacity {
+                            self.diagnostics
+                                .error(format!("expected array with {capacity} elements, found {count} elements"))
+                                .with_span(span);
+                        }
+                    }
                     _ => ()
                 }
             }
@@ -1216,12 +1225,16 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 }
 
 struct LoweringCtxt<'tcx> {
-    tcx: TyCtxt<'tcx>
+    tcx: TyCtxt<'tcx>,
+    diagnostics: Diagnostics<'tcx>
 }
 
 impl<'tcx> LoweringCtxt<'tcx> {
     fn new(tcx: TyCtxt<'tcx>) -> Self {
-        Self { tcx }
+        Self {
+            tcx,
+            diagnostics: tcx.diagnostics_for_file(interface::INPUT_FILE_IDX),
+        }
     }
 
     fn lower_name(&self, name: &ast::QName) -> Ty<'tcx> {
@@ -1257,11 +1270,17 @@ impl<'tcx> LoweringCtxt<'tcx> {
                             return ty;
                         }
 
-                        let cap = if let ast::ArrayCapacity::Discrete(_expr) = cap {
-                            todo!("Figure out what to do with constants")
+                        let cap = if let ast::ArrayCapacity::Discrete(expr) = cap {
+                            types::Const::from_definition(self.tcx, expr.def_id)
                         } else {
                             self.tcx.mk_const_from_inner(ConstInner::Placeholder)
                         };
+
+                        if let types::Const(types::ConstInner::Err { msg, span }) = &cap {
+                            self.diagnostics.error(msg)
+                                .with_span(span.clone());
+                            return Ty::new_error(self.tcx);
+                        }
 
                         Ty::new_array(self.tcx, ty, cap)
                     },
@@ -1321,13 +1340,22 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     types::AdtDefInner::new(def_id, item.ident.symbol, fields, types::AdtKind::Struct));
                 Ty::new_adt(tcx, adt_def)
             },
-            ast::ItemKind::GlobalVar(..) => todo!(),
+            ast::ItemKind::GlobalVar(expr, ..) => {
+                let ctxt = LoweringCtxt::new(tcx);
+                ctxt.lower_ty(&expr)
+            },
             ast::ItemKind::Err =>
                 panic!("resolved Err to Definiton")
-        },
+        }
         ast::Node::Field(field) => {
             let ctx = LoweringCtxt::new(tcx);
             ctx.lower_ty(&field.ty)
+        }
+        ast::Node::NestedConst(_nested) => {
+            // FIXME: GenericArgs aren't supported at all currently,
+            // making the only other place for a NestedConst ArrayCap,
+            // which is always nuint
+            Ty::new_primitive(tcx, types::Primitive::NUint)
         }
         _ => panic!("only items can be declarations")
     }
@@ -1351,9 +1379,9 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults {
             ctxt.ty_assoc(param.node_id, param.ty);
         }
         ctxt.check_return_ty(body.body, sig.returns, returns.span.clone());
-    } else {
+    } /*else {
         todo!("typecheck non-function items")
-    }
+    }*/
 
     &TypecheckResults
 }

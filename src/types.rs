@@ -1,8 +1,9 @@
-use std::{mem::transmute, ops::Deref};
+use std::{mem::transmute, ops::{Deref, Range}, primitive};
 
 use bumpalo::Bump;
+use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{DefId, NodeId}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}};
+use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}};
 
 
 #[derive(Debug, Hash)]
@@ -122,32 +123,143 @@ pub struct Param<'tcx> {
 
 #[derive(Debug, Hash)]
 pub struct Scalar {
-    size: u8,
+    size: usize,
     data: u128
+}
+
+impl Scalar {
+    pub fn from_number<N: Num + ToPrimitive>(number: N) -> Self {
+        let size = std::mem::size_of::<N>();
+        Scalar { size, data: number.to_u128().unwrap() }
+    }
 }
 
 #[derive(Debug, Hash)]
 pub enum ValTree<'tcx> {
     Scalar(Scalar),
-    Branch(&'tcx ValTree<'tcx>)
+    Branch(&'tcx [ValTree<'tcx>])
 }
 
 #[derive(Debug, Hash)]
 pub enum ConstInner<'tcx> {
-    String(&'tcx str),
     Value(Ty<'tcx>, ValTree<'tcx>),
-    Placeholder
+    Placeholder,
+    Err {
+        msg: String,
+        span: Range<usize>
+    }
 }
 
 #[derive(Debug, Hash, Clone, Copy)]
-pub struct Const<'tcx>(&'tcx ConstInner<'tcx>);
+pub struct Const<'tcx>(pub &'tcx ConstInner<'tcx>);
 
 impl<'tcx> Const<'tcx> {
+    pub fn from_definition(tcx: TyCtxt<'tcx>, def_id: DefId) -> Const<'tcx> {
+        let node = tcx.node_by_def_id(def_id);
+
+        let body = node.body()
+            .expect("create const without a body?");
+
+        let ty = tcx.type_of(def_id);
+        match Self::try_val_from_literal(tcx, ty, body.body) {
+            Some(v) => v,
+            None => tcx.mk_const_from_inner(ConstInner::Err {
+                msg: "Sry, propper const evaluation is not a priority".to_string(),
+                span: body.body.span.clone()
+            })
+        }
+    }
+
+    fn int_to_val(
+        tcx: TyCtxt<'tcx>, val: u64, ty: Ty<'tcx>, sign: NumberSign, span: Range<usize>) -> ConstInner<'tcx> {
+        if let Ty(TyKind::Primitive(primitive)) = ty {
+            if primitive.integer_fit(val, sign) {
+                let scalar = Scalar {
+                    size: primitive.size() / 8,
+                    data: val as u128
+                };
+                return ConstInner::Value(ty, ValTree::Scalar(scalar)); 
+            }
+        }
+        for primitive in [Primitive::Int, Primitive::Long, Primitive::ULong] {
+            if primitive.integer_fit(val, sign) {
+                return ConstInner::Err {
+                    msg: format!("mismatched types: expected {ty}, found {}",
+                                 Ty::new_primitive(tcx, primitive)),
+                    span
+                }
+            }
+        }
+        panic!("u64 to big for ulong ???")
+    }
+
+    fn kind_to_ty(tcx: TyCtxt<'tcx>, kind: &'tcx ast::ExprKind) -> Ty<'tcx> {
+        use ast::{ExprKind, Constant};
+        match kind {
+            ExprKind::String(..) => Ty::new_primitive(tcx, Primitive::String),
+            ExprKind::Constant(Constant::Char(..)) => Ty::new_primitive(tcx, Primitive::Char),
+            ExprKind::Constant(Constant::Boolean(..)) => Ty::new_primitive(tcx, Primitive::Bool),
+            ExprKind::Constant(Constant::Integer(..)) | ExprKind::UnaryOp(..)
+                => Ty::new_primitive(tcx, Primitive::Int),
+            _ => unreachable!("simple kind_to_ty doesn't support {:?}", kind)
+        }
+    }
+
+    fn try_val_from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<Self> {
+        use ast::{ExprKind, Constant, UnaryOperator};
+        use Primitive::*;
+        match &expr.kind {
+            ExprKind::String(..) | ExprKind::Constant(..) => (),
+            ExprKind::UnaryOp(expr, ast::UnaryOperator::Neg)
+                if matches!(expr.kind, ExprKind::Constant(ast::Constant::Integer(..))) => (),
+            _ => return None
+        }
+        let inner = match (ty.0, &expr.kind) {
+            (TyKind::Primitive(String), ExprKind::String(str)) =>  {
+                let mut slice = Vec::new();
+                for byte in str.as_bytes() {
+                    let val = Scalar::from_number(*byte);
+                    slice.push(ValTree::Scalar(val));
+                }
+
+                let slice = slice.into_boxed_slice();
+                let slice: &'_ [ValTree] = tcx.alloc(slice);
+
+                ConstInner::Value(ty, ValTree::Branch(slice))
+            }
+            (TyKind::Primitive(Bool), ExprKind::Constant(Constant::Boolean(bool))) =>
+                ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*bool as u8))),
+            (TyKind::Primitive(Char), ExprKind::Constant(Constant::Char(char))) =>
+                ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
+            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Constant(Constant::Integer(int))) =>
+                Self::int_to_val(tcx, *int, ty, NumberSign::Positive, expr.span.clone()),
+            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(iexpr, UnaryOperator::Neg))
+                if matches!(iexpr.kind, ExprKind::Constant(Constant::Integer(..))) => {
+                let ExprKind::Constant(Constant::Integer(int)) = iexpr.kind else {
+                    unreachable!()
+                };
+                Self::int_to_val(tcx, int, ty, NumberSign::Negative, expr.span.clone())
+            }
+            (TyKind::Refrence(..), ExprKind::Constant(ast::Constant::Null)) =>
+                // FIXME: `as usize` here will make the size of the scalar depend on the size
+                // of the architecture the compiler was compiled on, not the target usize
+                ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(0 as usize))),
+            (_, ExprKind::Constant(ast::Constant::Null)) => ConstInner::Err {
+                msg: format!("non refrence-type {ty} cannot be null"),
+                span: expr.span.clone()
+            },
+            _ => ConstInner::Err {
+                msg: format!("mismatched types: expected {ty}, found {}", Self::kind_to_ty(tcx, &expr.kind)),
+                span: expr.span.clone()
+            }
+        };
+
+        Some(tcx.mk_const_from_inner(inner))
+    }
 
     pub fn try_as_usize(&self) -> Option<usize> {
         match self.0 {
-            ConstInner::String(..) => None,
-            ConstInner::Placeholder => None,
+            ConstInner::Placeholder | ConstInner::Err { .. } => None,
             ConstInner::Value(ty, val) => {
                 let Ty(TyKind::Primitive(Primitive::NUint)) = ty else {
                     return None;
@@ -411,7 +523,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             TyKind::DynamicArray(..) => Size::Computable(Self::PTR_SIZE * 3),
             TyKind::Slice(..) => Size::Computable(Self::PTR_SIZE * 2),
             TyKind::Function(..) | TyKind::Err | TyKind::Never => Size::Computable(0),
-            TyKind::Primitive(prim) => Size::Computable(prim.size() as usize / 8),
+            TyKind::Primitive(prim) => Size::Computable(prim.size() / 8),
         }
     }
 
@@ -508,7 +620,7 @@ impl Primitive {
         })
     }
 
-    pub fn size(&self) -> u8 {
+    pub fn size(&self) -> usize {
         use Primitive::*;
         // TODO: Decide based on platform
         // (currently only valid for 64bit platforms)

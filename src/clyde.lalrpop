@@ -704,7 +704,15 @@ TypeExpr: ast::TypeExpr = {
 ArrayCap: ast::ArrayCapacity = {
     "?" => ast::ArrayCapacity::Infer,
     ".." => ast::ArrayCapacity::Dynamic,
-    <expr:Expression<"all">> => ast::ArrayCapacity::Discrete(Box::new(expr)),
+    <expr:Expression<"all">> => {
+        let expr = ast::NestedConst {
+            span: expr.span.clone(),
+            expr: Box::new(expr),
+            node_id: ctxt.make_node_id(),
+            def_id: ast::DEF_ID_UNDEF
+        };
+        ast::ArrayCapacity::Discrete(expr)
+    },
 };
 
 IsClosure: bool = {
@@ -714,7 +722,16 @@ IsClosure: bool = {
 
 GenericArgument: ast::GenericArgument = {
     <ty:TypeExpr> => ast::GenericArgument::Ty(ty),
-    <c:Constant> => ast::GenericArgument::Constant(c)
+    <c:Constant> => ast::GenericArgument::Constant(c),
+    <sloc:@L> "{" <expr:Expression<"all">> "}" <eloc:@R> => {
+        let expr = ast::NestedConst {
+            expr: Box::new(expr),
+            span: (sloc..eloc),
+            node_id: ctxt.make_node_id(),
+            def_id: ast::DEF_ID_UNDEF
+        };
+        ast::GenericArgument::Expr(expr)
+    },
 };
 
 GenericParams: Vec<ast::GenericParam> = {

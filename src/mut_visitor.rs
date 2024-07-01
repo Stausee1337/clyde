@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, ExprKind, FunctionArgument, TypeInit, Constant, QName, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef, Block};
+use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, ExprKind, FunctionArgument, TypeInit, Constant, QName, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef, Block, NestedConst};
 
 
 pub trait MutVisitor: Sized {
@@ -31,6 +31,10 @@ pub trait MutVisitor: Sized {
 
     fn visit_expr(&mut self, expr: &mut Expr) {
         noop_visit_expr_kind(&mut expr.kind, self);
+    }
+
+    fn visit_nested_const(&mut self, expr: &mut NestedConst) {
+        self.visit_expr(&mut expr.expr);
     }
 
     fn visit_argument(&mut self, arg: &mut FunctionArgument) {
@@ -240,7 +244,7 @@ pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &
             vis.visit_ty_expr(base);
             match cap {
                 ast::ArrayCapacity::Discrete(expr) =>
-                    vis.visit_expr(expr),
+                    vis.visit_nested_const(expr),
                 ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
             }
         }
@@ -261,7 +265,7 @@ pub fn noop_visit_argument<T: MutVisitor>(arg: &mut FunctionArgument, vis: &mut 
 pub fn noop_visit_generic_argument<T: MutVisitor>(arg: &mut GenericArgument, vis: &mut T) {
     match arg {
         GenericArgument::Ty(expr) => vis.visit_ty_expr(expr),
-        GenericArgument::Expr(expr) => vis.visit_expr(expr),
+        GenericArgument::Expr(expr) => vis.visit_nested_const(expr),
         GenericArgument::Constant(cnst) => vis.visit_const(cnst),
     }
 }

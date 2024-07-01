@@ -12,6 +12,7 @@ pub const DUMMY_SPAN: Range<usize> = 0..0;
 #[derive(Debug, Clone, Copy)]
 pub enum Node<'ast> {
     Expr(&'ast Expr),
+    NestedConst(&'ast NestedConst),
     Item(&'ast Item),
     SourceFile(&'ast SourceFile),
     Stmt(&'ast Stmt),
@@ -25,6 +26,7 @@ impl<'ast> Node<'ast> {
         unsafe { transmute::<Node<'ast>, Node<'tcx>>(self) }
     }
 
+    // TODO: body for FieldDef 
     pub fn body(self) -> Option<Body<'ast>> {
         match self {
             Self::Item(item) => match &item.kind {
@@ -47,6 +49,9 @@ impl<'ast> Node<'ast> {
                 },
                 _ => None,
             },
+            Self::NestedConst(expr) => Some(Body {
+                params: &[], body: &expr.expr
+            }),
             _ => None
         }
     }
@@ -395,7 +400,7 @@ pub enum TypeInit {
 pub enum ArrayCapacity {
     Infer,
     Dynamic,
-    Discrete(Box<Expr>)
+    Discrete(NestedConst)
 }
 
 #[derive(Debug)]
@@ -404,6 +409,14 @@ pub enum Constant {
     Integer(u64),
     Boolean(bool),
     Char(char)
+}
+
+#[derive(Debug)]
+pub struct NestedConst {
+    pub expr: Box<Expr>,
+    pub span: Range<usize>,
+    pub node_id: NodeId,
+    pub def_id: DefId,
 }
 
 #[derive(Debug)]
@@ -426,7 +439,7 @@ pub enum TypeExprKind {
 #[derive(Debug)]
 pub enum GenericArgument {
     Ty(TypeExpr),
-    Expr(Expr),
+    Expr(NestedConst),
     Constant(Constant),
 }
 

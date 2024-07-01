@@ -155,6 +155,11 @@ impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
         mut_visitor::visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
         variant_def.def_id = self.resolution.declarations.push(variant_def.node_id).into();
     }
+
+    fn visit_nested_const(&mut self, expr: &mut ast::NestedConst) {
+        self.visit_expr(&mut expr.expr);
+        expr.def_id = self.resolution.declarations.push(expr.node_id).into();
+    }
 }
 
 #[derive(Default)]
@@ -412,7 +417,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         self.visit_ty_expr(ty);
                         match cap {
                             ast::ArrayCapacity::Discrete(expr) =>
-                                self.visit_expr(expr),
+                                self.visit_nested_const(expr),
                             ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                         }
                     }
@@ -507,7 +512,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 self.visit_ty_expr(base);
                 match cap {
                     ast::ArrayCapacity::Discrete(expr) =>
-                        self.visit_expr(expr),
+                        self.visit_nested_const(expr),
                     ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                 }
             }
@@ -592,6 +597,15 @@ impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
             return;
         }
         node_visitor::visit_option(&variant_def.sset, |sset| self.visit_expr(sset));
+    }
+
+    fn visit_nested_const(&self, expr: &ast::NestedConst) {
+        if expr.node_id == self.needle {
+            self.node.set(ast::Node::NestedConst(expr).tcx::<'tcx>())
+                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
+            return;
+        }
+        self.visit_expr(&expr.expr);
     }
 }
 
