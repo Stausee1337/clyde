@@ -56,14 +56,14 @@ struct ResolutionState<'tcx> {
     types: HashMap<Symbol, Declaration, ahash::RandomState>,
     functions: HashMap<Symbol, Declaration, ahash::RandomState>,
     globals: HashMap<Symbol, Declaration, ahash::RandomState>,
-    declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
+    declarations: index_vec::IndexVec<ast::DefId, ast::NodeId>
 }
 
 #[derive(Debug)]
 pub struct ResolutionResults {
     pub items: Vec<ast::DefId>,
     pub entry: Option<ast::DefId>,
-    pub declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
+    pub declarations: index_vec::IndexVec<ast::DefId, ast::NodeId>
 }
 
 impl<'tcx> ResolutionState<'tcx> {
@@ -615,22 +615,21 @@ impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
 
 impl<'tcx> TyCtxt<'tcx> {
     pub fn ast_node(self, id: NodeId) -> ast::Node<'tcx> {
-        let source = self.file_ast(interface::INPUT_FILE_IDX);
+        let source: &'tcx ast::SourceFile = todo!();
         ResolveNodeForNodeId::resolve(source, id)
             .expect("tried to resolve NodeId in to ast::Node that does not exist")
     }
 
     pub fn node_by_def_id(self, id: DefId) -> ast::Node<'tcx> {
-        let resolutions = self.resolutions(());
-        assert_eq!(id.file, interface::INPUT_FILE_IDX, "single-file compiler");
-        self.ast_node(resolutions.declarations[id.index])
+        let resolutions: ResolutionResults = todo!();
+        self.ast_node(resolutions.declarations[id])
     }
 }
 
 pub fn run_resolve<'tcx>(
     tcx: TyCtxt<'tcx>,
     (mut tree, diagnostics): (ast::SourceFile, Diagnostics<'tcx>)
-) {
+) -> ResolutionResults {
     let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
@@ -641,11 +640,6 @@ pub fn run_resolve<'tcx>(
 
     println!("{tree:#?}");
 
-    let feed = tcx.create_file(Some(interface::INPUT_FILE_IDX));
-    feed.diagnostics_for_file(diagnostics);
-    feed.file_ast(tcx.alloc(tree));
-
-    let results = tcx.alloc(resolution.results());
-    tcx.globals().resolutions(results);
+    resolution.results()
 }
 

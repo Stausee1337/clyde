@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         let gcx = compiler.global_ctxt();
 
         gcx.enter(|tcx| {
-            resolve::run_resolve(tcx, compiler.parse()?);
+            let resolutions = resolve::run_resolve(tcx, compiler.parse()?);
 
             if gcx.has_fatal_errors() {
                 gcx.all_diagnostics(|diag| diag.print_diagnostics());
@@ -37,7 +37,7 @@ fn main() -> ExitCode {
             }
 
             // println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
-            tcx.resolutions(()).items.iter().for_each(|&def_id| {
+            resolutions.items.iter().for_each(|&def_id| {
                 if let Some(..) = tcx.node_by_def_id(def_id).body() {
                     tcx.typecheck(def_id);
                 }

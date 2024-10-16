@@ -1,27 +1,12 @@
 
-use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File, cell::{OnceCell, RefCell}, mem::transmute};
+use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File, cell::{OnceCell, RefCell}};
 
-use crate::{context::GlobalCtxt, ast, diagnostics::{Diagnostics, DiagnosticsData}, parser};
+use crate::{context::GlobalCtxt, ast, diagnostics::{Diagnostics, DiagnosticsData}, parser, queries::Providers, typecheck, types};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Cfg {
     run_output: bool
-}
-
-pub const INPUT_FILE_IDX: FileIdx = FileIdx(0);
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FileIdx(pub u32);
-
-impl index_vec::Idx for FileIdx {
-    fn index(self) -> usize {
-        return self.0 as usize
-    }
-
-    fn from_usize(idx: usize) -> Self {
-        Self(idx as u32)
-    }
 }
 
 pub struct Session {
@@ -172,37 +157,6 @@ const CMD_OPTIONS: &[fn(&mut getopts::Options) -> &mut getopts::Options] = &[
     optflag!("v", "version", "Print wpc version")
 ];
 
-#[derive(Debug)]
-pub struct Steal<T> {
-    value: RefCell<Option<T>>
-}
-
-impl<T> Steal<T> {
-    pub fn new(value: T) -> Self {
-        Self { value: RefCell::new(Some(value)) }
-    }
-
-    #[allow(unused)]
-    pub fn get(&self) -> &'_ T {
-        let borrow = self.value.borrow();
-        if borrow.is_none() {
-            panic!("attempted to read from stolen value: {}", std::any::type_name::<T>());
-        }
-        unsafe { transmute(borrow.as_ref().unwrap()) }
-    }
-
-    #[allow(unused)]
-    pub fn get_mut(&mut self) -> &'_ mut T {
-        self.value.get_mut().as_mut().expect("attempt to read from stolen value")
-    }
-
-    #[allow(unused)]
-    pub fn steal(&self) -> T {
-        let value = self.value.take();
-        value.expect("attempt to steal from stolen value")
-    }
-}
-
 pub struct Compiler<'tcx> {
     pub sess: Session,
     gcx_cell: OnceCell<GlobalCtxt<'tcx>>,
@@ -228,8 +182,15 @@ impl<'tcx> Compiler<'tcx> {
         self.gcx
             .borrow_mut()
             .get_or_insert_with(|| {
+            let providers = Providers {
+                type_of: typecheck::type_of,
+                typecheck: typecheck::typecheck,
+                fn_sig: typecheck::fn_sig,
+                size_of: types::size_of,
+            };
+
             let gcx = self.gcx_cell
-                .get_or_init(|| GlobalCtxt::new(&self.sess));
+                .get_or_init(|| GlobalCtxt::new(&self.sess, providers));
             gcx
         })
     }

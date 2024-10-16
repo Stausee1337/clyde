@@ -4,7 +4,6 @@ use std::hash::Hash;
 use lalrpop_util::{ErrorRecovery, ParseError};
 
 use crate::diagnostics::{JoinToHumanReadable, Diagnostics};
-use crate::interface::{FileIdx, INPUT_FILE_IDX};
 use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
@@ -90,9 +89,9 @@ impl Hash for Ident {
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DefIndex(pub u32);
+pub struct DefId(pub u32);
 
-impl index_vec::Idx for DefIndex {
+impl index_vec::Idx for DefId {
     fn index(self) -> usize {
         self.0 as usize
     }
@@ -102,22 +101,8 @@ impl index_vec::Idx for DefIndex {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct DefId {
-    pub index: DefIndex,
-    pub file: FileIdx
-}
 
-pub const DEF_ID_UNDEF: DefId = DefId {
-    index: DefIndex(u32::MAX),
-    file: FileIdx(u32::MAX)
-};
-
-impl From<DefIndex> for DefId {
-    fn from(index: DefIndex) -> Self {
-        Self { index, file: INPUT_FILE_IDX }
-    }
-}
+pub const DEF_ID_UNDEF: DefId = DefId(u32::MAX);
 
 #[derive(Debug, Clone, Copy)]
 pub enum DefinitionKind {

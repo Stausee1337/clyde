@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, ops::Range, cell::Cell};
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, interface, diagnostics::Diagnostics};
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::Diagnostics};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -60,7 +60,6 @@ struct TypecheckCtxt<'tcx> {
     loop_stack: Vec<LoopCtxt>,
     field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
-    diagnostics: Diagnostics<'tcx>,
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
 }
@@ -75,9 +74,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             field_indices: Default::default(),
             variant_translations: Default::default(),
             lowering_ctxt: LoweringCtxt::new(tcx),
-            diagnostics: tcx.diagnostics_for_file(interface::INPUT_FILE_IDX),
             associations: Default::default()
         }
+    }
+
+    fn diagnostics(&self) -> Diagnostics<'tcx> {
+        todo!()
     }
 
     fn enter_loop_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, ctxt: LoopCtxt, do_work: F) -> (LoopCtxt, T) {
@@ -127,7 +129,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     
     fn deref(&self, ty: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
         let Some(deref) = self.autoderef(ty, 1) else {
-            self.diagnostics.error(format!("type {ty} cannot be derefrenced"))
+            self.diagnostics().error(format!("type {ty} cannot be derefrenced"))
                 .with_span(span);
             return Ty::new_error(self.tcx);
         };
@@ -140,7 +142,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             matches!(lhs.kind, Subscript(..) | Field(..) | Name(..) | Deref(..)) 
         };
         if !is_valid_lhs {
-            self.diagnostics.error("invalid left hand side in assignment")
+            self.diagnostics().error("invalid left hand side in assignment")
                 .with_span(lhs.span.clone());
         }
         let lhs_ty = self.check_expr_with_expectation(lhs, Expectation::None);
@@ -233,7 +235,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     *base
                 }
             } else {
-                self.diagnostics.error(format!("expected iterable, found {iter_ty}"));
+                self.diagnostics().error(format!("expected iterable, found {iter_ty}"));
                 Ty::new_error(self.tcx)
             }
         };
@@ -259,13 +261,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         if let Some(expected) = expected {
             if expected.is_incomplete() {
                 let span = unsafe { ty.unwrap_unchecked() }.span.clone();
-                self.diagnostics.fatal(format!("type infrence in local variables is not supported"))
+                self.diagnostics().fatal(format!("type infrence in local variables is not supported"))
                     .with_span(span);
             }
         }
 
         if expected.is_none() && expr.is_none() {
-            self.diagnostics.error("type-anonymous variable declarations require an init expresssion")
+            self.diagnostics().error("type-anonymous variable declarations require an init expresssion")
                 .with_span(stmt.span.clone());
             self.ty_assoc(stmt.node_id, Ty::new_error(self.tcx));
             return;
@@ -312,9 +314,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 return self.check_block(block, Expectation::None),
             ast::StmtKind::Return(expr) => {
                 let Some(return_ty) = self.return_ty else {
-                    self.diagnostics.error("`return` found outside of function body")
+                    self.diagnostics().error("`return` found outside of function body")
                         .with_span(stmt.span.clone());
-                    self.diagnostics.note("use break ...; for producing values")
+                    self.diagnostics().note("use break ...; for producing values")
                         .with_span(stmt.span.clone());
                     return Ty::new_error(self.tcx);
                 };
@@ -512,7 +514,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let lhs_ty = unsafe { *self.associations.get(&binop.lhs.node_id).unwrap_unchecked() };
                 let rhs_ty = unsafe { *self.associations.get(&binop.rhs.node_id).unwrap_unchecked() };
                 let Some(ret_ty) = self.check_op_between(binop.operator, lhs_ty, rhs_ty) else {
-                    self.diagnostics.error(
+                    self.diagnostics().error(
                         format!("operation {} is not defined between {lhs_ty} and {rhs_ty}", binop.operator))
                         .with_span(span);
                     return Ty::new_error(self.tcx);
@@ -548,7 +550,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let lhs_ty = unsafe { *self.associations.get(&binop.lhs.node_id).unwrap_unchecked() };
                 let rhs_ty = unsafe { *self.associations.get(&binop.rhs.node_id).unwrap_unchecked() };
                 let Some(ret_ty) = self.check_op_between(binop.operator, lhs_ty, rhs_ty) else {
-                    self.diagnostics.error(
+                    self.diagnostics().error(
                         format!("operation {} is not defined between {lhs_ty} and {rhs_ty}", binop.operator))
                         .with_span(span);
                     return Ty::new_error(self.tcx);
@@ -586,7 +588,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 let ty = self.check_expr_with_expectation(expr, expectation);
                 let Ty(Primitive(SByte | Short | Int | Long | Nint) | Err | Never) = ty else {
-                    self.diagnostics.error(format!("negation `-` is not defined for type {ty}"))
+                    self.diagnostics().error(format!("negation `-` is not defined for type {ty}"))
                         .with_span(expr.span.clone());
                     return Ty::new_error(self.tcx);
                 };
@@ -602,7 +604,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 let ty = self.check_expr_with_expectation(expr, expectation);
                 let Ty(Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint) | Err | Never) = ty else {
-                    self.diagnostics.error(format!("invert `~` is not defined for type {ty}"))
+                    self.diagnostics().error(format!("invert `~` is not defined for type {ty}"))
                         .with_span(expr.span.clone());
                     return Ty::new_error(self.tcx);
                 };
@@ -632,7 +634,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return ty;
         }
         let Ty(types::TyKind::Function(fn_def)) = ty else {
-            self.diagnostics.error(format!("expected function, found {ty}"))
+            self.diagnostics().error(format!("expected function, found {ty}"))
                 .with_span(expr.span.clone());
             return Ty::new_error(self.tcx);
         }; 
@@ -654,7 +656,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         if arg_count != signature.params.len() {
-            self.diagnostics.error(
+            self.diagnostics().error(
                 format!("function {} expected {} arugments, {} were supplied",
                         signature.name.get(), signature.params.len(), arg_count))
                 .with_span(span);
@@ -676,7 +678,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 return ty;
             }
             let Ty(Array(base, _) | DynamicArray(base) | Slice(base)) = ty else {
-                self.diagnostics.error(format!("cannot index into value of type {ty}"))
+                self.diagnostics().error(format!("cannot index into value of type {ty}"))
                     .with_span(index_span);
                 return Ty::new_error(self.tcx);
             };
@@ -687,7 +689,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         // later, we'll have operator overloading, but for now it's just arrays, dyn arrays and
         // slices and all of them are index by only one argument
         if args.len() > 1 { 
-            self.diagnostics.error(
+            self.diagnostics().error(
                 format!("indexer of type {ty} expected 1 arugment, {} were supplied", args.len()))
                 .with_span(index_span.clone());
         }
@@ -702,7 +704,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 return base;
             }
         }
-        self.diagnostics.error(
+        self.diagnostics().error(
             format!("mismatched types: expected unsigned integer, found {arg}"))
             .with_span(index_span);
         Ty::new_error(self.tcx)
@@ -710,13 +712,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_ftuple(&mut self, ty: Ty<'tcx>, idx: usize, span: Range<usize>) -> Ty<'tcx> {
         let Ty(types::TyKind::Tuple(tys)) = self.autoderef(ty, -1).unwrap_or(ty) else {
-            self.diagnostics.error(format!("unnamed fields are only found on tuples {ty}"))
+            self.diagnostics().error(format!("unnamed fields are only found on tuples {ty}"))
                 .with_span(span.clone());
             return Ty::new_error(self.tcx);
         };
 
         if idx >= tys.len() {
-            self.diagnostics.error(format!("can't find field `{idx}` on {ty}"))
+            self.diagnostics().error(format!("can't find field `{idx}` on {ty}"))
                 .with_span(span.clone());
             return Ty::new_error(self.tcx);
         }
@@ -735,7 +737,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 return self.check_expr_ftuple(ty, *value as usize, span.clone()),
         };
         let Ty(types::TyKind::Adt(adt_def)) = self.autoderef(ty, -1).unwrap_or(ty) else {
-            self.diagnostics.error(format!("fields are only found on structs {ty}"))
+            self.diagnostics().error(format!("fields are only found on structs {ty}"))
                 .with_span(expr.span.clone());
             return Ty::new_error(self.tcx);
         };
@@ -751,7 +753,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 types::AdtKind::Enum =>
                     unreachable!("Enum shouldn't apear here"),
                 types::AdtKind::Struct => {
-                    self.diagnostics.error(format!("can't find field `{}` on struct {ty}", field.symbol.get()))
+                    self.diagnostics().error(format!("can't find field `{}` on struct {ty}", field.symbol.get()))
                         .with_span(field.span.clone());
                 }
                 types::AdtKind::Union =>
@@ -770,7 +772,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = ty_expr.map(|expr| self.lowering_ctxt.lower_ty(expr));
         
         let Some(ty) = ty.or(expected) else {
-            self.diagnostics.error(format!("can't infer enum of shortand variant"))
+            self.diagnostics().error(format!("can't infer enum of shortand variant"))
                 .with_span(span);
             return Ty::new_error(self.tcx);
         };
@@ -780,7 +782,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         let Ty(types::TyKind::Adt(adt_def)) = ty else {
-            self.diagnostics.error(format!("variants are only found on enums {ty}"))
+            self.diagnostics().error(format!("variants are only found on enums {ty}"))
                 .with_span(span);
             return Ty::new_error(self.tcx);
         };
@@ -796,7 +798,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         let Some((idx, _)) = adt_def.fields()
             .find(|(_, vriant)| vriant.symbol == variant.symbol) else {
-            self.diagnostics.error(format!("can't find variant `{}` on enum {ty}", variant.symbol.get()))
+            self.diagnostics().error(format!("can't find variant `{}` on enum {ty}", variant.symbol.get()))
                 .with_span(variant.span.clone());
             return Ty::new_error(self.tcx);
         };
@@ -811,7 +813,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = ty_epxr.map(|expr| self.lowering_ctxt.lower_ty(expr));
         
         let Some(ty) = ty.or(expected) else {
-            self.diagnostics.error("can't infer type of anonymous init expresssion")
+            self.diagnostics().error("can't infer type of anonymous init expresssion")
                 .with_span(span);
             return Ty::new_error(self.tcx);
         };
@@ -820,28 +822,28 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         match ty {
             Ty(TyKind::Primitive(..)) => {
                 let start = span.start;
-                self.diagnostics.error(format!("expected struct, found primitive {ty}"))
+                self.diagnostics().error(format!("expected struct, found primitive {ty}"))
                     .with_span(span);
-                self.diagnostics.note("initialze primitive directly")
+                self.diagnostics().note("initialze primitive directly")
                     .with_pos(start);
             }
             Ty(TyKind::Refrence(..)) => {
-                self.diagnostics.error(format!("expected struct, found {ty}"))
+                self.diagnostics().error(format!("expected struct, found {ty}"))
                     .with_span(span);
                 return Ty::new_error(self.tcx);
             }
             Ty(TyKind::Slice(..)) => {
                 let start = span.start;
-                self.diagnostics.error(format!("expected struct, found slice {ty}"))
+                self.diagnostics().error(format!("expected struct, found slice {ty}"))
                     .with_span(span);
-                self.diagnostics.note("initialize a fixed or dynamic array")
+                self.diagnostics().note("initialize a fixed or dynamic array")
                     .with_pos(start);
             }
             Ty(TyKind::Tuple(..)) => {
                 let start = span.start;
-                self.diagnostics.error(format!("expected struct, found tuple {ty}"))
+                self.diagnostics().error(format!("expected struct, found tuple {ty}"))
                     .with_span(span);
-                self.diagnostics.note("initialize tuple using tuple expression (<0>, <1>, ...)")
+                self.diagnostics().note("initialize tuple using tuple expression (<0>, <1>, ...)")
                     .with_pos(start);
             }
             Ty(kind @ (TyKind::Array(base, _) | TyKind::DynamicArray(base))) => {
@@ -851,7 +853,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                             self.check_expr_with_expectation(expr, Expectation::Coerce(*base));
                         }
                         ast::TypeInit::Field(ident, expr) => {
-                            self.diagnostics.error("field initializer in array initialization is invalid")
+                            self.diagnostics().error("field initializer in array initialization is invalid")
                                 .with_span(ident.span.start..expr.span.end);
                         }
                     }
@@ -863,7 +865,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         let capacity = capcity.try_as_usize()
                             .expect("array has capacity of usize");
                         if count != 0 && count != 1 && count != capacity {
-                            self.diagnostics
+                            self.diagnostics()
                                 .error(format!("expected array with {capacity} elements, found {count} elements"))
                                 .with_span(span);
                         }
@@ -880,7 +882,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         match init {
                             ast::TypeInit::Field(ident, expr) => {
                                 let Some((idx, fdef)) = fields.get(&ident.symbol) else {
-                                    self.diagnostics.error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
+                                    self.diagnostics().error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
                                         .with_span(ident.span.clone());
                                     continue;
                                 };
@@ -895,7 +897,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                     _ => unreachable!()
                                 };
                                 let Some((idx, fdef)) = fields.get(&ident.symbol) else {
-                                    self.diagnostics.error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
+                                    self.diagnostics().error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
                                         .with_span(ident.span.clone());
                                     continue;
                                 };
@@ -904,7 +906,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 self.field_indices.insert(expr.node_id, *idx);
                             }
                             ast::TypeInit::Direct(expr) => {
-                                self.diagnostics.error("immediate initializer in struct initialization is invalid")
+                                self.diagnostics().error("immediate initializer in struct initialization is invalid")
                                     .with_span(expr.span.clone());
                             }
                         }
@@ -912,9 +914,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
                 types::AdtKind::Enum => {
                     let start = span.start;
-                    self.diagnostics.error(format!("expected struct, found enum {ty}"))
+                    self.diagnostics().error(format!("expected struct, found enum {ty}"))
                         .with_span(span);
-                    self.diagnostics.note(format!("initialize an enum with {}.<variant> syntax", atd_def.name.get()))
+                    self.diagnostics().note(format!("initialize an enum with {}.<variant> syntax", atd_def.name.get()))
                         .with_pos(start);
                 }
                 types::AdtKind::Union =>
@@ -969,7 +971,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ast::TypeConversion::Cast => "cast",
                 ast::TypeConversion::Transmute => "transmute",
             };
-            self.diagnostics.error(format!("can't infer type of auto {}", tc))
+            self.diagnostics().error(format!("can't infer type of auto {}", tc))
                 .with_span(span);
             return Ty::new_error(self.tcx);
         };
@@ -979,7 +981,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         match conversion {
             ast::TypeConversion::Cast => {
                 if !self.check_valid_cast(expr_ty, ty) {
-                    self.diagnostics.error(
+                    self.diagnostics().error(
                         format!("no cast is defined from {expr_ty} to {ty}"))
                         .with_span(span);
                 }
@@ -993,13 +995,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         Some(ty) => ty.span.start,
                         None => span.start
                     };
-                    self.diagnostics.error(
+                    self.diagnostics().error(
                         format!("cannot transmute types of different sizes"))
                         .with_span(span);
-                    self.diagnostics.note(
+                    self.diagnostics().note(
                         format!("target size: {target_size}"))
                         .with_pos(target_start);
-                    self.diagnostics.note(
+                    self.diagnostics().note(
                         format!("source size: {source_size}"))
                         .with_pos(expr.span.start);
                 }
@@ -1042,12 +1044,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_integer(*int, Positive, expected),
             ast::ExprKind::Constant(ast::Constant::Null) => {
                 let Some(expected) = expected else {
-                    self.diagnostics.error("can't infer type of anonymous null")
+                    self.diagnostics().error("can't infer type of anonymous null")
                         .with_span(expr.span.clone());
                     return Ty::new_error(self.tcx);
                 };
                 let Ty(types::TyKind::Never | types::TyKind::Err | types::TyKind::Refrence(..)) = expected else {
-                    self.diagnostics.error(format!("non refrence-type {expected} cannot be null"))
+                    self.diagnostics().error(format!("non refrence-type {expected} cannot be null"))
                         .with_span(expr.span.clone());
                     return expected
                 };
@@ -1117,7 +1119,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     start_ty, 
                     Ty(Never | Err | 
                        Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
-                    self.diagnostics.error(
+                    self.diagnostics().error(
                         format!("type {start_ty} is not steppable")
                     ).with_span(start.span.clone());
                     has_error = true;
@@ -1126,7 +1128,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     end_ty, 
                     Ty(Never | Err | 
                        Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
-                    self.diagnostics.error(
+                    self.diagnostics().error(
                         format!("type {end_ty} is not steppable")
                     ).with_span(end.span.clone());
                     has_error = true;
@@ -1197,7 +1199,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         if matches!(ret_ty, Ty(types::TyKind::Primitive(types::Primitive::Void))) &&
             matches!(ty, Ty(types::TyKind::Never)) {
-            self.diagnostics.warning("unnecessarry return in void function")
+            self.diagnostics().warning("unnecessarry return in void function")
                 .with_pos(expr.span.end);
         }
 
@@ -1206,9 +1208,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn maybe_warn_unreachable(&self, span: Range<usize>, what: &'static str) {
         if let Diverges::Always(DSpan(start, end)) = self.diverges.get() {
-            self.diagnostics.warning(format!("unreachable {what}"))
+            self.diagnostics().warning(format!("unreachable {what}"))
                 .with_span(span);
-            self.diagnostics.note("any code following this expression is unreachable")
+            self.diagnostics().note("any code following this expression is unreachable")
                 .with_span(start..end);
             self.diverges.set(Diverges::WarnedAlways);
         }
@@ -1216,7 +1218,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
         if found != expected {
-            self.diagnostics.error(format!("mismatched types: expected {expected}, found {found}"))
+            self.diagnostics().error(format!("mismatched types: expected {expected}, found {found}"))
                 .with_span(span);
             return Ty::new_error(self.tcx);
         }
@@ -1226,15 +1228,17 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
 struct LoweringCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
-    diagnostics: Diagnostics<'tcx>
 }
 
 impl<'tcx> LoweringCtxt<'tcx> {
     fn new(tcx: TyCtxt<'tcx>) -> Self {
         Self {
             tcx,
-            diagnostics: tcx.diagnostics_for_file(interface::INPUT_FILE_IDX),
         }
+    }
+
+    fn diagnostics(&self) -> Diagnostics<'tcx> {
+        todo!()
     }
 
     fn lower_name(&self, name: &ast::QName) -> Ty<'tcx> {
@@ -1277,7 +1281,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         };
 
                         if let types::Const(types::ConstInner::Err { msg, span }) = &cap {
-                            self.diagnostics.error(msg)
+                            self.diagnostics().error(msg)
                                 .with_span(span.clone());
                             return Ty::new_error(self.tcx);
                         }
@@ -1364,8 +1368,6 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 pub struct TypecheckResults;
 
 pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults {
-    assert_eq!(def_id.file, interface::INPUT_FILE_IDX, "single-file compiler");
-
     let node = tcx.node_by_def_id(def_id);
 
     let body = node.body()
@@ -1391,7 +1393,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx);
 
-    let diagnostics = tcx.diagnostics_for_file(interface::INPUT_FILE_IDX);
+    let diagnostics: Diagnostics = todo!();
 
     match node {
         ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), ident, .. }) => {

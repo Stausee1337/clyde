@@ -1,17 +1,7 @@
-use crate::{diagnostics, ast, interface, context::TyCtxt, types, typecheck, resolve};
-
-macro_rules! query_if_feedable {
-    ([] { $($feedable:tt)* }) => {  };
-    ([feedable $($rest:tt)*] { $($feedable:tt)* }) => {
-        $($feedable)* 
-    };
-    ([$other:tt $($modifiers:tt)*] { $($feedable:tt)* }) => {
-        query_if_feedable! { [$($modifiers)*] { $($feedable)* }}
-    };
-}
+use crate::{ast, context::TyCtxt, types, typecheck};
 
 macro_rules! define_queries {
-    ($([$($modifiers:tt)*] fn $name:ident($pat:ty) -> $rty:ty;)*) => {
+    ($(fn $name:ident($pat:ty) -> $rty:ty;)*) => {
         pub mod queries {$(
             pub mod $name {
                 use crate::queries::caches::*;
@@ -20,27 +10,6 @@ macro_rules! define_queries {
                 pub type Storage<'tcx> = <$pat as Key>::Cache<$rty>;
             }
         )*}
-
-        $(query_if_feedable! {
-            [$($modifiers:tt)*] {
-            impl<'tcx> crate::context::TyCtxtFeed<'tcx, $pat> {
-                pub fn $name(&self, value: $rty) {
-                    use crate::queries::caches::QueryCache;
-
-                    let key = self.key();
-                    let cache = &self.tcx.caches.$name;
-
-                    match cache.lookup(&key) {
-                        Some(..) => {
-                            todo!("Handle double feeding error")
-                        }
-                        None => {
-                            cache.complete(key, value);
-                        }
-                    }
-                }
-            }
-        }})*
 
         impl<'tcx> crate::context::TyCtxt<'tcx> {
             $(
@@ -74,50 +43,14 @@ macro_rules! define_queries {
                 pub $name: for<'tcx> fn(tcx: crate::context::TyCtxt<'tcx>, key: $pat) -> $rty,
             )*
         }
-
-        impl Providers {
-            fn empty() -> Self {
-                Self {
-                    $(
-                        $name: |_, key| query_panic(stringify!($name), &key),
-                    )*
-                }
-            }
-        }
     };
 }
 
-
-macro_rules! providers {
-    ($(@$name:ident($provider:path)),*) => {
-        impl Default for Providers {
-            fn default() -> Self {
-                Self {
-                    $(
-                        $name: $provider,
-                    )*
-                    ..Self::empty()
-                }
-            }
-        }
-    }
-}
-
 define_queries! {
-    [feedable] fn diagnostics_for_file(interface::FileIdx) -> diagnostics::Diagnostics<'tcx>;
-    [feedable] fn file_ast(interface::FileIdx) -> &'tcx ast::SourceFile;
-    [feedable] fn resolutions(()) -> &'tcx resolve::ResolutionResults;
-    [] fn type_of(ast::DefId) -> types::Ty<'tcx>;
-    [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
-    [] fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
-    [] fn size_of(types::Ty<'tcx>) -> types::Size;
-}
-
-providers! {
-    @type_of(typecheck::type_of),
-    @typecheck(typecheck::typecheck),
-    @fn_sig(typecheck::fn_sig),
-    @size_of(types::size_of)
+    fn type_of(ast::DefId) -> types::Ty<'tcx>;
+    fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
+    fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
+    fn size_of(types::Ty<'tcx>) -> types::Size;
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(
@@ -150,7 +83,7 @@ pub mod caches {
 
     use index_vec::IndexVec;
 
-    use crate::{interface::FileIdx, ast::{DefId, DefIndex}};
+    use crate::ast::DefId;
 
     pub trait QueryCache {
         type Key: Hash + Eq + Copy + Debug;
@@ -266,12 +199,12 @@ pub mod caches {
     }
 
     pub struct DefIdCache<V> {
-        cache: RefCell<IndexVec<FileIdx, HashMap<DefIndex, V, ahash::RandomState>>>
+        cache: RefCell<HashMap<DefId, V, ahash::RandomState>>
     }
 
     impl<V: Copy> Default for DefIdCache<V> {
         fn default() -> Self {
-            Self { cache: RefCell::new(IndexVec::new()) }
+            Self { cache: RefCell::new(HashMap::default()) }
         }
     }
 
@@ -280,22 +213,12 @@ pub mod caches {
         type Value = V;
 
         fn lookup(&self, key: &Self::Key) -> Option<Self::Value> {
-            if let Some(per_file_cache) = self.cache.borrow().get(key.file) {
-                return per_file_cache.get(&key.index).map(|value| *value);
-            }
-            None
+            self.cache.borrow().get(&key).map(|value| *value)
         }
         
         fn complete(&self, key: Self::Key, value: Self::Value) { 
-            if self.cache.borrow_mut().get(key.file).is_none() {
-                self.cache.borrow_mut().insert(key.file, HashMap::default());
-            }
-
-            let mut per_file_cache = self.cache.borrow_mut();
-            per_file_cache
-                .get_mut(key.file)
-                .unwrap()
-                .insert(key.index, value);
+           self.cache.borrow_mut() 
+                .insert(key, value);
         }
 
         fn iter(&self, _f: &mut dyn FnMut(&Self::Key, &Self::Value)) {
@@ -305,10 +228,6 @@ pub mod caches {
 
     pub trait Key {
         type Cache<V: Copy>: QueryCache<Value = V>;
-    }
-
-    impl Key for FileIdx {
-        type Cache<V: Copy> = VecCache<Self, V>;
     }
 
     impl Key for () {

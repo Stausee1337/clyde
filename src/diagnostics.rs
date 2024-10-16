@@ -265,8 +265,8 @@ impl SourcePosition {
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
-    pub fn all_diagnostics<F: FnMut(Diagnostics<'tcx>)>(&'tcx self, mut f: F) {
-        self.caches.diagnostics_for_file.iter(&mut |_, d| f(*d));
+    pub fn all_diagnostics<F: FnMut(Diagnostics<'tcx>)>(&'tcx self, mut _f: F) {
+        todo!()
     }
 
     pub fn has_fatal_errors(&'tcx self) -> bool {

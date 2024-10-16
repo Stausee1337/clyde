@@ -41,12 +41,12 @@ pub struct GlobalCtxt<'tcx> {
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
-    pub fn new(session: &'tcx Session) -> GlobalCtxt<'tcx> {
+    pub fn new(session: &'tcx Session, providers: Providers) -> GlobalCtxt<'tcx> {
         Self {
             session,
             arena: bumpalo::Bump::new(),
             interners: CtxtInterners::default(),
-            providers: Providers::default(),
+            providers,
             caches: QueryCaches::default()
         }
     }
@@ -78,26 +78,3 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
     }
 }
 
-impl<'tcx> TyCtxt<'tcx> {
-    pub fn create_file(self, idx: Option<interface::FileIdx>) -> TyCtxtFeed<'tcx, interface::FileIdx> { 
-        let key = idx.unwrap_or_else(|| self.caches.diagnostics_for_file.end());
-        TyCtxtFeed { tcx: self, key }
-    }    
-
-    pub fn globals(self) -> TyCtxtFeed<'tcx, ()> { 
-        TyCtxtFeed { tcx: self, key: () }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct TyCtxtFeed<'tcx, K: Copy> {
-   pub tcx: TyCtxt<'tcx>,
-   key: K
-}
-
-impl<'tcx, K: Copy> TyCtxtFeed<'tcx, K> {
-    #[allow(unused)]
-    pub fn key(&self) -> K {
-        return self.key;
-    }
-}
