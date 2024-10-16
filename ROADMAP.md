@@ -17,8 +17,7 @@
     (never only if it never brakes NOT never returns, so we can recommend #never)
     - For: iterator needs to be array, dyn array, slice, range
 - Implement SIMPLE Constant Evaluation (ArrayCapactiy)
-    - only expressions like BinOp, UnaryOp, TypeInit,
-    <int, bool, char> literal, Name, ShorhandEnum, Field (for Enums)
+    - only expressions <int, bool, char, str> literal 
 
 ## Add IR
 Implementation should cover a simple, block based, statement based IR
@@ -110,7 +109,7 @@ a variety of instruction sets to chosse from already and probably will always
 be the better API from emitting raw x86
 
 ### raw x86
-If we turn to emitting raw, crude x86 instead, will probably focus on emitting
+If we turn to emitting raw, crude x86 instead, we'll probably focus on emitting
 assembly rather then actual machine code.
 
 The idea would be to write as set of small, stupid, non context-aware functions that

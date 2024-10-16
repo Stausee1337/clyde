@@ -1379,9 +1379,10 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults {
             ctxt.ty_assoc(param.node_id, param.ty);
         }
         ctxt.check_return_ty(body.body, sig.returns, returns.span.clone());
-    } /*else {
-        todo!("typecheck non-function items")
-    }*/
+    } else {
+        let ty = tcx.type_of(def_id);
+        ctxt.check_expr_with_expectation(body.body, Expectation::Coerce(ty));
+    }
 
     &TypecheckResults
 }

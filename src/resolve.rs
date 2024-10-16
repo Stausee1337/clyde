@@ -51,6 +51,7 @@ struct Local {
 }
 
 struct ResolutionState<'tcx> {
+    items: Vec<ast::DefId>,
     diagnostics: Diagnostics<'tcx>,
     types: HashMap<Symbol, Declaration, ahash::RandomState>,
     functions: HashMap<Symbol, Declaration, ahash::RandomState>,
@@ -60,6 +61,7 @@ struct ResolutionState<'tcx> {
 
 #[derive(Debug)]
 pub struct ResolutionResults {
+    pub items: Vec<ast::DefId>,
     pub entry: Option<ast::DefId>,
     pub declarations: index_vec::IndexVec<ast::DefIndex, ast::NodeId>
 }
@@ -68,6 +70,7 @@ impl<'tcx> ResolutionState<'tcx> {
     fn new(diagnostics: Diagnostics<'tcx>) -> ResolutionState<'tcx> {
         ResolutionState {
             diagnostics,
+            items: Default::default(),
             types: Default::default(),
             functions: Default::default(),
             globals: Default::default(),
@@ -84,6 +87,7 @@ impl<'tcx> ResolutionState<'tcx> {
         let declaration = Declaration {
             site: self.declarations.push(site).into(), kind, span: name.span.clone()
         };
+        self.items.push(declaration.site);
         if let Some(prev) = space.insert(name.symbol, declaration) {
             let space: NameSpace = kind.into();
             self.diagnostics
@@ -98,7 +102,7 @@ impl<'tcx> ResolutionState<'tcx> {
     fn results(self) -> ResolutionResults {
         let entry = self.functions.get(&Symbol::intern("main")).map(|decl| decl.site);
         ResolutionResults {
-            entry,
+            items: self.items, entry,
             declarations: self.declarations
         }
     }

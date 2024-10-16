@@ -111,15 +111,13 @@ define_queries! {
     [] fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
     [] fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
     [] fn size_of(types::Ty<'tcx>) -> types::Size;
-    [] fn representable(ast::DefId) -> bool;
 }
 
 providers! {
     @type_of(typecheck::type_of),
     @typecheck(typecheck::typecheck),
     @fn_sig(typecheck::fn_sig),
-    @size_of(types::size_of),
-    @representable(types::representable)
+    @size_of(types::size_of)
 }
 
 fn execute_query<'tcx, Cache: caches::QueryCache>(

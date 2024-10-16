@@ -37,8 +37,7 @@ fn main() -> ExitCode {
             }
 
             // println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
-            tcx.resolutions(()).declarations.iter_enumerated().for_each(|(index, _)| {
-                let def_id = ast::DefId { index, file: interface::INPUT_FILE_IDX };
+            tcx.resolutions(()).items.iter().for_each(|&def_id| {
                 if let Some(..) = tcx.node_by_def_id(def_id).body() {
                     tcx.typecheck(def_id);
                 }

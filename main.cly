@@ -18,10 +18,9 @@ nuint len([]str slice) {
     return slice.0;
 }
 
-int main([]str argv, void test) {
-    [4 + 5]int board = ?{1, 2, 3, 4};
+int main([]str argv) {
     nuint idx = 0;
-    for arg in board {
+    for arg in argv {
         println(arg);
     }
     return 0;
