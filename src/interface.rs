@@ -1,7 +1,7 @@
 
 use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs::File, cell::{OnceCell, RefCell}, rc::Rc, ops::Range};
 
-use crate::{context::GlobalCtxt, ast, diagnostics::DiagnosticsCtxt, parser, queries::Providers, typecheck, types};
+use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck, types};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

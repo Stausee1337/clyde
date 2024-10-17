@@ -1,4 +1,3 @@
-
 use std::{env, process::ExitCode};
 
 use interface::build_compiler;
@@ -14,7 +13,6 @@ mod interface;
 mod resolve;
 mod types;
 mod context;
-mod queries;
 mod typecheck;
 
 fn main() -> ExitCode {
