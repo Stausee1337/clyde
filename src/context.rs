@@ -83,12 +83,6 @@ pub struct TyCtxt<'tcx> {
     gcx: &'tcx GlobalCtxt<'tcx>
 }
 
-impl<'tcx> TyCtxt<'tcx> {
-    pub fn node_by_def_id(self, _id: DefId) -> ast::Node<'tcx> {
-        todo!()
-    }
-}
-
 impl<'tcx> Deref for TyCtxt<'tcx> {
     type Target = &'tcx GlobalCtxt<'tcx>;
 
@@ -97,11 +91,16 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
     }
 }
 
+impl<'tcx> TyCtxt<'tcx> {
+    pub fn node_by_def_id(self, _id: DefId) -> ast::Node<'tcx> {
+        todo!()
+    }
+}
+
 define_queries! {
     fn type_of(ast::DefId) -> types::Ty<'tcx>;
     fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
     fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
-    fn size_of(types::Ty<'tcx>) -> types::Size;
 }
 
 pub struct Interner<'tcx> {

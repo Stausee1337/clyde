@@ -1,7 +1,7 @@
 
 use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs::File, cell::{OnceCell, RefCell}, rc::Rc, ops::Range};
 
-use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck, types};
+use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -234,8 +234,7 @@ impl<'tcx> Compiler<'tcx> {
             let providers = Providers {
                 type_of: typecheck::type_of,
                 typecheck: typecheck::typecheck,
-                fn_sig: typecheck::fn_sig,
-                size_of: types::size_of,
+                fn_sig: typecheck::fn_sig
             };
 
             let gcx = self.gcx_cell

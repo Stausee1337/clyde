@@ -1,7 +1,7 @@
 
-use std::{collections::HashMap, ops::Range, cell::OnceCell};
+use std::{collections::HashMap, ops::Range};
 
-use crate::{ast::{self, Resolution, DefinitionKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::DiagnosticsCtxt, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}};
+use crate::{ast::{self, Resolution, DefinitionKind, NodeId}, node_visitor::{MutVisitor, self}, diagnostics::DiagnosticsCtxt, symbol::Symbol, context::TyCtxt};
 
 /// AST (&tree) 
 ///     |          |
@@ -127,23 +127,23 @@ impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
         match &mut item.kind {
             ast::ItemKind::Struct(stc) => {
                 self.resolution.define(DefinitionKind::Struct, item.ident.clone(), item.node_id);
-                mut_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
-                mut_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
+                node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
+                node_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
             }, 
             ast::ItemKind::Enum(en) => {
                 self.resolution.define(DefinitionKind::Enum, item.ident.clone(), item.node_id);
-                mut_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
+                node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
                 self.resolution.define(DefinitionKind::Function, item.ident.clone(), item.node_id);
-                mut_visitor::visit_fn(function, self);
+                node_visitor::visit_fn(function, self);
             },
             ast::ItemKind::GlobalVar(ty, expr, is_const) => {
                 self.resolution.define(
                     if *is_const {DefinitionKind::Global} else {DefinitionKind::Const},
                     item.ident.clone(), item.node_id);
                 self.visit_ty_expr(ty);
-                mut_visitor::visit_option(expr, |expr| self.visit_expr(expr));
+                node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
         } 
@@ -151,12 +151,12 @@ impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
 
     fn visit_field_def(&mut self, field_def: &mut ast::FieldDef) {
         self.visit_ty_expr(&mut field_def.ty);
-        mut_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
+        node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
         field_def.def_id = self.resolution.declarations.push(field_def.node_id).into();
     }
 
     fn visit_variant_def(&mut self, variant_def: &mut ast::VariantDef) {
-        mut_visitor::visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
+        node_visitor::visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
         variant_def.def_id = self.resolution.declarations.push(variant_def.node_id).into();
     }
 
@@ -306,12 +306,12 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 self.visit_ty_expr(&mut function.sig.returns);
 
                 let Some(ref mut body) = function.body else {
-                    mut_visitor::visit_vec(&mut function.sig.params, |p| self.visit_param(p));
+                    node_visitor::visit_vec(&mut function.sig.params, |p| self.visit_param(p));
                     return;
                 };
 
                 self.with_rib(|this| {
-                    mut_visitor::visit_vec(&mut function.sig.params, |p| this.visit_param(p));
+                    node_visitor::visit_vec(&mut function.sig.params, |p| this.visit_param(p));
                     this.visit_expr(body);
                 });
             }
@@ -323,7 +323,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         .fatal("struct generics are not supported yet")
                         .with_span(first.span.start..last.span.end);
                 }
-                mut_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
+                node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
             }
             ast::ItemKind::Enum(en) => {
                 if let Some(extends) = &en.extends {
@@ -331,11 +331,11 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         .fatal("enum type extension is not supported yet")
                         .with_span(extends.span.start..extends.span.end);
                 }
-                mut_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
+                node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
             }
             ast::ItemKind::GlobalVar(ty, expr, _) => {
                 self.visit_ty_expr(ty);
-                mut_visitor::visit_option(expr, |expr| self.visit_expr(expr));
+                node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
         }
@@ -356,14 +356,14 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 .with_span(default_init.span.start..field_def.span.end);
         }
         self.visit_ty_expr(&mut field_def.ty);
-        mut_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
+        node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
     }
 
     fn visit_stmt(&mut self, stmt: &mut ast::Stmt) {
         match &mut stmt.kind {
             ast::StmtKind::Local(ident, ret_ty, init) => {
-                mut_visitor::visit_option(ret_ty, |ret_ty| self.visit_ty_expr(ret_ty));
-                mut_visitor::visit_option(init, |init| self.visit_expr(init));
+                node_visitor::visit_option(ret_ty, |ret_ty| self.visit_ty_expr(ret_ty));
+                node_visitor::visit_option(init, |init| self.visit_expr(init));
 
                 self.define(ident.clone(), stmt.node_id);
             }
@@ -372,7 +372,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 self.with_rib(|this| {
                     this.visit_block(body);
                 });
-                mut_visitor::visit_option(else_body, |else_body| self.visit_stmt(else_body))
+                node_visitor::visit_option(else_body, |else_body| self.visit_stmt(else_body))
             }
             ast::StmtKind::While(cond, body) => {
                 self.visit_expr(cond);
@@ -387,7 +387,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     this.enter_loop_ctxt(body.node_id, |this| this.visit_block(body));
                 });
             }
-            _ => mut_visitor::noop_visit_stmt_kind(&mut stmt.kind, self),
+            _ => node_visitor::noop_visit_stmt_kind(&mut stmt.kind, self),
         }
     }
 
@@ -409,7 +409,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
             ast::ExprKind::Name(name) =>
                 self.visit_name(name),
             ast::ExprKind::TypeInit(ty, fields) => {
-                mut_visitor::visit_vec(fields, |field| self.visit_type_init(field));
+                node_visitor::visit_vec(fields, |field| self.visit_type_init(field));
                 let Some(ty) = ty else {
                     return;
                 };
@@ -446,7 +446,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         .with_span(expr.span.clone());
                     return;
                 }
-                mut_visitor::visit_vec(args, |arg| self.visit_argument(arg));
+                node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
                 self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], name);
             }
             ast::ExprKind::Block(body) => {
@@ -487,7 +487,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 }
                 _ => self.visit_expr(base)
             },
-            _ => mut_visitor::noop_visit_expr_kind(&mut expr.kind, self)
+            _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self)
         }
     }
 
@@ -520,96 +520,8 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                 }
             }
-            k @ _ => mut_visitor::noop_visit_ty_expr_kind(k, self)
+            k @ _ => node_visitor::noop_visit_ty_expr_kind(k, self)
         }
-    }
-}
-
-struct ResolveNodeForNodeId<'tcx> {
-    needle: NodeId,
-    node: OnceCell<ast::Node<'tcx>>
-}
-
-impl<'tcx> ResolveNodeForNodeId<'tcx> {
-    fn resolve(source: &'tcx ast::SourceFile, needle: NodeId) -> Option<ast::Node<'tcx>> {
-        let resolver = ResolveNodeForNodeId { needle, node: OnceCell::new() };
-        resolver.visit(source);
-        resolver.node.get().map(|node| *node)
-    }
-}
-
-impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
-    fn visit(&self, tree: &ast::SourceFile) {
-        if tree.node_id == self.needle {
-            self.node.set(ast::Node::SourceFile(tree).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::visit_vec(&tree.items, |item| self.visit_item(item));
-    }
-
-    fn visit_item(&self, item: &ast::Item) {
-        if item.node_id == self.needle {
-            self.node.set(ast::Node::Item(item).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::noop_visit_item_kind(&item.kind, self);
-    }
-
-    fn visit_stmt(&self, stmt: &ast::Stmt) {
-        if stmt.node_id == self.needle {
-            self.node.set(ast::Node::Stmt(stmt).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::noop_visit_stmt_kind(&stmt.kind, self);
-    }
-
-    fn visit_expr(&self, expr: &ast::Expr) {
-        if expr.node_id == self.needle {
-            self.node.set(ast::Node::Expr(expr).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::noop_visit_expr_kind(&expr.kind, self);
-    }
-
-    fn visit_ty_expr(&self, ty: &ast::TypeExpr) {
-        if ty.node_id == self.needle {
-            self.node.set(ast::Node::TypeExpr(ty).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::noop_visit_ty_expr_kind(&ty.kind, self);
-    }
-
-    fn visit_field_def(&self, field_def: &ast::FieldDef) { 
-        if field_def.node_id == self.needle {
-            self.node.set(ast::Node::Field(field_def).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        self.visit_ty_expr(&field_def.ty);
-        node_visitor::visit_option(&field_def.default_init, |default_init| self.visit_expr(default_init));
-    }
-
-    fn visit_variant_def(&self, variant_def: &ast::VariantDef) { 
-        if variant_def.node_id == self.needle {
-            self.node.set(ast::Node::Variant(variant_def).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        node_visitor::visit_option(&variant_def.sset, |sset| self.visit_expr(sset));
-    }
-
-    fn visit_nested_const(&self, expr: &ast::NestedConst) {
-        if expr.node_id == self.needle {
-            self.node.set(ast::Node::NestedConst(expr).tcx::<'tcx>())
-                .expect("Wrote OnceCell twice while resolving NodeId in ResolveNodeForNodeId");
-            return;
-        }
-        self.visit_expr(&expr.expr);
     }
 }
 

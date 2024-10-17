@@ -987,24 +987,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
             }
             ast::TypeConversion::Transmute => {
-                let source_size = self.tcx.size_of(expr_ty);
-                let target_size = self.tcx.size_of(ty);
-
-                if source_size != target_size {
-                    let target_start = match ty_expr {
-                        Some(ty) => ty.span.start,
-                        None => span.start
-                    };
-                    self.diagnostics().error(
-                        format!("cannot transmute types of different sizes"))
-                        .with_span(span);
-                    self.diagnostics().note(
-                        format!("target size: {target_size}"))
-                        .with_pos(target_start);
-                    self.diagnostics().note(
-                        format!("source size: {source_size}"))
-                        .with_pos(expr.span.start);
-                }
+                todo!("Idk how to do that righ now");
             }
         }
 

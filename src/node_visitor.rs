@@ -1,49 +1,51 @@
+use std::ptr;
 
 use crate::ast::{SourceFile, Item, ItemKind, Function, Stmt, TypeExpr, Param, GenericParam, FieldDef, Expr, StmtKind, ExprKind, FunctionArgument, TypeInit, Constant, QName, GenericParamKind, TypeExprKind, GenericArgument, ControlFlow, self, VariantDef, Block, NestedConst};
 
-pub trait NodeVisitor: Sized {
-    fn visit(&self, tree: &SourceFile) {
-        visit_vec(&tree.items, |item| self.visit_item(item));
+
+pub trait MutVisitor: Sized {
+    fn visit(&mut self, tree: &mut SourceFile) {
+        visit_vec(&mut tree.items, |item| self.visit_item(item));
     }
 
-    fn visit_item(&self, item: &Item) {
-        noop_visit_item_kind(&item.kind, self);
+    fn visit_item(&mut self, item: &mut Item) {
+        noop_visit_item_kind(&mut item.kind, self);
     }
  
-    fn visit_stmt(&self, stmt: &Stmt) {
-        noop_visit_stmt_kind(&stmt.kind, self);
+    fn visit_stmt(&mut self, stmt: &mut Stmt) {
+        noop_visit_stmt_kind(&mut stmt.kind, self);
     }
 
-    fn visit_param(&self, param: &Param) {
+    fn visit_param(&mut self, param: &mut Param) {
         noop_visit_param(param, self);
     }
 
-    fn visit_field_def(&self, field_def: &FieldDef) {
-        self.visit_ty_expr(&field_def.ty);
-        visit_option(&field_def.default_init, |default_init| self.visit_expr(default_init));
+    fn visit_field_def(&mut self, field_def: &mut FieldDef) {
+        self.visit_ty_expr(&mut field_def.ty);
+        visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
     }
     
-    fn visit_variant_def(&self, variant_def: &VariantDef) {
-        visit_option(&variant_def.sset, |sset| self.visit_expr(sset));
+    fn visit_variant_def(&mut self, variant_def: &mut VariantDef) {
+        visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
     }
 
-    fn visit_expr(&self, expr: &Expr) {
-        noop_visit_expr_kind(&expr.kind, self);
+    fn visit_expr(&mut self, expr: &mut Expr) {
+        noop_visit_expr_kind(&mut expr.kind, self);
     }
 
-    fn visit_nested_const(&self, expr: &NestedConst) {
-        self.visit_expr(&expr.expr);
+    fn visit_nested_const(&mut self, expr: &mut NestedConst) {
+        self.visit_expr(&mut expr.expr);
     }
 
-    fn visit_argument(&self, arg: &FunctionArgument) {
+    fn visit_argument(&mut self, arg: &mut FunctionArgument) {
         noop_visit_argument(arg, self);
     }
 
-    fn visit_generic_argument(&self, arg: &GenericArgument) {
+    fn visit_generic_argument(&mut self, arg: &mut GenericArgument) {
         noop_visit_generic_argument(arg, self);
     }
 
-    fn visit_type_init(&self, init: &TypeInit) {
+    fn visit_type_init(&mut self, init: &mut TypeInit) {
         let expr = match init {
             TypeInit::Field(_, expr) => expr,
             TypeInit::Direct(expr) => expr,
@@ -51,33 +53,33 @@ pub trait NodeVisitor: Sized {
         self.visit_expr(expr);
     }
 
-    fn visit_generic_param(&self, param: &GenericParam) {
-        noop_visit_generic_param_kind(&param.kind, self);
+    fn visit_generic_param(&mut self, param: &mut GenericParam) {
+        noop_visit_generic_param_kind(&mut param.kind, self);
     }
 
-    fn visit_ty_expr(&self, ty: &TypeExpr) {
-        noop_visit_ty_expr_kind(&ty.kind, self);
+    fn visit_ty_expr(&mut self, ty: &mut TypeExpr) {
+        noop_visit_ty_expr_kind(&mut ty.kind, self);
     }
 
-    fn visit_block(&self, block: &Block) {
-        visit_vec(&block.stmts, |stmt| self.visit_stmt(stmt));
+    fn visit_block(&mut self, block: &mut Block) {
+        visit_vec(&mut block.stmts, |stmt| self.visit_stmt(stmt));
     }
 
-    fn visit_const(&self, cnst: &Constant) {
+    fn visit_const(&mut self, cnst: &mut Constant) {
         noop(cnst);
     }
 
-    fn visit_name(&self, name: &QName) {
+    fn visit_name(&mut self, name: &mut QName) {
         noop(name);
     }
 
-    fn visit_control_flow(&self, control_flow: &ControlFlow) {
+    fn visit_control_flow(&mut self, control_flow: &mut ControlFlow) {
         noop(control_flow);
     }
 }
 
 #[inline]
-pub fn visit_vec<T, F: Fn(&T)>(elems: &Vec<T>, visit_elem: F) {
+pub fn visit_vec<T, F: FnMut(&mut T)>(elems: &mut Vec<T>, mut visit_elem: F) {
     for elem in elems {
         visit_elem(elem);
     }
@@ -85,24 +87,52 @@ pub fn visit_vec<T, F: Fn(&T)>(elems: &Vec<T>, visit_elem: F) {
 }
 
 #[inline]
-pub fn visit_option<T, F: Fn(&T)>(option: &Option<T>, visit_val: F) {
+pub fn visit_option<T, F: FnMut(&mut T)>(option: &mut Option<T>, mut visit_val: F) {
     if let Some(val) = option {
         visit_val(val);
     }
 }
 
-pub fn noop_visit_item_kind<T: NodeVisitor>(item_kind: &ItemKind, vis: &T) {
+#[inline]
+pub fn map_vec<T, I: IntoIterator<Item = T>, F: FnMut(T) -> I>(elems: &mut Vec<T>, mut f: F) {
+    let mut len = elems.len();
+    let mut read_i = 0;
+    let mut write_i = 0;
+    unsafe {
+        while read_i < len {
+            let e = ptr::read(elems.as_mut_ptr().add(read_i));
+            read_i += 1;
+
+            let iter = f(e);
+            for e in iter {
+                if write_i < read_i {
+                    ptr::write(elems.as_mut_ptr().add(write_i), e);
+                    write_i += 1;
+                } else {
+                    elems.insert(write_i, e);
+                    len = elems.len();
+
+                    read_i += 1;
+                    write_i += 1;
+                }
+            }
+        }
+        elems.set_len(write_i);
+    }
+}
+
+pub fn noop_visit_item_kind<T: MutVisitor>(item_kind: &mut ItemKind, vis: &mut T) {
     match item_kind {
         ItemKind::Function(func) => {
             visit_fn(func, vis);
         }
         ItemKind::Struct(stc) => {
-            visit_vec(&stc.generics, |generic| vis.visit_generic_param(generic));
-            visit_vec(&stc.fields, |field_def| vis.visit_field_def(field_def));
+            visit_vec(&mut stc.generics, |generic| vis.visit_generic_param(generic));
+            visit_vec(&mut stc.fields, |field_def| vis.visit_field_def(field_def));
         }
         ItemKind::Enum(en) => {
-            visit_option(&en.extends, |extends| vis.visit_ty_expr(extends));
-            visit_vec(&en.variants, |variant_def| vis.visit_variant_def(variant_def));
+            visit_option(&mut en.extends, |extends| vis.visit_ty_expr(extends));
+            visit_vec(&mut en.variants, |variant_def| vis.visit_variant_def(variant_def));
         }
         ItemKind::GlobalVar(ty, expr, _) => {
             vis.visit_ty_expr(ty);
@@ -112,14 +142,14 @@ pub fn noop_visit_item_kind<T: NodeVisitor>(item_kind: &ItemKind, vis: &T) {
     }
 }
 
-pub fn visit_fn<T: NodeVisitor>(func: &Function, vis: &T) {
-    vis.visit_ty_expr(&func.sig.returns);
-    visit_vec(&func.sig.params, |p| vis.visit_param(p));
-    visit_vec(&func.sig.generics, |generic| vis.visit_generic_param(generic));
-    visit_option(&func.body, |body| vis.visit_expr(body));
+pub fn visit_fn<T: MutVisitor>(func: &mut Function, vis: &mut T) {
+    vis.visit_ty_expr(&mut func.sig.returns);
+    visit_vec(&mut func.sig.params, |p| vis.visit_param(p));
+    visit_vec(&mut func.sig.generics, |generic| vis.visit_generic_param(generic));
+    visit_option(&mut func.body, |body| vis.visit_expr(body));
 }
 
-pub fn noop_visit_stmt_kind<T: NodeVisitor>(stmt_kind: &StmtKind, vis: &T) {
+pub fn noop_visit_stmt_kind<T: MutVisitor>(stmt_kind: &mut StmtKind, vis: &mut T) {
     match stmt_kind {
         StmtKind::Expr(expr) => vis.visit_expr(expr),
         StmtKind::Assign(lhs, rhs) => {
@@ -152,11 +182,11 @@ pub fn noop_visit_stmt_kind<T: NodeVisitor>(stmt_kind: &StmtKind, vis: &T) {
     }
 }
 
-pub fn noop_visit_expr_kind<T: NodeVisitor>(expr_kind: &ExprKind, vis: &T) {
+pub fn noop_visit_expr_kind<T: MutVisitor>(expr_kind: &mut ExprKind, vis: &mut T) {
     match expr_kind {
         ExprKind::BinOp(binop) => {
-            vis.visit_expr(&binop.lhs);
-            vis.visit_expr(&binop.rhs);
+            vis.visit_expr(&mut binop.lhs);
+            vis.visit_expr(&mut binop.rhs);
         }
         ExprKind::UnaryOp(base, _) => vis.visit_expr(base),
         ExprKind::Cast(expr, ty, _) => {
@@ -194,7 +224,7 @@ pub fn noop_visit_expr_kind<T: NodeVisitor>(expr_kind: &ExprKind, vis: &T) {
     }
 }
 
-pub fn noop_visit_generic_param_kind<T: NodeVisitor>(gp_kind: &GenericParamKind, vis: &T) {
+pub fn noop_visit_generic_param_kind<T: MutVisitor>(gp_kind: &mut GenericParamKind, vis: &mut T) {
     match gp_kind {
         GenericParamKind::Type(tys) =>
             visit_vec(tys, |ty| vis.visit_ty_expr(ty)),
@@ -202,8 +232,7 @@ pub fn noop_visit_generic_param_kind<T: NodeVisitor>(gp_kind: &GenericParamKind,
     }
 }
 
-
-pub fn noop_visit_ty_expr_kind<T: NodeVisitor>(ty_kind: &TypeExprKind, vis: &T) {
+pub fn noop_visit_ty_expr_kind<T: MutVisitor>(ty_kind: &mut TypeExprKind, vis: &mut T) {
     match ty_kind {
         TypeExprKind::Ref(ty) => vis.visit_ty_expr(ty),
         TypeExprKind::Name(name) => vis.visit_name(name),
@@ -226,14 +255,14 @@ pub fn noop_visit_ty_expr_kind<T: NodeVisitor>(ty_kind: &TypeExprKind, vis: &T) 
     }
 }
 
-pub fn noop_visit_argument<T: NodeVisitor>(arg: &FunctionArgument, vis: &T) {
+pub fn noop_visit_argument<T: MutVisitor>(arg: &mut FunctionArgument, vis: &mut T) {
     match arg {
         FunctionArgument::Direct(expr) => vis.visit_expr(expr),
         FunctionArgument::Keyword(_, expr) => vis.visit_expr(expr)
     }
 }
 
-pub fn noop_visit_generic_argument<T: NodeVisitor>(arg: &GenericArgument, vis: &T) {
+pub fn noop_visit_generic_argument<T: MutVisitor>(arg: &mut GenericArgument, vis: &mut T) {
     match arg {
         GenericArgument::Ty(expr) => vis.visit_ty_expr(expr),
         GenericArgument::Expr(expr) => vis.visit_nested_const(expr),
@@ -241,8 +270,8 @@ pub fn noop_visit_generic_argument<T: NodeVisitor>(arg: &GenericArgument, vis: &
     }
 }
 
-pub fn noop_visit_param<T: NodeVisitor>(param: &Param, vis: &T) {
-    vis.visit_ty_expr(&param.ty);
+pub fn noop_visit_param<T: MutVisitor>(param: &mut Param, vis: &mut T) {
+    vis.visit_ty_expr(&mut param.ty);
 }
 
 fn noop<T>(_v: T) {}

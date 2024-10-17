@@ -6,7 +6,6 @@ mod ast;
 mod lexer;
 mod parser;
 mod symbol;
-mod mut_visitor;
 mod node_visitor;
 mod diagnostics;
 mod interface;
