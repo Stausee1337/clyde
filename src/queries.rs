@@ -69,15 +69,6 @@ fn execute_query<'tcx, Cache: caches::QueryCache>(
     }
 }
 
-pub fn query_panic(name: &str, key: &dyn std::fmt::Debug) -> ! {
-    panic!(
-        "The query {name:?} has no provider function\
-associated with it, for key {key:?}.
-hint: Maybe the query is feedable, \
-consider feeding the query first, using feed.{name}(...) on its associated feedable"
-    )
-}
-
 pub mod caches {
     use std::{fmt::Debug, hash::Hash, collections::HashMap, cell::{RefCell, OnceCell}};
 

@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, ops::Range, cell::Cell};
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::Diagnostics};
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::DiagnosticsCtxt};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -78,8 +78,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
     }
 
-    fn diagnostics(&self) -> Diagnostics<'tcx> {
-        todo!()
+    fn diagnostics(&self) -> &DiagnosticsCtxt {
+        self.tcx.diagnostics()
     }
 
     fn enter_loop_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, ctxt: LoopCtxt, do_work: F) -> (LoopCtxt, T) {
@@ -1237,8 +1237,8 @@ impl<'tcx> LoweringCtxt<'tcx> {
         }
     }
 
-    fn diagnostics(&self) -> Diagnostics<'tcx> {
-        todo!()
+    fn diagnostics(&self) -> &DiagnosticsCtxt {
+        self.tcx.diagnostics()
     }
 
     fn lower_name(&self, name: &ast::QName) -> Ty<'tcx> {
@@ -1393,7 +1393,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx);
 
-    let diagnostics: Diagnostics = todo!();
+    let diagnostics = tcx.diagnostics();
 
     match node {
         ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), ident, .. }) => {
@@ -1424,7 +1424,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
                 });
             }
             let params: Box<[types::Param]> = params.into_boxed_slice();
-            let params: &'_ [types::Param] = tcx.alloc(params);
+            let params: &'_ [types::Param] = tcx.arena.alloc(params);
 
             types::Signature { returns, params, name: ident.symbol }
         }

@@ -1,7 +1,7 @@
 
 use std::{collections::HashMap, ops::Range, cell::OnceCell};
 
-use crate::{ast::{self, Resolution, DefinitionKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::Diagnostics, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}};
+use crate::{ast::{self, Resolution, DefinitionKind, NodeId, DefId}, mut_visitor::{MutVisitor, self}, diagnostics::DiagnosticsCtxt, symbol::Symbol, context::TyCtxt, interface, node_visitor::{NodeVisitor, self}};
 
 /// AST (&tree) 
 ///     |          |
@@ -52,7 +52,7 @@ struct Local {
 
 struct ResolutionState<'tcx> {
     items: Vec<ast::DefId>,
-    diagnostics: Diagnostics<'tcx>,
+    diagnostics: &'tcx DiagnosticsCtxt,
     types: HashMap<Symbol, Declaration, ahash::RandomState>,
     functions: HashMap<Symbol, Declaration, ahash::RandomState>,
     globals: HashMap<Symbol, Declaration, ahash::RandomState>,
@@ -67,7 +67,7 @@ pub struct ResolutionResults {
 }
 
 impl<'tcx> ResolutionState<'tcx> {
-    fn new(diagnostics: Diagnostics<'tcx>) -> ResolutionState<'tcx> {
+    fn new(diagnostics: &'tcx DiagnosticsCtxt) -> ResolutionState<'tcx> {
         ResolutionState {
             diagnostics,
             items: Default::default(),
@@ -613,24 +613,10 @@ impl<'tcx> NodeVisitor for ResolveNodeForNodeId<'tcx> {
     }
 }
 
-impl<'tcx> TyCtxt<'tcx> {
-    pub fn ast_node(self, id: NodeId) -> ast::Node<'tcx> {
-        let source: &'tcx ast::SourceFile = todo!();
-        ResolveNodeForNodeId::resolve(source, id)
-            .expect("tried to resolve NodeId in to ast::Node that does not exist")
-    }
-
-    pub fn node_by_def_id(self, id: DefId) -> ast::Node<'tcx> {
-        let resolutions: ResolutionResults = todo!();
-        self.ast_node(resolutions.declarations[id])
-    }
-}
-
 pub fn run_resolve<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    (mut tree, diagnostics): (ast::SourceFile, Diagnostics<'tcx>)
+    tcx: TyCtxt<'tcx>, mut tree: ast::SourceFile
 ) -> ResolutionResults {
-    let mut resolution = ResolutionState::new(diagnostics);
+    let mut resolution = ResolutionState::new(tcx.diagnostics());
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
     rpass.resolve(&mut tree);

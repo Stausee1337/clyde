@@ -28,15 +28,15 @@ fn main() -> ExitCode {
     build_compiler(sess, |compiler| {
         let gcx = compiler.global_ctxt();
 
+        let ast = compiler.parse_entry()?; 
+        let resolutions = gcx.enter(|tcx| resolve::run_resolve(tcx, ast));
+
+        if gcx.diagnostics().has_fatal() {
+            gcx.diagnostics().render();
+            return Err(());
+        }
+
         gcx.enter(|tcx| {
-            let resolutions = resolve::run_resolve(tcx, compiler.parse()?);
-
-            if gcx.has_fatal_errors() {
-                gcx.all_diagnostics(|diag| diag.print_diagnostics());
-                return Err(());
-            }
-
-            // println!("{:#?}", tcx.file_ast(interface::INPUT_FILE_IDX));
             resolutions.items.iter().for_each(|&def_id| {
                 if let Some(..) = tcx.node_by_def_id(def_id).body() {
                     tcx.typecheck(def_id);
@@ -53,10 +53,11 @@ fn main() -> ExitCode {
         // type checking
 
         // IR generation
+        
+        let diagnostics = gcx.diagnostics();
+        diagnostics.render();
 
-        gcx.all_diagnostics(|diag| diag.print_diagnostics());
-
-        Ok::<ExitCode, ()>(if !gcx.has_errors() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+        Ok::<ExitCode, ()>(if !diagnostics.has_error() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
     }).unwrap_or(ExitCode::FAILURE)
 }
 

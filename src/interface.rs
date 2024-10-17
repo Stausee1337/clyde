@@ -1,7 +1,7 @@
 
-use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::{self, Read}, fs::File, cell::{OnceCell, RefCell}};
+use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs::File, cell::{OnceCell, RefCell}, rc::Rc, ops::Range};
 
-use crate::{context::GlobalCtxt, ast, diagnostics::{Diagnostics, DiagnosticsData}, parser, queries::Providers, typecheck, types};
+use crate::{context::GlobalCtxt, ast, diagnostics::DiagnosticsCtxt, parser, queries::Providers, typecheck, types};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -17,6 +17,18 @@ pub struct Session {
     working_dir: PathBuf,
 
     config: Cfg,
+    diagnostics: DiagnosticsCtxt,
+    file_cacher: Rc<FileCacher>
+}
+
+impl Session {
+    pub fn diagnostics(&self) -> &DiagnosticsCtxt {
+        &self.diagnostics
+    }
+
+    pub fn file_cacher(&self) -> &FileCacher {
+        &self.file_cacher
+    }
 }
 
 pub struct Options {
@@ -30,13 +42,17 @@ pub struct Options {
 
 impl Options {
     pub fn create_compile_session(self) -> Session {
+        let file_cacher = Rc::new(
+            FileCacher::new(&self.working_dir));
         Session {
             input: self.input,
             output_dir: self.output_dir.unwrap_or_else(|| self.working_dir.clone()),
             output_file: self.output_file.unwrap_or_else(|| self.working_dir.clone()),
             working_dir: self.working_dir,
 
-            config: self.config
+            config: self.config,
+            diagnostics: DiagnosticsCtxt::new(file_cacher.clone()),
+            file_cacher
         }
     }
 }
@@ -52,6 +68,26 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
         eprintln!("ERROR: Could not get current working directory {error}");
         ExitCode::FAILURE
     })?;
+
+    macro_rules! optflag {
+        ($shortopt:literal, $fullopt:literal, $desc:literal) => {
+            |parser| parser.optflag($shortopt, $fullopt, $desc)
+        };
+    }
+
+    macro_rules! optopt {
+        ($shortopt:literal, $fullopt:literal, $desc:literal, $arg:literal) => {
+            |parser| parser.optopt($shortopt, $fullopt, $desc, $arg)
+        };
+    }
+
+    const CMD_OPTIONS: &[fn(&mut getopts::Options) -> &mut getopts::Options] = &[
+        optflag!("h", "help", "Displays this message"),
+        optopt!("o", "", "Put the output into <file>", "<file>"),
+        optopt!("", "out-dir", "Write the output into <dir>", "<dir>"),
+        optflag!("R", "run", "Run the generated output upon successful build"),
+        optflag!("v", "version", "Print wpc version")
+    ];
 
     let mut parser = getopts::Options::new();
     for coption in CMD_OPTIONS {
@@ -111,51 +147,74 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     Ok(options)
 }
 
-fn get_filename(path: &Path) -> Option<&str> {
-    Some(unsafe { osstr_as_str(path.file_name()?) })
-}
-
-pub unsafe fn path_as_str(path: &Path) -> &str {
-    osstr_as_str(path.as_os_str())
-}
-
-pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
-    let bytes = osstr.as_bytes();
-    std::str::from_utf8_unchecked(bytes)
-}
-
 fn matches_to_config(matches: &getopts::Matches) -> Cfg {
     Cfg {
         run_output: matches.opt_present("R") || matches.opt_present("run")
     }
 }
 
-fn read_entire_file(filename: &Path) -> Result<String, io::Error> {
-    let mut result = String::new();
-    File::open(filename)?
-        .read_to_string(&mut result)?;
-    Ok(result)
+pub struct Source {
+    path: PathBuf,
+    range: Range<usize>,
 }
 
-macro_rules! optflag {
-    ($shortopt:literal, $fullopt:literal, $desc:literal) => {
-        |parser| parser.optflag($shortopt, $fullopt, $desc)
-    };
+impl Source {
+    pub fn as_str(&self) -> &str {
+        todo!()
+    }
+
+    pub fn translate(&self, range: Range<usize>) -> Range<usize> {
+        self.range.start + range.start..self.range.start + range.end
+    }
+
+    pub fn path(&self) -> &str {
+        FileCacher::decode_path(&self.path)
+    }
 }
 
-macro_rules! optopt {
-    ($shortopt:literal, $fullopt:literal, $desc:literal, $arg:literal) => {
-        |parser| parser.optopt($shortopt, $fullopt, $desc, $arg)
-    };
+pub struct FileCacher {
+    files: RefCell<Vec<Source>>,
+    working_dir: PathBuf,
 }
 
-const CMD_OPTIONS: &[fn(&mut getopts::Options) -> &mut getopts::Options] = &[
-    optflag!("h", "help", "Displays this message"),
-    optopt!("o", "", "Put the output into <file>", "<file>"),
-    optopt!("", "out-dir", "Write the output into <dir>", "<dir>"),
-    optflag!("R", "run", "Run the generated output upon successful build"),
-    optflag!("v", "version", "Print wpc version")
-];
+impl FileCacher {
+    fn new(working_dir: &Path) -> Self {
+        Self {
+            files: RefCell::new(Vec::new()),
+            working_dir: working_dir.to_owned()
+        }
+    }
+
+    pub fn load_file(&self, path: &Path) -> Result<&Source, ()> {
+        let mut contents = String::new();
+        File::open(path)
+            .and_then(|mut f| f.read_to_string(&mut contents))
+            .map_err(|err| {
+                let file = FileCacher::decode_path(path);
+                eprintln!("ERROR: couldn't read {file}: {err}");
+            })?;
+        todo!()
+    }
+
+    pub fn lookup_file(&self, _pos: usize) -> Option<Source> {
+        todo!()
+    }
+
+    fn decode_path(path: &Path) -> &str {
+        let osstr = path.as_os_str();
+        let bytes = osstr.as_bytes();
+        unsafe { std::str::from_utf8_unchecked(bytes) }
+    }
+}
+
+fn get_filename(path: &Path) -> Option<&str> {
+    Some(unsafe { osstr_as_str(path.file_name()?) })
+}
+
+pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
+    let bytes = osstr.as_bytes();
+    std::str::from_utf8_unchecked(bytes)
+}
 
 pub struct Compiler<'tcx> {
     pub sess: Session,
@@ -164,18 +223,8 @@ pub struct Compiler<'tcx> {
 }
 
 impl<'tcx> Compiler<'tcx> {
-    pub fn parse(&'tcx self) -> Result<(ast::SourceFile, Diagnostics<'tcx>), ()> {
-        let gcx = self.global_ctxt();
-        let source = read_entire_file(&gcx.session.input)
-            .map_err(|err| {
-                let file = unsafe { path_as_str(&gcx.session.input) };
-                eprintln!("ERROR: couldn't read {file}: {err}");
-            })
-            .map(|s| gcx.alloc_str(&s))?;
-
-        let diagnostics = Diagnostics(gcx.alloc(DiagnosticsData::new(&gcx.session.input, source)));
-
-        Ok((parser::parse_file(diagnostics), diagnostics))
+    pub fn parse_entry(&'tcx self) -> Result<ast::SourceFile, ()> {
+        parser::parse_file(&self.sess, &self.sess.input)
     }
 
     pub fn global_ctxt(&'tcx self) -> &'tcx GlobalCtxt<'tcx> {

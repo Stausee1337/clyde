@@ -223,7 +223,7 @@ impl<'tcx> Const<'tcx> {
                 }
 
                 let slice = slice.into_boxed_slice();
-                let slice: &'_ [ValTree] = tcx.alloc(slice);
+                let slice: &[ValTree] = tcx.arena.alloc(slice);
 
                 ConstInner::Value(ty, ValTree::Branch(slice))
             }

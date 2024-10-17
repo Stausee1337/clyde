@@ -2,6 +2,8 @@ use std::ops::Range;
 use logos::Logos;
 use logos_display::Display;
 
+use crate::interface::Source;
+
 #[derive(Logos, Debug, Display, PartialEq, Clone)]
 #[logos(error = LexError)]
 #[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
@@ -159,8 +161,9 @@ pub struct Token(pub TokenKind, pub Range<usize>);
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LexError(pub Range<usize>, pub String);
 
-pub fn lex_input_string(source: &str) -> (Vec<Token>, Vec<LexError>) {
-    let mut lexer = TokenKind::lexer(source);
+pub fn lex_input_string(source: &Source) -> (Vec<Token>, Vec<LexError>) {
+    let string = source.as_str();
+    let mut lexer = TokenKind::lexer(string);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
     loop {
@@ -170,7 +173,9 @@ pub fn lex_input_string(source: &str) -> (Vec<Token>, Vec<LexError>) {
         let span = lexer.span();
         let Ok(mut token) = token else {
             errors.push(
-                LexError(span.clone(), format!("Invalid character `{}` in input stream", &source[span.clone()]))
+                LexError(
+                    source.translate(span.clone()),
+                    format!("Invalid character `{}` in input stream", &string[span.clone()]))
             );
             continue;
         };
@@ -181,14 +186,15 @@ pub fn lex_input_string(source: &str) -> (Vec<Token>, Vec<LexError>) {
             TokenKind::String(s) => {
                 *s = snailquote::unescape(s).unwrap_or_else(|err| {
                     errors.push(
-                        LexError(span.clone(), err.to_string())
+                        LexError(
+                            source.translate(span.clone()), err.to_string())
                     );
                     "".to_string()
                 });
             }
             _ => ()
         }
-        tokens.push(Token(token, span));
+        tokens.push(Token(token, source.translate(span)));
     }
 
     (tokens, errors)

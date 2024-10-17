@@ -4,7 +4,7 @@ use crate::{
     parser::ParseContext as Context,
 };
 
-grammar<'a, 'tcx>(ctxt: &'a mut Context<'tcx>);
+grammar<'a, 'sess>(ctxt: &'a mut Context<'sess>);
 
 pub SourceFile: ast::SourceFile = {
     <start:@L> <items:Items> <end:@R> => ast::SourceFile {
@@ -273,12 +273,12 @@ ForStatement: ast::Stmt = {
 
 ControlFlowStmt: ast::Stmt = {
     <sloc:@L> "break" ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Break, (sloc..eloc))),
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Break, sloc..eloc)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     },
     <sloc:@L> "continue" ";" <eloc:@R> => ast::Stmt {
-        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Continue, (sloc..eloc))),
+        kind: ast::StmtKind::ControlFlow(ast::ControlFlow::new(ast::ControlFlowKind::Continue, sloc..eloc)),
         span: (sloc..eloc),
         node_id: ctxt.make_node_id()
     }

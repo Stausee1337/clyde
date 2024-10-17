@@ -1,7 +1,9 @@
-use crate::{lexer::{Token, self}, ast, diagnostics::Diagnostics, context::GlobalCtxt};
+use std::path::Path;
 
-struct ParseContext<'tcx> {
-    pub diagnostics: Diagnostics<'tcx>,
+use crate::{lexer::{Token, self}, ast, diagnostics::DiagnosticsCtxt, interface::Session};
+
+struct ParseContext<'sess> {
+    pub diagnostics: &'sess DiagnosticsCtxt,
     pub current_node_id: u32
 }
 
@@ -12,8 +14,9 @@ impl<'tcx> ParseContext<'tcx> {
     }
 }
 
-pub fn parse_file<'a, 'tcx>(diagnostics: Diagnostics<'tcx>) -> ast::SourceFile {
-    let source = diagnostics.source; 
+pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile, ()> {
+    let diagnostics = session.diagnostics();
+    let source = session.file_cacher().load_file(path)?;
 
     let (tokens, errors) = lexer::lex_input_string(source);
     for err in errors {
@@ -21,7 +24,7 @@ pub fn parse_file<'a, 'tcx>(diagnostics: Diagnostics<'tcx>) -> ast::SourceFile {
     }
 
     let source_file = parse(tokens, &mut ParseContext { diagnostics, current_node_id: 0 });
-    source_file
+    Ok(source_file)
 }
 
 fn parse<'a, 'tcx>(tokens: Vec<Token>, ctxt: &'a mut ParseContext<'tcx>) -> ast::SourceFile {

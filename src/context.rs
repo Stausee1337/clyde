@@ -1,8 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref, mem::transmute};
+use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref, mem::transmute, marker::PhantomData};
 
 use ahash::AHasher;
 
-use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}, interface::{Session, self}, ast};
+use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}, interface::{Session, self}, ast::{self, DefId}, diagnostics::DiagnosticsCtxt};
 
 pub type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
 
@@ -33,7 +33,7 @@ fn make_hash<H: Hash>(hashable: &H) -> u64 {
 }
 
 pub struct GlobalCtxt<'tcx> {
-    arena: bumpalo::Bump,
+    pub arena: bumpalo::Bump,
     pub session: &'tcx Session,
     pub interners: CtxtInterners<'tcx>,
     pub providers: Providers,
@@ -56,12 +56,8 @@ impl<'tcx> GlobalCtxt<'tcx> {
         do_work(tcx)
     }
 
-    pub fn alloc<T>(&self, val: T) -> &'tcx T {
-        unsafe { transmute::<&mut T, &'tcx T>(self.arena.alloc(val)) }
-    }
-
-    pub fn alloc_str(&self, string: &str) -> &'tcx str {
-        unsafe { transmute::<&mut str, &'tcx str>(self.arena.alloc_str(string)) }
+    pub fn diagnostics(&self) -> &DiagnosticsCtxt {
+        self.session.diagnostics()
     }
 }
 
@@ -70,11 +66,17 @@ pub struct TyCtxt<'tcx> {
     gcx: &'tcx GlobalCtxt<'tcx>
 }
 
+impl<'tcx> TyCtxt<'tcx> {
+    pub fn node_by_def_id(self, _id: DefId) -> ast::Node<'tcx> {
+        todo!()
+    }
+}
+
 impl<'tcx> Deref for TyCtxt<'tcx> {
-    type Target = GlobalCtxt<'tcx>;
+    type Target = &'tcx GlobalCtxt<'tcx>;
 
     fn deref(&self) -> &Self::Target {
-        self.gcx
+        &self.gcx
     }
 }
 

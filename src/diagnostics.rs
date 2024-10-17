@@ -1,14 +1,12 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 use std::mem::transmute;
-use std::ops::{Range, Deref};
+use std::ops::Range;
 use std::fmt::Write;
-use std::os::raw::c_void;
 use std::hash::Hash;
-use std::path::Path;
 
 use bitflags::bitflags;
 
-use crate::{context::{GlobalCtxt, TyCtxt}, interface, queries::caches::QueryCache};
+use crate::interface::FileCacher;
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -30,74 +28,29 @@ impl JoinToHumanReadable for Vec<String> {
 
 bitflags! {
     pub struct HappenedEvents: u8 {
-        const WARNING = 0b0001;
-        const ERROR = 0b0010;
-        const FATAL = 0b0100;
+        const FATAL = 0b10;
+        const ERROR = 0b01;
     }
 }
 
-pub struct DiagnosticsData<'tcx> {
-    pub source: &'tcx str,
-    pub filename: &'tcx str,
-    events: RefCell<Vec<Reported>>,
-    flags: RefCell<HappenedEvents>
+struct DiagnosticsCtxtInner {
+    file_cacher: Rc<FileCacher>,
+    events: Vec<Reported>,
+    flags: HappenedEvents
 }
 
-impl<'tcx> DiagnosticsData<'tcx> {
-    pub fn new(path: &'tcx Path, source: &'tcx str) -> Self {
-        let filename = unsafe { interface::path_as_str(&path) };
-
-        Self {
-            source, filename,
-            events: RefCell::new(Vec::new()),
-            flags: RefCell::new(HappenedEvents::empty())
-        }
-    }
-
-    fn push_event(&self, kind: DiagnosticKind, message: String) -> &mut Reported {
-        let mut events = self.events.borrow_mut();
-        events.push(Reported {
+impl DiagnosticsCtxtInner {
+    fn push_event<'a>(&mut self, kind: DiagnosticKind, message: String) -> &'a mut Reported {
+        self.events.push(Reported {
             kind,
             message,
             location: Where::Unspecified 
         });
-        unsafe { transmute::<&mut Reported, &mut Reported>(events.last_mut().unwrap()) }
+        unsafe { transmute::<&mut Reported, &mut Reported>(self.events.last_mut().unwrap()) }
     }
 
-    pub fn error<T: Into<String>>(&self, message: T) -> &mut Reported {
-        self.flags.borrow_mut().insert(HappenedEvents::ERROR);
-        self.push_event(DiagnosticKind::Error, message.into())
-    }
-
-    pub fn fatal<T: Into<String>>(&self, message: T) -> &mut Reported {
-        self.flags.borrow_mut().insert(HappenedEvents::FATAL);
-        self.push_event(DiagnosticKind::Fatal, message.into())
-    }
-
-    pub fn warning<T: Into<String>>(&self, message: T) -> &mut Reported {
-        self.flags.borrow_mut().insert(HappenedEvents::WARNING);
-        self.push_event(DiagnosticKind::Warning, message.into())
-    }
-
-    pub fn note<T: Into<String>>(&self, message: T) -> &mut Reported {
-        self.push_event(DiagnosticKind::Note, message.into())
-    }
-
-    pub fn has_error(&self) -> bool {
-        self.flags.borrow().contains(HappenedEvents::ERROR)
-    }
-
-    pub fn has_warning(&self) -> bool {
-        self.flags.borrow().contains(HappenedEvents::WARNING)
-    }
-
-    pub fn has_fatal(&self) -> bool {
-        self.flags.borrow().contains(HappenedEvents::FATAL)
-    }
-
-    pub fn print_diagnostics(&self) {
-        let mut events = self.events.take();
-        events.sort_by(|a, b| {
+    pub fn render(&mut self) {
+        self.events.sort_by(|a, b| {
             let pos_a = match &a.location {
                 Where::Span(span) => span.start,
                 Where::Position(pos) => *pos,
@@ -110,11 +63,17 @@ impl<'tcx> DiagnosticsData<'tcx> {
             };
             pos_a.cmp(&pos_b)
         });
-        for event in &events {
-            let source_positions = event.location.pos_in_source(&self.source);
+        for event in &self.events {
+            let location = match &event.location {
+                Where::Span(span) => span.start,
+                Where::Position(pos) => *pos,
+                Where::Unspecified => todo!()
+            };
+            let source = self.file_cacher.lookup_file(location).expect("within the range of a file");
+            let source_positions = event.location.pos_in_source(source.as_str());
             eprintln!("{}: {}:{}: {}",
                 event.kind,
-                self.filename,
+                source.path(),
                 source_positions.first()
                     .map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
                     .unwrap_or(String::new()),
@@ -122,7 +81,7 @@ impl<'tcx> DiagnosticsData<'tcx> {
             if event.location.has_span() {
                 for (idx, source_pos) in source_positions.iter().enumerate() {
                     let lineno = source_pos.position.0.to_string();
-                    eprintln!(" {lineno}|{line}", line = source_pos.line(&self.source));
+                    eprintln!(" {lineno}|{line}", line = source_pos.line(source.as_str()));
                     if idx == 0 || idx == source_positions.len() - 1 {
                         eprintln!(" {npad}|{lpad}{span}",
                             npad = " ".repeat(lineno.len()), lpad = " ".repeat(source_pos.position.1 - 1),
@@ -134,35 +93,51 @@ impl<'tcx> DiagnosticsData<'tcx> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Diagnostics<'tcx>(pub &'tcx DiagnosticsData<'tcx>);
+pub struct DiagnosticsCtxt(RefCell<DiagnosticsCtxtInner>);
 
-impl<'tcx> std::cmp::PartialEq for Diagnostics<'tcx> {
-    fn eq(&self, other: &Self) -> bool {
-        unsafe {
-            let a = transmute::<Diagnostics, *const c_void>(*self);
-            let b = transmute::<Diagnostics, *const c_void>(*other);
+impl DiagnosticsCtxt { 
+    pub fn new(file_cacher: Rc<FileCacher>) -> DiagnosticsCtxt {
+        let inner = DiagnosticsCtxtInner {
+            file_cacher,
+            events: Vec::new(),
+            flags: HappenedEvents::empty()
+        };
+        DiagnosticsCtxt(RefCell::new(inner))
+    }
 
-            a == b
-        }
+    pub fn render(&self) {
+        self.0.borrow_mut().render();
+    }
+
+    pub fn error<T: Into<String>>(&self, message: T) -> &mut Reported {
+        let mut inner = self.0.borrow_mut();
+        inner.flags |= HappenedEvents::ERROR;
+        inner.push_event(DiagnosticKind::Error, message.into())
+    }
+
+    pub fn fatal<T: Into<String>>(&self, message: T) -> &mut Reported {
+        let mut inner = self.0.borrow_mut();
+        inner.flags |= HappenedEvents::FATAL;
+        inner.push_event(DiagnosticKind::Fatal, message.into())
+    }
+
+    pub fn warning<T: Into<String>>(&self, message: T) -> &mut Reported {  
+        self.0.borrow_mut().push_event(DiagnosticKind::Warning, message.into())
+    }
+
+    pub fn note<T: Into<String>>(&self, message: T) -> &mut Reported {
+        self.0.borrow_mut().push_event(DiagnosticKind::Note, message.into())
+    }
+
+    pub fn has_error(&self) -> bool {
+        self.0.borrow().flags.contains(HappenedEvents::ERROR)
+    }
+
+    pub fn has_fatal(&self) -> bool {
+        self.0.borrow().flags.contains(HappenedEvents::FATAL)
     }
 }
 
-impl<'tcx> std::cmp::Eq for Diagnostics<'tcx> {}
-
-impl<'tcx> std::fmt::Debug for Diagnostics<'tcx> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Diagnostics(file: {:?})", self.filename)
-    }
-}
-
-impl<'tcx> Deref for Diagnostics<'tcx> {
-    type Target = DiagnosticsData<'tcx>;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
-}
 
 pub struct Reported {
     kind: DiagnosticKind,
@@ -261,24 +236,6 @@ impl SourcePosition {
     fn line<'s>(&self, source: &'s str) -> &'s str {
         let line = &source[self.bol+1..];
         &line[..line.find('\n').unwrap_or(line.len() - 1)]
-    }
-}
-
-impl<'tcx> GlobalCtxt<'tcx> {
-    pub fn all_diagnostics<F: FnMut(Diagnostics<'tcx>)>(&'tcx self, mut _f: F) {
-        todo!()
-    }
-
-    pub fn has_fatal_errors(&'tcx self) -> bool {
-        let mut has_fatal_errors = false;
-        self.all_diagnostics(|diag| has_fatal_errors |= diag.has_fatal());
-        has_fatal_errors
-    }
-
-    pub fn has_errors(&'tcx self) -> bool {
-        let mut has_errors = false;
-        self.all_diagnostics(|diag| has_errors |= diag.has_error());
-        has_errors
     }
 }
 

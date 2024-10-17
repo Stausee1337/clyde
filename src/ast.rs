@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::hash::Hash;
 use lalrpop_util::{ErrorRecovery, ParseError};
 
-use crate::diagnostics::{JoinToHumanReadable, Diagnostics};
+use crate::diagnostics::{JoinToHumanReadable, DiagnosticsCtxt};
 use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
@@ -463,9 +463,9 @@ impl std::fmt::Debug for NodeId {
     }
 }
 
-pub fn handle_stmt_error<'diag>(
+pub fn handle_stmt_error<'sess>(
     recovery: ErrorRecovery<usize, crate::lexer::TokenKind, UserError>,
-    diagnostics: Diagnostics
+    diagnostics: &'sess DiagnosticsCtxt
 ) -> Result<Stmt, ParseError<usize, crate::lexer::TokenKind, UserError>> {
     match recovery.error {
         lalrpop_util::ParseError::UnrecognizedToken { expected, token } if expected.contains(&"\";\"".to_string())
