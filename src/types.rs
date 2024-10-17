@@ -1,25 +1,16 @@
-use std::{mem::transmute, ops::{Deref, Range}, primitive};
+use std::{mem::transmute, ops::{Deref, Range}};
 
-use bumpalo::Bump;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::{SharedHashMap, TyCtxt, Interner}};
+use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::TyCtxt};
 
-
-#[derive(Debug, Hash)]
-#[repr(u32)]
-pub enum AdtKind {
-    Enum,
-    Struct,
-    Union,
-}
 macro_rules! interners {
-    ($($interner:ident : $fn:ident($ty:ty) -> $ret:ident;)*) => {
+    ($(fn $fn:ident($ty:ty) -> $ret:ident;)*) => {
         $(
             impl<'tcx> TyCtxt<'tcx> {
                 pub fn $fn(&self, value: $ty) -> $ret<'tcx> {
-                    $ret(self.interners.$interner.intern(value, |value| {
-                        self.interners.alloc(value)
+                    $ret(self.interner.intern(value, |value| {
+                        self.arena.alloc(value)
                     }))
                 }
             }
@@ -28,28 +19,17 @@ macro_rules! interners {
 }
 
 interners! {
-    adt_defs: mk_adt_from_inner(AdtDefInner) -> AdtDef;
-    consts: mk_const_from_inner(ConstInner<'tcx>) -> Const;
+    fn intern_ty(TyKind<'tcx>) -> Ty;
+    fn mk_adt_from_inner(AdtDefInner) -> AdtDef;
+    fn mk_const_from_inner(ConstInner<'tcx>) -> Const;
 }
 
-#[derive(Default)]
-pub struct CtxtInterners<'tcx> {
-    arena: Bump,
-    types: SharedHashMap<&'tcx TyKind<'tcx>>,
-    adt_defs: SharedHashMap<&'tcx AdtDefInner>,
-    consts: SharedHashMap<&'tcx ConstInner<'tcx>>,
-}
-
-impl<'tcx> CtxtInterners<'tcx> {
-    pub fn alloc<'r, T>(&self, val: T) -> &'r T {
-        unsafe { transmute::<&mut T, &'r T>(self.arena.alloc(val)) }
-    }
-
-    pub fn intern_ty(&self, kind: TyKind<'tcx>) -> Ty<'tcx> {
-        Ty(self.types.intern(kind, |kind| {
-            self.alloc(kind)
-        }))
-    }
+#[derive(Debug, Hash)]
+#[repr(u32)]
+pub enum AdtKind {
+    Enum,
+    Struct,
+    Union,
 }
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -90,13 +70,21 @@ impl AdtDefInner {
     }
 }
 
+impl PartialEq for AdtDefInner {
+    fn eq(&self, other: &Self) -> bool {
+        self.def == other.def
+    }
+}
+
+impl Eq for AdtDefInner {}
+
 #[derive(Debug, Hash)]
 pub struct FieldDef {
     pub def: DefId,
     pub symbol: Symbol
 }
 
-#[derive(Debug, Hash, Clone, Copy)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(&'tcx AdtDefInner);
 
 impl<'tcx> Deref for AdtDef<'tcx> {
@@ -121,7 +109,7 @@ pub struct Param<'tcx> {
     pub node_id: NodeId
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct Scalar {
     size: usize,
     data: u128
@@ -134,13 +122,13 @@ impl Scalar {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub enum ValTree<'tcx> {
     Scalar(Scalar),
     Branch(&'tcx [ValTree<'tcx>])
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub enum ConstInner<'tcx> {
     Value(Ty<'tcx>, ValTree<'tcx>),
     Placeholder,
@@ -150,7 +138,7 @@ pub enum ConstInner<'tcx> {
     }
 }
 
-#[derive(Debug, Hash, Clone, Copy)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct Const<'tcx>(pub &'tcx ConstInner<'tcx>);
 
 impl<'tcx> Const<'tcx> {
@@ -273,7 +261,7 @@ impl<'tcx> Const<'tcx> {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub enum TyKind<'tcx> {
     Primitive(Primitive),
     Adt(AdtDef<'tcx>),
@@ -335,47 +323,47 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
 
 impl<'tcx> Ty<'tcx> {
     pub fn new_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, cnst: Const<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Array(ty, cnst))
+        tcx.intern_ty(TyKind::Array(ty, cnst))
     }
 
     pub fn new_slice(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Slice(ty))
+        tcx.intern_ty(TyKind::Slice(ty))
     }
 
     pub fn new_dyn_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::DynamicArray(ty))
+        tcx.intern_ty(TyKind::DynamicArray(ty))
     }
 
     pub fn new_refrence(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Refrence(ty))
+        tcx.intern_ty(TyKind::Refrence(ty))
     }
 
     pub fn new_error(tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Err)
+        tcx.intern_ty(TyKind::Err)
     }
 
     pub fn new_never(tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Never)
+        tcx.intern_ty(TyKind::Never)
     }
 
     pub fn new_primitive(tcx: TyCtxt<'tcx>, primitive: Primitive) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Primitive(primitive))
+        tcx.intern_ty(TyKind::Primitive(primitive))
     }
 
     pub fn new_adt(tcx: TyCtxt<'tcx>, adt: AdtDef<'tcx>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Adt(adt))
+        tcx.intern_ty(TyKind::Adt(adt))
     }
 
     pub fn new_function(tcx: TyCtxt<'tcx>, def: DefId) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Function(def))
+        tcx.intern_ty(TyKind::Function(def))
     }
 
     pub fn new_range(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, inclusive: bool) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Range(ty, inclusive))
+        tcx.intern_ty(TyKind::Range(ty, inclusive))
     }
 
     pub fn new_tuple(tcx: TyCtxt<'tcx>, tys: Vec<Ty<'tcx>>) -> Ty<'tcx> {
-        tcx.interners.intern_ty(TyKind::Tuple(tys))
+        tcx.intern_ty(TyKind::Tuple(tys))
     }
 
     /// Searches slice types for bendable types (Never, Err)

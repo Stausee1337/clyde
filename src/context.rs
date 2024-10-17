@@ -1,41 +1,66 @@
-use std::{cell::RefCell, collections::HashMap, hash::{Hash, Hasher}, ops::Deref, mem::transmute, marker::PhantomData};
+use std::{cell::RefCell, hash::{Hash, Hasher}, ops::Deref, marker::PhantomData};
+use hashbrown::hash_table::{HashTable, Entry};
 
 use ahash::AHasher;
 
-use crate::{types::CtxtInterners, queries::{Providers, QueryCaches}, interface::{Session, self}, ast::{self, DefId}, diagnostics::DiagnosticsCtxt};
+use crate::{queries::{Providers, QueryCaches}, interface::Session, ast::{self, DefId}, diagnostics::DiagnosticsCtxt};
 
-pub type SharedHashMap<V> = RefCell<HashMap<u64, V>>;
-
-pub trait Interner<V> {
-    fn intern<Q: Hash>(&self, v: Q, make: impl FnOnce(Q) -> V) -> V;
+pub struct Interner<'tcx> {
+    inner: RefCell<HashTable<(u64, *const ())>>,
+    _phantom: PhantomData<&'tcx ()>
 }
 
-impl<V: Copy> Interner<V> for SharedHashMap<V> {
-    fn intern<Q: Hash>(&self, q: Q, make: impl FnOnce(Q) -> V) -> V {
-        let hash = make_hash(&q);
-        let mut map = self.borrow_mut();
+impl<'tcx> Interner<'tcx> {
+    pub fn new() -> Self {
+        Self {
+            inner: RefCell::new(HashTable::default()),
+            _phantom: PhantomData::default()
+        }
+    }
 
-        match map.get(&hash) {
-            Some(v) => *v,
-            None => {
-                let v = make(q);
-                map.insert(hash, v);
-                v
+    pub fn intern<Q: Hash + Eq>(&self, q: Q, make: impl FnOnce(Q) -> &'tcx Q) -> &'tcx Q {
+        let q_hash = Self::make_hash(&q);
+        let mut table = self.inner.borrow_mut();
+
+        let entry = table.entry(
+            q_hash,
+            |&(e_hash, e_ptr)| {
+                if e_hash != q_hash {
+                    return false;
+                }
+                // risky at only 64bits
+                let e: &'tcx Q = unsafe { &*(e_ptr as *const Q) };
+                q.eq(e)
+            },
+            |&(hash, _)| hash);
+
+        match entry {
+            Entry::Occupied(entry) => {
+                let e_ptr = entry.get().1;
+                let e: &'tcx Q = unsafe { &*(e_ptr as *const Q) };
+                e
             }
-        }        
+            Entry::Vacant(entry) => {
+                let e = make(q);
+                let e_ptr: *const Q = &*e;
+                entry.insert((q_hash, e_ptr as *const ()));
+                e
+            }
+        }
+    }
+
+    fn make_hash<H: ?Sized + Hash>(hashable: &H) -> u64 {
+        let mut hasher = AHasher::default();
+        hashable.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
-fn make_hash<H: Hash>(hashable: &H) -> u64 {
-    let mut hasher = AHasher::default();
-    hashable.hash(&mut hasher);
-    hasher.finish()
-}
 
 pub struct GlobalCtxt<'tcx> {
     pub arena: bumpalo::Bump,
     pub session: &'tcx Session,
-    pub interners: CtxtInterners<'tcx>,
+    pub interner: Interner<'tcx>,
     pub providers: Providers,
     pub caches: QueryCaches<'tcx>,
 }
@@ -45,7 +70,7 @@ impl<'tcx> GlobalCtxt<'tcx> {
         Self {
             session,
             arena: bumpalo::Bump::new(),
-            interners: CtxtInterners::default(),
+            interner: Interner::new(),
             providers,
             caches: QueryCaches::default()
         }
