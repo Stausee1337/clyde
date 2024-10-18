@@ -1,4 +1,4 @@
-use std::{cell::RefCell, hash::{Hash, Hasher}, ops::Deref, marker::PhantomData};
+use std::{cell::RefCell, hash::{Hash, Hasher}, ops::Deref, marker::PhantomData, any::TypeId};
 use hashbrown::hash_table::{HashTable, Entry};
 
 use ahash::AHasher;
@@ -95,6 +95,11 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn node_by_def_id(self, _id: DefId) -> ast::Node<'tcx> {
         todo!()
     }
+
+    #[inline]
+    pub fn intern<Q: Internable<'tcx>>(self, q: Q) -> Q::Interned<'tcx> {
+        q.intern(self)
+    }
 }
 
 define_queries! {
@@ -103,8 +108,15 @@ define_queries! {
     fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
 }
 
+pub trait Internable<'tcx>: Hash + Eq {
+    type Marker: Sized + 'static;
+    type Interned<'a>: Sized;
+
+    fn intern(self, tcx: TyCtxt<'tcx>) -> Self::Interned<'tcx>;
+}
+
 pub struct Interner<'tcx> {
-    inner: RefCell<HashTable<(u64, *const ())>>,
+    inner: RefCell<HashTable<(TypeId, u64, *const ())>>,
     _phantom: PhantomData<&'tcx ()>
 }
 
@@ -116,32 +128,35 @@ impl<'tcx> Interner<'tcx> {
         }
     }
 
-    pub fn intern<Q: Hash + Eq>(&self, q: Q, make: impl FnOnce(Q) -> &'tcx Q) -> &'tcx Q {
+    pub fn intern<Q: Internable<'tcx>>(&self, q: Q, tcx: TyCtxt<'tcx>) -> &'tcx Q {
         let q_hash = Self::make_hash(&q);
+        let q_type_id = TypeId::of::<Q::Marker>();
         let mut table = self.inner.borrow_mut();
 
         let entry = table.entry(
             q_hash,
-            |&(e_hash, e_ptr)| {
+            |&(e_type_id, e_hash, e_ptr)| {
                 if e_hash != q_hash {
                     return false;
                 }
-                // risky at only 64bits
+                if e_type_id != q_type_id {
+                    return false;
+                }
                 let e: &'tcx Q = unsafe { &*(e_ptr as *const Q) };
                 q.eq(e)
             },
-            |&(hash, _)| hash);
+            |&(_, hash, _)| hash);
 
         match entry {
             Entry::Occupied(entry) => {
-                let e_ptr = entry.get().1;
+                let e_ptr = entry.get().2;
                 let e: &'tcx Q = unsafe { &*(e_ptr as *const Q) };
                 e
             }
             Entry::Vacant(entry) => {
-                let e = make(q);
+                let e = tcx.arena.alloc(q);
                 let e_ptr: *const Q = &*e;
-                entry.insert((q_hash, e_ptr as *const ()));
+                entry.insert((q_type_id, q_hash, e_ptr as *const ()));
                 e
             }
         }

@@ -1,3 +1,4 @@
+workspace = { members = ["clyde_macros"] }
 [package]
 name = "clyde"
 version = "0.1.0"
@@ -26,4 +27,5 @@ index_vec = "0.1.3"
 ahash = "0.8.11"
 num-traits = "0.2.19"
 hashbrown = "0.15.0"
+clyde_macros = { path = "./clyde_macros" }
 

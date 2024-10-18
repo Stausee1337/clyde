@@ -1260,7 +1260,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         let cap = if let ast::ArrayCapacity::Discrete(expr) = cap {
                             types::Const::from_definition(self.tcx, expr.def_id)
                         } else {
-                            self.tcx.mk_const_from_inner(ConstInner::Placeholder)
+                            self.tcx.intern(ConstInner::Placeholder)
                         };
 
                         if let types::Const(types::ConstInner::Err { msg, span }) = &cap {
@@ -1313,7 +1313,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                                "variant {:?} of enum {:?} is undefined", variant.name.symbol, item.ident.symbol);
                     types::FieldDef { def: variant.def_id, symbol: variant.name.symbol }
                 }).collect();
-                let adt_def = tcx.mk_adt_from_inner(
+                let adt_def = tcx.intern(
                     types::AdtDefInner::new(def_id, item.ident.symbol, fields, types::AdtKind::Enum));
                 Ty::new_adt(tcx, adt_def)
             }
@@ -1323,7 +1323,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                                "field {:?} of struct {:?} is undefined", fdef.name.symbol, item.ident.symbol);
                     types::FieldDef { def: fdef.def_id, symbol: fdef.name.symbol }
                 }).collect();
-                let adt_def = tcx.mk_adt_from_inner(
+                let adt_def = tcx.intern(
                     types::AdtDefInner::new(def_id, item.ident.symbol, fields, types::AdtKind::Struct));
                 Ty::new_adt(tcx, adt_def)
             },

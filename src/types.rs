@@ -3,26 +3,7 @@ use std::{mem::transmute, ops::{Deref, Range}};
 use num_traits::{Num, ToPrimitive};
 
 use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::TyCtxt};
-
-macro_rules! interners {
-    ($(fn $fn:ident($ty:ty) -> $ret:ident;)*) => {
-        $(
-            impl<'tcx> TyCtxt<'tcx> {
-                pub fn $fn(&self, value: $ty) -> $ret<'tcx> {
-                    $ret(self.interner.intern(value, |value| {
-                        self.arena.alloc(value)
-                    }))
-                }
-            }
-        )*
-    };
-}
-
-interners! {
-    fn intern_ty(TyKind<'tcx>) -> Ty;
-    fn mk_adt_from_inner(AdtDefInner) -> AdtDef;
-    fn mk_const_from_inner(ConstInner<'tcx>) -> Const;
-}
+use clyde_macros::Internable;
 
 #[derive(Debug, Hash)]
 #[repr(u32)]
@@ -45,7 +26,8 @@ impl index_vec::Idx for FieldIdx {
     }
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug, Hash, Internable)]
+#[alias(AdtDef)]
 pub struct AdtDefInner {
     pub def: DefId,
     pub name: Symbol,
@@ -128,7 +110,8 @@ pub enum ValTree<'tcx> {
     Branch(&'tcx [ValTree<'tcx>])
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Internable)]
+#[alias(Const)]
 pub enum ConstInner<'tcx> {
     Value(Ty<'tcx>, ValTree<'tcx>),
     Placeholder,
@@ -151,7 +134,7 @@ impl<'tcx> Const<'tcx> {
         let ty = tcx.type_of(def_id);
         match Self::try_val_from_literal(tcx, ty, body.body) {
             Some(v) => v,
-            None => tcx.mk_const_from_inner(ConstInner::Err {
+            None => tcx.intern(ConstInner::Err {
                 msg: "Sry, propper const evaluation is not a priority".to_string(),
                 span: body.body.span.clone()
             })
@@ -242,7 +225,7 @@ impl<'tcx> Const<'tcx> {
             }
         };
 
-        Some(tcx.mk_const_from_inner(inner))
+        Some(tcx.intern(inner))
     }
 
     pub fn try_as_usize(&self) -> Option<usize> {
@@ -261,7 +244,8 @@ impl<'tcx> Const<'tcx> {
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq, Internable)]
+#[alias(Ty)]
 pub enum TyKind<'tcx> {
     Primitive(Primitive),
     Adt(AdtDef<'tcx>),
@@ -323,47 +307,47 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
 
 impl<'tcx> Ty<'tcx> {
     pub fn new_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, cnst: Const<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Array(ty, cnst))
+        tcx.intern(TyKind::Array(ty, cnst))
     }
 
     pub fn new_slice(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Slice(ty))
+        tcx.intern(TyKind::Slice(ty))
     }
 
     pub fn new_dyn_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::DynamicArray(ty))
+        tcx.intern(TyKind::DynamicArray(ty))
     }
 
     pub fn new_refrence(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Refrence(ty))
+        tcx.intern(TyKind::Refrence(ty))
     }
 
     pub fn new_error(tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Err)
+        tcx.intern(TyKind::Err)
     }
 
     pub fn new_never(tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Never)
+        tcx.intern(TyKind::Never)
     }
 
     pub fn new_primitive(tcx: TyCtxt<'tcx>, primitive: Primitive) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Primitive(primitive))
+        tcx.intern(TyKind::Primitive(primitive))
     }
 
     pub fn new_adt(tcx: TyCtxt<'tcx>, adt: AdtDef<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Adt(adt))
+        tcx.intern(TyKind::Adt(adt))
     }
 
     pub fn new_function(tcx: TyCtxt<'tcx>, def: DefId) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Function(def))
+        tcx.intern(TyKind::Function(def))
     }
 
     pub fn new_range(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, inclusive: bool) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Range(ty, inclusive))
+        tcx.intern(TyKind::Range(ty, inclusive))
     }
 
     pub fn new_tuple(tcx: TyCtxt<'tcx>, tys: Vec<Ty<'tcx>>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Tuple(tys))
+        tcx.intern(TyKind::Tuple(tys))
     }
 
     /// Searches slice types for bendable types (Never, Err)
@@ -385,21 +369,6 @@ impl<'tcx> Ty<'tcx> {
         match self {
             Ty(TyKind::Array(_, Const(ConstInner::Placeholder))) => true,
             _ => false
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Size {
-    Computable(usize),
-    Infinite
-}
-
-impl std::fmt::Display for Size {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Size::Computable(size) => write!(f, "{size} bytes"),
-            Size::Infinite => f.write_str("layout cycle dected in computation"),
         }
     }
 }
