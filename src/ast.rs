@@ -1,4 +1,3 @@
-use std::mem::transmute;
 use std::ops::Range;
 use std::hash::Hash;
 use lalrpop_util::{ErrorRecovery, ParseError};
@@ -21,10 +20,6 @@ pub enum Node<'ast> {
 }
 
 impl<'ast> Node<'ast> {
-    pub fn tcx<'tcx>(self) -> Node<'tcx> {
-        unsafe { transmute::<Node<'ast>, Node<'tcx>>(self) }
-    }
-
     // TODO: body for FieldDef 
     pub fn body(self) -> Option<Body<'ast>> {
         match self {

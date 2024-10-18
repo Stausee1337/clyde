@@ -94,7 +94,7 @@ pub fn visit_option<T, F: FnMut(&mut T)>(option: &mut Option<T>, mut visit_val: 
 }
 
 #[inline]
-pub fn map_vec<T, I: IntoIterator<Item = T>, F: FnMut(T) -> I>(elems: &mut Vec<T>, mut f: F) {
+pub fn _map_vec<T, I: IntoIterator<Item = T>, F: FnMut(T) -> I>(elems: &mut Vec<T>, mut f: F) {
     let mut len = elems.len();
     let mut read_i = 0;
     let mut write_i = 0;

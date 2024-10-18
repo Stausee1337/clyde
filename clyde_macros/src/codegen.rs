@@ -1,6 +1,6 @@
 use proc_macro2::{TokenStream, Ident, Span};
-use quote::{quote, ToTokens, quote_spanned, TokenStreamExt};
-use syn::{ItemStruct, Meta, GenericParam, punctuated::Punctuated, Token, Generics, Item, Attribute};
+use quote::quote;
+use syn::{Meta, GenericParam, Generics, Item, Attribute};
 
 fn ident(item: &Item) -> Result<&Ident, syn::Error> {
     match item {
