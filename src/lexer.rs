@@ -161,8 +161,17 @@ pub struct Token(pub TokenKind, pub Range<usize>);
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LexError(pub Range<usize>, pub String);
 
-pub fn lex_input_string(source: &Source) -> (Vec<Token>, Vec<LexError>) {
-    let string = source.as_str();
+pub fn lex_input_string(source: Source) -> (Vec<Token>, Vec<LexError>) {
+    let string = match source.as_str() {
+        Ok(string) => string,
+        Err(err) => {
+            let start = err.valid_up_to();
+            let err = LexError(
+                source.translate(start..start+1),
+                format!("Non-Utf8 character in input stream"));
+            return (vec![], vec![err]);
+        }
+    };
     let mut lexer = TokenKind::lexer(string);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -171,13 +180,20 @@ pub fn lex_input_string(source: &Source) -> (Vec<Token>, Vec<LexError>) {
             break;
         };
         let span = lexer.span();
-        let Ok(mut token) = token else {
-            errors.push(
-                LexError(
-                    source.translate(span.clone()),
-                    format!("Invalid character `{}` in input stream", &string[span.clone()]))
-            );
-            continue;
+        let mut token = match token {
+            Ok(token) => token,
+            Err(err) =>  {
+                if err.0.is_empty() { // default error, make a better one
+                    errors.push(
+                        LexError(
+                            source.translate(span.clone()),
+                            format!("Invalid character `{}` in input stream", &string[span.clone()]))
+                    );
+                } else {
+                    errors.push(err);
+                }
+                continue;
+            }
         };
         match &mut token {
             TokenKind::Comment => {

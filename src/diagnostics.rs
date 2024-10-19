@@ -69,11 +69,14 @@ impl DiagnosticsCtxtInner {
                 Where::Position(pos) => *pos,
                 Where::Unspecified => todo!()
             };
-            let source = self.file_cacher.lookup_file(location).expect("within the range of a file");
-            let source_positions = event.location.pos_in_source(source.as_str());
+            let file_idx = self.file_cacher.lookup_file(location);
+            let source = std::str::from_utf8(self.file_cacher.entire_file_contents(file_idx))
+                .expect("FIXME: this error message shouldn't be here");
+            let path = self.file_cacher.file_path(file_idx);
+            let source_positions = event.location.pos_in_source(source);
             eprintln!("{}: {}:{}: {}",
                 event.kind,
-                source.path(),
+                path,
                 source_positions.first()
                     .map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
                     .unwrap_or(String::new()),
@@ -81,7 +84,7 @@ impl DiagnosticsCtxtInner {
             if event.location.has_span() {
                 for (idx, source_pos) in source_positions.iter().enumerate() {
                     let lineno = source_pos.position.0.to_string();
-                    eprintln!(" {lineno}|{line}", line = source_pos.line(source.as_str()));
+                    eprintln!(" {lineno}|{line}", line = source_pos.line(source));
                     if idx == 0 || idx == source_positions.len() - 1 {
                         eprintln!(" {npad}|{lpad}{span}",
                             npad = " ".repeat(lineno.len()), lpad = " ".repeat(source_pos.position.1 - 1),

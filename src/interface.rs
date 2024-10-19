@@ -1,5 +1,7 @@
 
-use std::{path::{PathBuf, Path}, env, process::ExitCode, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs::File, cell::{OnceCell, RefCell}, rc::Rc, ops::Range};
+use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::{FromStr, Utf8Error}, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs::File, cell::{OnceCell, RefCell}, rc::Rc, ops::Range};
+
+use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 
 use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck};
 
@@ -42,8 +44,7 @@ pub struct Options {
 
 impl Options {
     pub fn create_compile_session(self) -> Session {
-        let file_cacher = Rc::new(
-            FileCacher::new(&self.working_dir));
+        let file_cacher: Rc<FileCacher> = FILE_CACHER.with(|cacher| cacher.clone());
         Session {
             input: self.input,
             output_dir: self.output_dir.unwrap_or_else(|| self.working_dir.clone()),
@@ -153,51 +154,96 @@ fn matches_to_config(matches: &getopts::Matches) -> Cfg {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Source {
-    path: PathBuf,
-    range: Range<usize>,
+    pub start: usize,
+    pub end: usize,
 }
 
 impl Source {
-    pub fn as_str(&self) -> &str {
-        todo!()
+    pub fn as_str(&self) -> Result<&str, Utf8Error> {
+        let file_cacher = FILE_CACHER.with(|cacher| cacher.clone());
+        let file_idx = file_cacher.lookup_file(self.start);
+        let contents = file_cacher.entire_file_contents(file_idx);
+        std::str::from_utf8(contents)
     }
 
     pub fn translate(&self, range: Range<usize>) -> Range<usize> {
-        self.range.start + range.start..self.range.start + range.end
+        self.start + range.start..self.start + range.end
     }
 
     pub fn path(&self) -> &str {
-        FileCacher::decode_path(&self.path)
+        // FileCacher::decode_path(&self.path)
+        todo!()
+    }
+}
+
+#[derive(Default)]
+struct FilesInner {
+    path_map: Vec<PathBuf>,
+    file_pos_map: Vec<Source>
+}
+
+impl FilesInner {
+    fn source_from_path_and_pos(&mut self, path: &Path, pos: usize, len: usize) -> Source {
+        let source = Source {
+            start: pos,
+            end: pos + len
+        };
+        self.path_map.push(path.to_owned());
+        self.file_pos_map.push(source);
+
+        source
     }
 }
 
 pub struct FileCacher {
-    files: RefCell<Vec<Source>>,
-    working_dir: PathBuf,
+    files: RefCell<FilesInner>,
+    storage: RefCell<ContinuousSourceStorage>
 }
 
 impl FileCacher {
-    fn new(working_dir: &Path) -> Self {
+    fn new() -> Self {
         Self {
-            files: RefCell::new(Vec::new()),
-            working_dir: working_dir.to_owned()
+            files: RefCell::new(FilesInner::default()),
+            // working_dir: working_dir.to_owned(),
+            storage: RefCell::new(ContinuousSourceStorage::allocate()),
         }
     }
 
-    pub fn load_file(&self, path: &Path) -> Result<&Source, ()> {
-        let mut contents = String::new();
-        File::open(path)
-            .and_then(|mut f| f.read_to_string(&mut contents))
+    pub fn load_file(&self, path: &Path) -> Result<Source, ()> {
+        let mut storage = self.storage.borrow_mut();
+        let (pos, len) = File::open(path)
+            .and_then(|mut f| {
+                let metadata = f.metadata()?;
+                let size = metadata.len() as usize;
+                let (buf, pos) = storage.new_buffer(size);
+                f.read_exact(buf)?;
+                Ok((pos, size))
+            })
             .map_err(|err| {
                 let file = FileCacher::decode_path(path);
                 eprintln!("ERROR: couldn't read {file}: {err}");
             })?;
-        todo!()
+        let mut inner = self.files.borrow_mut();
+        Ok(inner.source_from_path_and_pos(path, pos, len))
     }
 
-    pub fn lookup_file(&self, _pos: usize) -> Option<Source> {
-        todo!()
+    pub fn lookup_file(&self, needle: usize) -> usize {
+        let inner = self.files.borrow();
+        inner.file_pos_map.partition_point(|pos| !(pos.start..pos.end).contains(&needle))
+    }
+
+    pub fn entire_file_contents(&self, idx: usize) -> &'static [u8] {
+        let inner = self.files.borrow();
+        let storage = self.storage.borrow();
+        let source = inner.file_pos_map[idx];
+        storage.bytes_from_absolute_range(source.start, source.end)
+    }
+
+    pub fn file_path(&self, idx: usize) -> String {
+        let inner = self.files.borrow();
+        FileCacher::decode_path(&inner.path_map[idx]).to_string()
     }
 
     fn decode_path(path: &Path) -> &str {
@@ -205,6 +251,98 @@ impl FileCacher {
         let bytes = osstr.as_bytes();
         unsafe { std::str::from_utf8_unchecked(bytes) }
     }
+}
+
+struct ContinuousSourceStorage {
+    start: *mut u8,
+    current_end: *mut u8,
+    allocated_bytes: usize
+}
+
+impl ContinuousSourceStorage {
+    const STORAGE_SIZE: usize = u32::MAX as usize;
+    const PAGE_SIZE: usize = 4096;
+
+    fn allocate() -> Self {
+        unsafe {
+            let ptr = mmap_anonymous(
+                std::ptr::null_mut(),
+                Self::STORAGE_SIZE,
+                ProtFlags::empty(),
+                MapFlags::PRIVATE
+            )
+            .map_err(|err| {
+                eprintln!("Memory Allocation Failure: {}", err.to_string());
+                abort();
+            })
+            .unwrap_unchecked();
+
+            Self {
+                start: ptr as *mut u8,
+                current_end: ptr as *mut u8,
+                allocated_bytes: 0
+            }
+        }
+    }
+
+    unsafe fn grow(&mut self, added_size: usize) {
+        let mut new_size = self.allocated_bytes;
+        let target = new_size + added_size;
+        loop {
+            if new_size >= target {
+                break;
+            }
+            let dsize = Self::PAGE_SIZE - (new_size & (Self::PAGE_SIZE - 1));
+            new_size += dsize;
+        }
+        let page_diff = self.current_end.offset_from(self.start) as usize;
+        let len = new_size - page_diff;
+        let new_end = self.current_end.add(len);
+        if new_end >= self.start.add(Self::STORAGE_SIZE) {
+            eprintln!("Memory Allocation Failure: Attempt to allocate to many files (> 4 GiB) in one thread");
+            abort();
+        }
+        mprotect(
+            self.current_end as *mut _, len,
+            MprotectFlags::WRITE | MprotectFlags::READ
+        )
+        .map_err(|err| {
+            eprintln!("Memory Allocation Failure: {}", err.to_string());
+            abort();
+        })
+        .unwrap_unchecked();
+        self.current_end = new_end;
+    }
+
+    fn new_buffer(&mut self, size: usize) -> (&mut [u8], usize) {
+        unsafe {
+            let start = self.allocated_bytes;
+            let start_ptr = self.start.add(start);
+            let end_ptr = start_ptr.add(size);
+
+            if end_ptr > self.current_end {
+                self.grow(size);
+            }
+
+            self.allocated_bytes += size;
+
+            let buf = std::slice::from_raw_parts_mut(start_ptr, size);
+            (buf, start)
+        }
+    }
+
+    fn bytes_from_absolute_range<'l>(&self, start: usize, end: usize) -> &'l [u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.start.add(start),
+                end - start
+            )
+        }
+    }
+}
+
+thread_local! {
+    static FILE_CACHER: Rc<FileCacher> = Rc::new(FileCacher::new());
 }
 
 fn get_filename(path: &Path) -> Option<&str> {
