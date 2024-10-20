@@ -18,23 +18,9 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
-    let (tokens, errors) = lexer::lex_input_string(source);
-    for err in errors {
-        diagnostics.error(err.1).with_span(err.0);
-    }
-
-    let source_file = parse(tokens, &mut ParseContext { diagnostics, current_node_id: 0 });
-    Ok(source_file)
+    todo!()
 }
 
-fn parse<'a, 'tcx>(tokens: Vec<Token>, ctxt: &'a mut ParseContext<'tcx>) -> ast::SourceFile {
-    clyde::SourceFileParser::new()
-        .parse(ctxt, tokens
-            .into_iter()
-            .map(|tok| (tok.1.start, tok.0, tok.1.end)))
-    .unwrap()
-}
-
-mod clyde {
+/*mod clyde {
     include!(concat!(env!("OUT_DIR"), "/clyde.rs"));
-}
+}*/

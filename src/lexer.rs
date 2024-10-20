@@ -1,229 +1,276 @@
-use std::ops::Range;
-use logos::Logos;
-use logos_display::Display;
+use crate::symbol::Symbol;
+use clyde_macros::LexFromString;
 
-use crate::interface::Source;
+macro_rules! Token {
+    [*] => { crate::lexer::Star };
+}
 
-#[derive(Logos, Debug, Display, PartialEq, Clone)]
-#[logos(error = LexError)]
-#[logos(skip r"[ \t\n\f]+")] // Ignore this regex pattern between tokens
 pub enum TokenKind {
-    #[token(".")]
+    Keyword(Keyword),
+    Punctuation(Punctuation),
+    Literal(String),
+    Symbol(Symbol),
+}
+
+pub struct Token {
+    kind: TokenKind,
+    span: Span
+}
+
+pub struct Span {
+    start: u32,
+    end: u32
+}
+
+#[derive(Clone, Copy, LexFromString)]
+pub enum Punctuation {
+    #[str = "."]
     Dot,
-    #[token(",")]
+    #[str = ","]
     Comma,
-    #[token(":")]
+    #[str = ":"]
     Colon,
-    #[token("::")]
+    #[str = "::"]
     DoubleColon,
-    #[token(";")]
+    #[str = ";"]
     Semicolon,
-    #[token("[")]
+    #[str = "["]
     LBracket,
-    #[token("]")]
+    #[str = "]"]
     RBracket,
-    #[token("{")]
+    #[str = "{"]
     LCurly,
-    #[token("}")]
+    #[str = "}"]
     RCurly,
-    #[token("(")]
+    #[str = "("]
     LParen,
-    #[token(")")]
+    #[str = ")"]
     RParen,
-    #[token("=")]
+    #[str = "="]
     Assign,
-    #[token("..")]
+    #[str = ".."]
     DotDot,
-    #[token("->")]
+    #[str = "->"]
     Arrow,
-    #[token("^")]
+    #[str = "^"]
     Circumflex,
-    #[token("?")]
+    #[str = "?"]
     Question,
 
-    #[token("&")]
+    #[str = "&"]
     Ampersand,
-    #[token("|")]
+    #[str = "|"]
     VBar,
-    #[token("~")]
+    #[str = "~"]
     Tilde,
 
-    #[token("<<")]
+    #[str = "<<"]
     LDoubleChevron,
-    #[token(">>")]
+    #[str = ">>"]
     RDoubleChevron,
 
-    #[token("+")]
+    #[str = "+"]
     Plus,
-    #[token("-")]
+    #[str = "-"]
     Minus,
-    #[token("*")]
+    #[str = "*"]
     Star,
-    #[token("/")]
+    #[str = "/"]
     Slash,
-    #[token("%")]
+    #[str = "%"]
     Percent,
 
-    #[token("<")]
+    #[str = "<"]
     LChevron,
-    #[token("<=")]
+    #[str = "<="]
     LChevronEq,
-    #[token(">")]
+    #[str = ">"]
     RChevron,
-    #[token(">=")]
+    #[str = ">="]
     RChevronEq,
-    #[token("==")]
+    #[str = "=="]
     DoubleEq,
-    #[token("!=")]
+    #[str = "!="]
     BangEq,
 
-    #[token("&&")]
+    #[str = "&&"]
     DoubleAmpersand,
-    #[token("||")]
+    #[str = "||"]
     DoubleVBar,
-    #[token("!")]
+    #[str = "!"]
     Bang,
+}
 
-    #[regex(r"[^\d\W]\w*", |lex| lex.slice().to_string())]
-    Name(String),
-    #[regex(r"(?:0(?:_?0)*|[1-9](?:_?[0-9])*)", |lex| lex.slice().parse().ok())]
-    Intnumber(u64),
-    #[regex(r"//[^\n]*")]
-    Comment,
-    #[regex("\"[^\\n\"\\\\]*(?:\\\\.[^\\n\"\\\\]*)*\"", |lex| lex.slice().to_string())]
-    String(String),
-    #[regex("\'[^\\n\'\\\\](?:\\\\.[^\\n\'\\\\]*)*\'", to_character)]
-    Char(char),
-
-    #[token("const")]
+#[derive(Clone, Copy, LexFromString)]
+pub enum Keyword {
+    #[str = "const"]
     Const,
-    #[token("use")]
+    #[str = "use"]
     Use,
-    #[token("unit")]
-    Unit,
-    #[token("with")]
+    #[str = "with"]
     With,
-    #[token("var")]
+    #[str = "var"]
     Var,
-    #[token("static")]
+    #[str = "static"]
     Static,
-    #[token("cast")]
+    #[str = "cast"]
     Cast,
-    #[token("transmute")]
-    Pun,
-    #[token("out")]
+    #[str = "transmute"]
+    Transmute,
+    #[str = "out"]
     Out,
-    #[token("is")]
+    #[str = "is"]
     Is,
-    #[token("extern")]
+    #[str = "extern"]
     Extern,
-    #[token("fn")]
-    Fn,
-    #[token("while")]
+    #[str = "while"]
     While,
-    #[token("for")]
+    #[str = "for"]
     For,
-    #[token("in")]
+    #[str = "in"]
     In,
-    #[token("if")]
+    #[str = "if"]
     If,
-    #[token("else")]
+    #[str = "else"]
     Else,
-    #[token("struct")]
+    #[str = "struct"]
     Struct,
-    #[token("enum")]
+    #[str = "enum"]
     Enum,
-    #[token("return")]
+    #[str = "return"]
     Return,
-    #[token("break")]
+    #[str = "break"]
     Break,
-    #[token("continue")]
+    #[str = "continue"]
     Continue,
-    #[token("template")]
+    #[str = "template"]
     Template,
-    #[token("interface")]
+    #[str = "interface"]
     Interface,
-    #[token("closure")]
+    #[str = "closure"]
     Closure,
-
-    #[token("true")]
+    #[str = "true"]
     True,
-    #[token("false")]
+    #[str = "false"]
     False,
-    #[token("null")]
+    #[str = "null"]
     Null
 }
 
+mod operators {
+    use clyde_macros::Operator;
 
-#[derive(Debug, Clone)]
-pub struct Token(pub TokenKind, pub Range<usize>);
+    #[derive(Clone, Copy, Operator)]
+    pub enum BinaryOp {
+        #[precedence = 11]
+        #[token = "*"]
+        Mul,
+        #[precedence = 11]
+        #[token = "/"]
+        Div,
+        #[precedence = 11]
+        #[token = "%"]
+        Mod,
 
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct LexError(pub Range<usize>, pub String);
+        #[precedence = 10]
+        #[token = "+"]
+        Plus,
+        #[precedence = 10]
+        #[token = "-"]
+        Minus,
 
-pub fn lex_input_string(source: Source) -> (Vec<Token>, Vec<LexError>) {
-    let string = match source.as_str() {
-        Ok(string) => string,
-        Err(err) => {
-            let start = err.valid_up_to();
-            let err = LexError(
-                source.translate(start..start+1),
-                format!("Non-Utf8 character in input stream"));
-            return (vec![], vec![err]);
-        }
-    };
-    let mut lexer = TokenKind::lexer(string);
-    let mut tokens = Vec::new();
-    let mut errors = Vec::new();
-    loop {
-        let Some(token) = lexer.next() else {
-            break;
-        };
-        let span = lexer.span();
-        let mut token = match token {
-            Ok(token) => token,
-            Err(err) =>  {
-                if err.0.is_empty() { // default error, make a better one
-                    errors.push(
-                        LexError(
-                            source.translate(span.clone()),
-                            format!("Invalid character `{}` in input stream", &string[span.clone()]))
-                    );
-                } else {
-                    errors.push(err);
-                }
-                continue;
-            }
-        };
-        match &mut token {
-            TokenKind::Comment => {
-                continue;
-            }
-            TokenKind::String(s) => {
-                *s = snailquote::unescape(s).unwrap_or_else(|err| {
-                    errors.push(
-                        LexError(
-                            source.translate(span.clone()), err.to_string())
-                    );
-                    "".to_string()
-                });
-            }
-            _ => ()
-        }
-        tokens.push(Token(token, source.translate(span)));
+        #[precedence = 9]
+        #[token = "<<"]
+        LeftShift,
+        #[precedence = 9]
+        #[token = ">>"]
+        RightShift,
+
+        #[precedence = 8]
+        #[token = "&"]
+        BinaryAnd,
+        #[precedence = 7]
+        #[token = "^"]
+        BinaryXor,
+        #[precedence = 6]
+        #[token = "|"]
+        BinaryOr,
+
+        #[precedence = 5]
+        #[token = "=="]
+        Eqals,
+        #[precedence = 5]
+        #[token = "!="]
+        NotEquals,
+        #[precedence = 5]
+        #[token = ">"]
+        GreaterThan,
+        #[precedence = 5]
+        #[token = ">="]
+        GreaterEqual,
+        #[precedence = 5]
+        #[token = "<"]
+        LessThan,
+        #[precedence = 5]
+        #[token = "<="]
+        LessEqual,
+
+        #[precedence = 4]
+        #[token = "&&"]
+        BooleanAnd,
+        #[precedence = 3]
+        #[token = "||"]
+        BooleanOr,
     }
 
-    (tokens, errors)
-}
+    #[derive(Clone, Copy, Operator)]
+    pub enum AssignmentOp {
+        #[token = "="]
+        Assign,
+        #[token = ":="]
+        WalrusAssign,
 
-fn to_character<'a>(lex: &'a mut logos::Lexer<TokenKind>) -> Result<char, <TokenKind as Logos<'a>>::Error> {
-    let span = lex.span(); 
-    let res = snailquote::unescape(lex.slice()).map_err(|err| LexError(span.clone(), err.to_string()))?;
+        #[token = "+="]
+        PlusAssign,
+        #[token = "-="]
+        MinusAssing,
+        #[token = "*="]
+        MulAssign,
+        #[token = "/="]
+        DivAssign,
+        #[token = "%="]
+        ModAssign,
 
-    if res.chars().count() > 1 {
-        return Err(LexError(span.clone(), "Found multi-char character literal".to_string()));
+        #[token = "||="]
+        BinaryOrAssign,
+        #[token = "&&="]
+        BinaryAndAssign,
+        #[token = "^="]
+        BinaryXorAssign,
+
+        #[token = "<<="]
+        ShlAssign,
+        #[token = ">>="]
+        ShrAssign,
+
+        #[token = "&="]
+        AndAssign,
+        #[token = "|="]
+        OrAssign,
     }
 
-    Ok(res.chars().nth(0).unwrap())
+    #[derive(Clone, Copy, Operator)]
+    pub enum UnaryOp {
+        #[token = "~"]
+        BitwiseNot,
+        #[token = "!"]
+        Not,
+        #[token = "+"]
+        Plus,
+        #[token = "-"]
+        Minus,
+        #[token = "*"]
+        Deref,
+    }
 }
 

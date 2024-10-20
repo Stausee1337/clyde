@@ -458,34 +458,3 @@ impl std::fmt::Debug for NodeId {
     }
 }
 
-pub fn handle_stmt_error<'sess>(
-    recovery: ErrorRecovery<usize, crate::lexer::TokenKind, UserError>,
-    diagnostics: &'sess DiagnosticsCtxt
-) -> Result<Stmt, ParseError<usize, crate::lexer::TokenKind, UserError>> {
-    match recovery.error {
-        lalrpop_util::ParseError::UnrecognizedToken { expected, token } if expected.contains(&"\";\"".to_string())
-            => diagnostics.error("forgot semicolon `;`").with_span(token.0-2..token.0-1),
-        lalrpop_util::ParseError::UnrecognizedToken { expected, token } => {
-            let expected = expected
-                .iter()
-                .map(|s| s.replace("\x22", "`"))
-                .collect::<Vec<_>>()
-                .join_to_human_readable();
-            diagnostics.error(
-                format!("expected one of {}, found `{}`",
-                    expected,
-                    token.1
-                )
-            ).with_span(token.0..token.2)
-        }
-        lalrpop_util::ParseError::UnrecognizedEof { location, .. } 
-            => diagnostics.error("unexpected EOF").with_pos(location),
-        _ => return Err(recovery.error),
-    };
-    Ok(Stmt {
-        kind: StmtKind::Err,
-        span: DUMMY_SPAN,
-        node_id: NODE_ID_UNDEF
-    })
-}
-
