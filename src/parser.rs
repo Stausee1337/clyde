@@ -1,22 +1,77 @@
-use std::path::Path;
+use std::{path::Path, marker::PhantomData};
 
-use crate::{lexer::{Token, self}, ast, diagnostics::DiagnosticsCtxt, interface::Session};
+use crate::{interface::Session, ast, lexer::{Punctuator, Keyword, Token, TokenKind, Span}, symbol::Symbol};
 
-struct ParseContext<'sess> {
-    pub diagnostics: &'sess DiagnosticsCtxt,
-    pub current_node_id: u32
+pub struct Cursor<'a> {
+    current: *const Token<'a>,
+    end: *const Token<'a>,
+    _phantom: PhantomData<&'a ()>
 }
 
-impl<'tcx> ParseContext<'tcx> {
-    pub fn make_node_id(&mut self) -> ast::NodeId {
-        let new_node_id = self.current_node_id + 1;
-        ast::NodeId(std::mem::replace(&mut self.current_node_id, new_node_id))
+impl<'a> Clone for Cursor<'a> {
+    fn clone(&self) -> Self {
+        Self {
+            current: self.current,
+            end: self.current,
+            _phantom: PhantomData::default()
+        }
     }
 }
 
+impl<'a> Cursor<'a> {
+    pub fn punct(&self) -> Option<Punctuator> {
+        if let TokenKind::Punctuator(punctuator) = self.current().kind {
+            return Some(punctuator);
+        }
+        None
+    }
+
+    pub fn keyword(&self) -> Option<Keyword> {
+        if let TokenKind::Keyword(keyword) = self.current().kind {
+            return Some(keyword);
+        }
+        None
+    }
+
+    pub fn symbol(&self) -> Option<Symbol> {
+        if let TokenKind::Symbol(symbol) = self.current().kind {
+            return Some(symbol);
+        }
+        None
+    }
+
+    pub fn literal(&self) -> Option<&'a str> {
+        if let TokenKind::Literal(literal) = self.current().kind {
+            return Some(literal);
+        }
+        None
+    }
+
+    pub fn current(&self) -> &'a Token<'a> {
+        unsafe { &* self.current }
+    }
+
+    pub fn span(&self) -> Span {
+        self.current().span
+    }
+
+    pub fn advance(&mut self) {
+        if self.end <= self.current {
+            panic!("Cursor is at EOS");
+        }
+        unsafe {
+            self.current = self.current.add(1);
+        }
+    }
+}
+
+pub struct Parser<'a> {
+    cursor: Cursor<'a>
+}
+
 pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile, ()> {
-    let diagnostics = session.diagnostics();
-    let source = session.file_cacher().load_file(path)?;
+    let _diagnostics = session.diagnostics();
+    let _source = session.file_cacher().load_file(path)?;
 
     todo!()
 }

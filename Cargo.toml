@@ -8,13 +8,7 @@ edition = "2021"
 name = "clydec"
 path = "src/main.rs"
 
-[build-dependencies]
-tiny-keccak = "2.0.2"
-lalrpop = "0.20.0"
-
 [dependencies]
-logos = "0.14.0"
-lalrpop-util = { version = "0.20.0", default-features = false }
 snailquote = "0.3.1"
 bumpalo = "3.15.3"
 indexmap = "2.2.3"
@@ -29,4 +23,5 @@ num-traits = "0.2.19"
 hashbrown = "0.15.0"
 clyde_macros = { path = "./clyde_macros" }
 rustix = { version = "0.38.37", features = ["mm"] }
+phf = { version = "0.11.2", features = ["macros"] }
 

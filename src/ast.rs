@@ -1,6 +1,5 @@
 use std::ops::Range;
 use std::hash::Hash;
-use lalrpop_util::{ErrorRecovery, ParseError};
 
 use crate::diagnostics::{JoinToHumanReadable, DiagnosticsCtxt};
 use crate::symbol::Symbol;
