@@ -3,6 +3,8 @@ use std::{ops::{DerefMut, Deref}, marker::PhantomData};
 use crate::{symbol::Symbol, parser::{TokenCursor, ParseToken}, interface::File, string_internals};
 use clyde_macros::{LexFromString, Operator};
 
+use tinyvec::ArrayVec;
+
 macro_rules! Token {
     [.] => { crate::lexer::punctuators::Dot };
     [,] => { crate::lexer::punctuators::Comma };
@@ -75,7 +77,7 @@ macro_rules! goto {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(usize)]
-pub enum LexState {
+enum LexState {
     Initial = 0,
     CommentOrPunct = 1,
     CharOrStringLiteral = 2,
@@ -95,6 +97,7 @@ pub enum LexError {
     InvalidCharacter,
     IncompleteIntegerLiteral,
     NonDecimalFloatingPointLiteral,
+    StringError(StringError)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +117,130 @@ impl Span {
 
     pub const fn zero() -> Span {
         Span::new(0, 0)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StringKind {
+    String, Char
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum StringError {
+    UnclosedLiteral,
+    EmptyCharLiteral,
+    MultiCharLiteral,
+    UnknownCharEscape,
+    InvalidCharInHexByte
+}
+
+#[derive(PartialEq, Eq)]
+pub enum StringParseState {
+    Normal, Escape, HexByte(ArrayVec<[u8; 2]>), Unicode(ArrayVec<[u8; 5]>), Ended
+}
+
+pub struct StringParser {
+    kind: StringKind,
+    state: StringParseState,
+    length: usize,
+}
+
+impl StringParser {
+    pub fn new(kind: StringKind) -> Self {
+        Self {
+            kind,
+            state: StringParseState::Normal,
+            length: 0
+        }
+    }
+
+    fn normal(&mut self, char: char) -> Result<Option<char>, StringError> {
+        match char {
+            '\\' => self.state = StringParseState::Escape,
+            '\n' | '\r' => {
+                self.state = StringParseState::Ended;
+                return Err(StringError::UnclosedLiteral)
+            },
+            '\'' if self.kind == StringKind::Char => {
+                self.state = StringParseState::Ended;
+                if self.length < 1 {
+                    return Err(StringError::EmptyCharLiteral);
+                } else if self.length > 1 {
+                    return Err(StringError::MultiCharLiteral);
+                }
+            }
+            '"' if self.kind == StringKind::String => {
+                self.state = StringParseState::Ended;
+            }
+            _ => return Ok(Some(char)),
+        }
+        return Ok(None);
+    }
+
+    fn escape(&mut self, char: char) -> Result<Option<char>, StringError> {
+        let result = match char {
+            'a' => '\x07',
+            'b' => '\x08',
+            'f' => '\x0C',
+            'n' => '\x0A',
+            'r' => '\x0D',
+            't' => '\x09',
+            'v' => '\x0B',
+            '\\' => '\\',
+            '\'' if self.kind == StringKind::Char => '\'',
+            '"' if self.kind == StringKind::String => '"',
+            'x' => {
+                self.state = StringParseState::HexByte(ArrayVec::new());
+                return Ok(None);
+            }
+            'u' | 'U' => {
+                self.state = StringParseState::Unicode(ArrayVec::new());
+                return Ok(None);
+            }
+            _ => return Err(StringError::UnknownCharEscape)
+        };
+        self.state = StringParseState::Normal;
+        Ok(Some(result))
+    }
+
+    fn hex_byte(&mut self, char: char) -> Result<Option<char>, StringError> {
+        let StringParseState::HexByte(ref mut vec) = self.state else {
+            unreachable!();
+        };
+        let (('a'..='f') | ('A'..='F') | ('0'..='9')) = char else {
+            return Err(StringError::InvalidCharInHexByte);
+        };
+        vec.push(char as u8);
+        if vec.len() == 2 {
+            let src = unsafe { std::str::from_utf8_unchecked(vec.as_slice()) };
+            let char = u8::from_str_radix(src, 16).unwrap();
+            self.state = StringParseState::Normal;
+            return Ok(Some(char as char));
+        }
+        return Ok(None);
+    }
+
+    fn unicode(&mut self, _char: char) -> Result<Option<char>, StringError> {
+        todo!()
+    }
+
+    pub fn feed(&mut self, char: char) -> Result<Option<char>, StringError> {
+        let result = match self.state {
+            StringParseState::Normal => self.normal(char)?,
+            StringParseState::Escape => self.escape(char)?,
+            StringParseState::HexByte(..) => self.hex_byte(char)?,
+            StringParseState::Unicode(..) => self.unicode(char)?,
+            StringParseState::Ended =>
+                panic!("calling feed(..) on ended StringParser")
+        };
+        if result.is_some() {
+            self.length += 1;
+        }
+        return Ok(result);
+    }
+
+    pub fn ended(&self) -> bool {
+        self.state == StringParseState::Ended
     }
 }
 
@@ -194,14 +321,15 @@ impl<'a> SourceCursor<'a> {
         }
     }
 
-    fn matches(&self, pattern: &[u8]) -> bool {
+    fn matches(&self, offset: usize, pattern: &[u8]) -> bool {
+        let offset = offset as isize;
         let rem = self.length() - self.position();
-        if rem > pattern.len() {
+        if pattern.len() > rem {
             return false;
         }
-        for i in 0..rem {
-            let b = unsafe { *self.current.add(i) };
-            if b != pattern[i] {
+        for i in 0..(pattern.len() as isize) {
+            let b = unsafe { *self.current.offset(i - offset) };
+            if b != pattern[i as usize] {
                 return false;
             }
         }
@@ -308,6 +436,50 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn char_or_string_literal(&mut self) -> Result<LexState, LexError> {
+        let start = self.position();
+        let kind = match self.current().unwrap() {
+            '"' => StringKind::String,
+            '\'' => StringKind::Char,
+            _ => unreachable!()
+        };
+
+        let mut parser = StringParser::new(kind);
+
+        let mut length = 1;
+        let mut error = None;
+        loop {
+            let next = must!(self.bump());
+            length += 1;
+            match parser.feed(next) {
+                Ok(..) if parser.ended() => break,
+                Ok(..) => continue,
+                Err(err) if parser.ended() => {
+                    error = Some(err);
+                    break;
+                },
+                Err(err) => {
+                    error = Some(err);
+                    continue;
+                },
+            }
+        }
+        if !self.eat_newline() {
+            self.bump().unwrap();
+        }
+        if let Some(error) = error {
+            return Err(LexError::StringError(error));
+        }
+
+        let kind = match kind {
+            StringKind::Char => LiteralKind::Char,
+            StringKind::String => LiteralKind::String,
+        };
+
+        let literal = self.slice(self.position() - start, length).unwrap();
+        self.token = Token {
+            kind: TokenKind::Literal(literal, kind),
+            span: self.make_span(start, self.position() - 1)
+        };
         goto!(End);
     }
 
@@ -413,7 +585,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn comment(&mut self) -> Result<LexState, LexError> {
-        let multiline_comment = self.matches(b"/*");
+        let multiline_comment = self.matches(2, b"/*");
         self.bump();
         let mut level = multiline_comment as u32;
         let mut current = self.bump();
@@ -423,13 +595,15 @@ impl<'a> Tokenizer<'a> {
                 if current.is_none() {
                     return Err(LexError::UnexpectedEOS);
                 }
-                if self.matches(b"/*") {
+                if self.matches(1, b"/*") {
                     level += 1;
-                } else if self.matches(b"*/") {
+                } else if self.matches(1, b"*/") {
                     level -= 1;
                 }
 
                 if level == 0 {
+                    self.bump().unwrap();
+                    self.bump().unwrap();
                     break;
                 }
             } else if ate_newline || current.is_none() {

@@ -24,4 +24,5 @@ hashbrown = "0.15.0"
 clyde_macros = { path = "./clyde_macros" }
 rustix = { version = "0.38.37", features = ["mm"] }
 phf = { version = "0.11.2", features = ["macros"] }
+tinyvec = "1.8.0"
 
