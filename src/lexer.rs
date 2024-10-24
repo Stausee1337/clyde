@@ -1,4 +1,4 @@
-use std::{ops::{DerefMut, Deref}, marker::PhantomData};
+use std::{ops::{DerefMut, Deref}, marker::PhantomData, panic::{catch_unwind, resume_unwind}, any::{Any, TypeId}};
 
 use crate::{symbol::Symbol, parser::{TokenCursor, ParseToken}, interface::File, string_internals};
 use clyde_macros::{LexFromString, Operator};
@@ -64,7 +64,7 @@ macro_rules! must {
     ($e:expr) => {
         match $e {
             Some(chr) => chr,
-            None => return Err(LexError::UnexpectedEOS),
+            None => return Err(LexErrorKind::UnexpectedEOS),
         }
     };
 }
@@ -92,12 +92,19 @@ enum LexState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum LexError {
+pub enum LexErrorKind {
     UnexpectedEOS,
     InvalidCharacter,
     IncompleteIntegerLiteral,
     NonDecimalFloatingPointLiteral,
-    StringError(StringError)
+    StringError(StringError),
+    InvalidUtf8
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LexError {
+    kind: LexErrorKind,
+    span: Span
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -276,6 +283,15 @@ pub struct TokenStream<'a> {
     tokens: Vec<Token<'a>>
 }
 
+impl<'a> TokenStream<'a> {
+    pub fn empty() -> Self {
+        Self { tokens: Vec::new() }
+    }
+}
+
+#[derive(Debug)]
+struct Utf8Error;
+
 #[derive(Clone)]
 struct SourceCursor<'a> {
     current: *const u8,
@@ -296,9 +312,16 @@ impl<'a> SourceCursor<'a> {
 
     #[doc(hidden)]
     fn _step(&mut self) -> Option<char> {
+        if self._position >= self.length() {
+            return None;
+        }
         unsafe {
-            let char = string_internals::next_code_point(self);
-            char.map(|char| char::from_u32_unchecked(char))
+            let char = string_internals::next_code_point(self)
+                .and_then(char::from_u32)
+                .ok_or(Utf8Error)
+                .unwrap();
+
+            Some(char)
         }
     }
 
@@ -365,7 +388,7 @@ struct Tokenizer<'a> {
 }
 
 impl<'a> Tokenizer<'a> {
-    fn tokenize_relative_source(mut cursor: SourceCursor<'a>, offset: u32) -> TokenStream<'a> {
+    fn tokenize_relative_source(mut cursor: SourceCursor<'a>, offset: u32) -> (TokenStream<'a>, Vec<LexError>) {
         let mut tokenizer = Tokenizer {
             offset,
             bol: 0,
@@ -380,25 +403,27 @@ impl<'a> Tokenizer<'a> {
         tokenizer.lex_to_stream()
     }
     
-    fn make_span(&self, mut start: usize, mut end: usize) -> Span {
-        start -= 1; end -= 1; // self.position() is always one step in the future
-        Span::new(
-            start as u32 + self.offset,
-            end as u32 + self.offset)
-    }
-
-    fn lex_to_stream(&mut self) -> TokenStream<'a> {
+    fn lex_to_stream(&mut self) -> (TokenStream<'a>, Vec<LexError>) {
+        let mut tokens = Vec::new();
+        let mut errors = Vec::new();
         loop {
-            let token = self.lex().unwrap();
-            let Some(token) = token else {
-                break;
-            };
-            println!("{token:?}");
+            let start = self.position();
+            match self.lex() {
+                Ok(Some(token)) => tokens.push(token),
+                Ok(None) => break,
+                Err(kind) => {
+                    errors.push(LexError {
+                        kind,
+                        span: self.make_span(start, self.position())
+                    });
+                }
+            }
         }
-        todo!()
+        let stream = TokenStream { tokens };
+        (stream, errors)
     }
 
-    fn initial(&mut self) -> Result<LexState, LexError> {
+    fn initial(&mut self) -> Result<LexState, LexErrorKind> {
         let mut current = must!(self.current());
         while let ' ' | '\x09'..='\x0d' = current {
             let next = if self.eat_newline() { self.current() } else { self.bump() };
@@ -428,14 +453,14 @@ impl<'a> Tokenizer<'a> {
         goto!(PunctOrError);
     }
 
-    fn comment_or_punct(&mut self) -> Result<LexState, LexError> {
+    fn comment_or_punct(&mut self) -> Result<LexState, LexErrorKind> {
         if let Some('/' | '*') = self.lookahead() {
             goto!(Comment);
         }
         goto!(PunctOrError);
     }
 
-    fn char_or_string_literal(&mut self) -> Result<LexState, LexError> {
+    fn char_or_string_literal(&mut self) -> Result<LexState, LexErrorKind> {
         let start = self.position();
         let kind = match self.current().unwrap() {
             '"' => StringKind::String,
@@ -467,7 +492,7 @@ impl<'a> Tokenizer<'a> {
             self.bump().unwrap();
         }
         if let Some(error) = error {
-            return Err(LexError::StringError(error));
+            return Err(LexErrorKind::StringError(error));
         }
 
         let kind = match kind {
@@ -483,7 +508,7 @@ impl<'a> Tokenizer<'a> {
         goto!(End);
     }
 
-    fn symbol_or_keyword(&mut self) -> Result<LexState, LexError> {
+    fn symbol_or_keyword(&mut self) -> Result<LexState, LexErrorKind> {
         let start = self.position();
         let mut length = 1;
         loop {
@@ -526,7 +551,7 @@ impl<'a> Tokenizer<'a> {
         self.slice(self.position() - start, length).unwrap()
     }
 
-    fn number_literal(&mut self) -> Result<LexState, LexError> {
+    fn number_literal(&mut self) -> Result<LexState, LexErrorKind> {
         let start = self.position();
         if let Some('0') = self.current() {
             let next_char = self.lookahead();
@@ -552,7 +577,7 @@ impl<'a> Tokenizer<'a> {
         goto!(End);
     }
 
-    fn punct_or_error(&mut self) -> Result<LexState, LexError> {
+    fn punct_or_error(&mut self) -> Result<LexState, LexErrorKind> {
         let start = self.position();
         let mut length = Punctuator::MAX_LENGTH;
         let mut punctuator = self
@@ -569,7 +594,7 @@ impl<'a> Tokenizer<'a> {
         }
 
         let Some(punctuator) = punctuator else {
-            return Err(LexError::InvalidCharacter);
+            return Err(LexErrorKind::InvalidCharacter);
         };
 
         for _ in 0..length {
@@ -584,7 +609,7 @@ impl<'a> Tokenizer<'a> {
         goto!(End);
     }
 
-    fn comment(&mut self) -> Result<LexState, LexError> {
+    fn comment(&mut self) -> Result<LexState, LexErrorKind> {
         let multiline_comment = self.matches(2, b"/*");
         self.bump();
         let mut level = multiline_comment as u32;
@@ -593,7 +618,7 @@ impl<'a> Tokenizer<'a> {
         loop {
             if multiline_comment {
                 if current.is_none() {
-                    return Err(LexError::UnexpectedEOS);
+                    return Err(LexErrorKind::UnexpectedEOS);
                 }
                 if self.matches(1, b"/*") {
                     level += 1;
@@ -626,7 +651,7 @@ impl<'a> Tokenizer<'a> {
     /// This is a helper function for specifically lexing non-decimal
     /// integer literals. It does not consider floating points to be
     /// valid and error on seeing a `Dot` token behind the number
-    fn integer_literal(&mut self) -> Result<LexState, LexError> {
+    fn integer_literal(&mut self) -> Result<LexState, LexErrorKind> {
         let span_start = self.position();
         let current = self.bump().unwrap(); // In this case always '0'
         let mode = match current {
@@ -639,10 +664,10 @@ impl<'a> Tokenizer<'a> {
         let start = self.position();
         let literal = self.lex_digits(start, 0, mode);
         if literal.len() == 0 {
-            return Err(LexError::IncompleteIntegerLiteral);
+            return Err(LexErrorKind::IncompleteIntegerLiteral);
         }
         if let Some('.') = self.current() {
-            return Err(LexError::NonDecimalFloatingPointLiteral);
+            return Err(LexErrorKind::NonDecimalFloatingPointLiteral);
         }
 
         self.token = Token {
@@ -653,7 +678,7 @@ impl<'a> Tokenizer<'a> {
         goto!(End);
     }
 
-    fn lex(&mut self) -> Result<Option<Token<'a>>, LexError> {
+    fn lex(&mut self) -> Result<Option<Token<'a>>, LexErrorKind> {
         let mut state = LexState::Initial;
         let states = [
             Self::initial,
@@ -705,6 +730,13 @@ impl<'a> Tokenizer<'a> {
     fn current(&self) -> Option<char> {
         self.current
     }
+
+    fn make_span(&self, mut start: usize, mut end: usize) -> Span {
+        start -= 1; end -= 1; // self.position() is always one step in the future
+        Span::new(
+            start as u32 + self.offset,
+            end as u32 + self.offset)
+    }
 }
 
 impl<'a> Deref for Tokenizer<'a> {
@@ -721,9 +753,25 @@ impl<'a> DerefMut for Tokenizer<'a> {
     }
 }
 
-pub fn tokenize<'a>(source_file: &'a File) -> TokenStream<'a> {
+fn is_utf8_error(err: &(dyn Any + 'static)) -> bool {
+    err.type_id() == TypeId::of::<Utf8Error>()
+}
+
+pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
     let cursor = SourceCursor::new(source_file.contents());
-    Tokenizer::tokenize_relative_source(cursor, source_file.relative_start())
+    let error = catch_unwind(
+        || Tokenizer::tokenize_relative_source(cursor, source_file.relative_start()));
+    match error {
+        Ok(ok) => return ok,
+        Err(err) if is_utf8_error(&err) => {
+            let err = LexError {
+                kind: LexErrorKind::InvalidUtf8,
+                span: Span::zero()
+            };
+            return (TokenStream::empty(), vec![err]);
+        }
+        Err(e) => resume_unwind(e)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]

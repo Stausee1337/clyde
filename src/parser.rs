@@ -77,7 +77,7 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     let _diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
-    lexer::tokenize(&source);
+    let (_stream, errors) = lexer::tokenize(&source);
 
     todo!()
 }
