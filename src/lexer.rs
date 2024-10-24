@@ -449,7 +449,7 @@ impl<'a> Tokenizer<'a> {
         let mut error = None;
         loop {
             let next = must!(self.bump());
-            length += 1;
+            length += next.len_utf8();
             match parser.feed(next) {
                 Ok(..) if parser.ended() => break,
                 Ok(..) => continue,
