@@ -69,14 +69,12 @@ impl DiagnosticsCtxtInner {
                 Where::Position(pos) => *pos,
                 Where::Unspecified => todo!()
             };
-            let file_idx = self.file_cacher.lookup_file(location);
-            let source = std::str::from_utf8(self.file_cacher.entire_file_contents(file_idx))
-                .expect("FIXME: this error message shouldn't be here");
-            let path = self.file_cacher.file_path(file_idx);
+            let file = self.file_cacher.lookup_file(location as u32);
+            let source = std::str::from_utf8(file.contents()).unwrap();
             let source_positions = event.location.pos_in_source(source);
             eprintln!("{}: {}:{}: {}",
                 event.kind,
-                path,
+                file.path(),
                 source_positions.first()
                     .map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
                     .unwrap_or(String::new()),

@@ -17,13 +17,6 @@ const fn utf8_acc_cont_byte(ch: u32, byte: u8) -> u32 {
     (ch << 6) | (byte & CONT_MASK) as u32
 }
 
-/// Checks whether the byte is a UTF-8 continuation byte (i.e., starts with the
-/// bits `10`).
-#[inline]
-pub(super) const fn utf8_is_cont_byte(byte: u8) -> bool {
-    (byte as i8) < -64
-}
-
 /// Reads the next code point out of a byte iterator (assuming a
 /// UTF-8-like encoding).
 ///

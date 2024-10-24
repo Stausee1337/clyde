@@ -1,14 +1,14 @@
 use std::{path::Path, marker::PhantomData};
 
-use crate::{interface::Session, ast, lexer::{Punctuator, Keyword, Token, TokenKind, Span}, symbol::Symbol};
+use crate::{interface::Session, ast, lexer::{Punctuator, Keyword, Token, TokenKind, Span, self, LiteralKind}, symbol::Symbol};
 
-pub struct Cursor<'a> {
+pub struct TokenCursor<'a> {
     current: *const Token<'a>,
     end: *const Token<'a>,
     _phantom: PhantomData<&'a ()>
 }
 
-impl<'a> Clone for Cursor<'a> {
+impl<'a> Clone for TokenCursor<'a> {
     fn clone(&self) -> Self {
         Self {
             current: self.current,
@@ -18,7 +18,7 @@ impl<'a> Clone for Cursor<'a> {
     }
 }
 
-impl<'a> Cursor<'a> {
+impl<'a> TokenCursor<'a> {
     pub fn punct(&self) -> Option<Punctuator> {
         if let TokenKind::Punctuator(punctuator) = self.current().kind {
             return Some(punctuator);
@@ -40,9 +40,9 @@ impl<'a> Cursor<'a> {
         None
     }
 
-    pub fn literal(&self) -> Option<&'a str> {
-        if let TokenKind::Literal(literal) = self.current().kind {
-            return Some(literal);
+    pub fn literal(&self) -> Option<(&'a str, LiteralKind)> {
+        if let TokenKind::Literal(literal, kind) = self.current().kind {
+            return Some((literal, kind));
         }
         None
     }
@@ -66,12 +66,18 @@ impl<'a> Cursor<'a> {
 }
 
 pub struct Parser<'a> {
-    cursor: Cursor<'a>
+    cursor: TokenCursor<'a>
+}
+
+pub trait ParseToken {
+    fn peek(cursor: TokenCursor) -> bool;
 }
 
 pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile, ()> {
     let _diagnostics = session.diagnostics();
-    let _source = session.file_cacher().load_file(path)?;
+    let source = session.file_cacher().load_file(path)?;
+
+    lexer::tokenize(&source);
 
     todo!()
 }

@@ -1,9 +1,9 @@
 
-use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::{FromStr, Utf8Error}, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs::File, cell::{OnceCell, RefCell}, rc::Rc, ops::Range};
+use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs, cell::{OnceCell, RefCell}, rc::Rc};
 
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 
-use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck};
+use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck, lexer::Span};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -154,96 +154,74 @@ fn matches_to_config(matches: &getopts::Matches) -> Cfg {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Source {
-    pub start: usize,
-    pub end: usize,
+#[derive(Clone)]
+pub struct File {
+    path: PathBuf,
+    contents: &'static [u8],
+    byte_span: Span
 }
 
-impl Source {
-    pub fn as_str(&self) -> Result<&str, Utf8Error> {
-        let file_cacher = FILE_CACHER.with(|cacher| cacher.clone());
-        let file_idx = file_cacher.lookup_file(self.start);
-        let contents = file_cacher.entire_file_contents(file_idx);
-        std::str::from_utf8(contents)
+impl File {
+    pub fn contents(&self) -> &[u8] {
+        self.contents
     }
 
-    pub fn translate(&self, range: Range<usize>) -> Range<usize> {
-        self.start + range.start..self.start + range.end
+    pub fn translate(&self, span: Span) -> Span {
+        Span::new(
+            self.byte_span.start + span.start,
+            self.byte_span.start + span.end)
     }
 
     pub fn path(&self) -> &str {
-        // FileCacher::decode_path(&self.path)
-        todo!()
+        FileCacher::decode_path(&self.path)
     }
-}
 
-#[derive(Default)]
-struct FilesInner {
-    path_map: Vec<PathBuf>,
-    file_pos_map: Vec<Source>
-}
-
-impl FilesInner {
-    fn source_from_path_and_pos(&mut self, path: &Path, pos: usize, len: usize) -> Source {
-        let source = Source {
-            start: pos,
-            end: pos + len
-        };
-        self.path_map.push(path.to_owned());
-        self.file_pos_map.push(source);
-
-        source
+    pub fn relative_start(&self) -> u32 {
+        self.byte_span.start
     }
 }
 
 pub struct FileCacher {
-    files: RefCell<FilesInner>,
+    files: RefCell<Vec<Rc<File>>>,
     storage: RefCell<ContinuousSourceStorage>
 }
 
 impl FileCacher {
     fn new() -> Self {
         Self {
-            files: RefCell::new(FilesInner::default()),
-            // working_dir: working_dir.to_owned(),
+            files: RefCell::new(Default::default()),
             storage: RefCell::new(ContinuousSourceStorage::allocate()),
         }
     }
 
-    pub fn load_file(&self, path: &Path) -> Result<Source, ()> {
+    pub fn load_file(&self, path: &Path) -> Result<Rc<File>, ()> {
         let mut storage = self.storage.borrow_mut();
-        let (pos, len) = File::open(path)
+        let (contents, pos, len) = fs::File::open(path)
             .and_then(|mut f| {
                 let metadata = f.metadata()?;
                 let size = metadata.len() as usize;
                 let (buf, pos) = storage.new_buffer(size);
                 f.read_exact(buf)?;
-                Ok((pos, size))
+                Ok((buf, pos as u32, size as u32))
             })
             .map_err(|err| {
                 let file = FileCacher::decode_path(path);
                 eprintln!("ERROR: couldn't read {file}: {err}");
             })?;
-        let mut inner = self.files.borrow_mut();
-        Ok(inner.source_from_path_and_pos(path, pos, len))
+        let mut files = self.files.borrow_mut();
+        let source = Rc::new(File {
+            path: path.to_owned(),
+            contents,
+            byte_span: Span::new(pos, pos + len),
+        });
+        files.push(source.clone());
+        Ok(source)
     }
 
-    pub fn lookup_file(&self, needle: usize) -> usize {
-        let inner = self.files.borrow();
-        inner.file_pos_map.partition_point(|pos| !(pos.start..pos.end).contains(&needle))
-    }
-
-    pub fn entire_file_contents(&self, idx: usize) -> &'static [u8] {
-        let inner = self.files.borrow();
-        let storage = self.storage.borrow();
-        let source = inner.file_pos_map[idx];
-        storage.bytes_from_absolute_range(source.start, source.end)
-    }
-
-    pub fn file_path(&self, idx: usize) -> String {
-        let inner = self.files.borrow();
-        FileCacher::decode_path(&inner.path_map[idx]).to_string()
+    pub fn lookup_file(&self, needle: u32) -> Rc<File> {
+        let files = self.files.borrow() ;
+        let idx = files.partition_point(|source| !source.byte_span.contains(needle));
+        files[idx].clone()
     }
 
     fn decode_path(path: &Path) -> &str {
@@ -314,7 +292,7 @@ impl ContinuousSourceStorage {
         self.current_end = new_end;
     }
 
-    fn new_buffer(&mut self, size: usize) -> (&mut [u8], usize) {
+    fn new_buffer(&mut self, size: usize) -> (&'static mut [u8], usize) {
         unsafe {
             let start = self.allocated_bytes;
             let start_ptr = self.start.add(start);

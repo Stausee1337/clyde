@@ -185,7 +185,7 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
 
     let peek = quote! {
         impl ParseToken for #enm_ident {
-            fn peek(cursor: Cursor) -> bool {
+            fn peek(cursor: TokenCursor) -> bool {
                 if let Some(punct) = cursor.punct() {
                     return Self::from_punct(punct).is_some();
                 }
