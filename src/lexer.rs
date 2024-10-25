@@ -1,6 +1,6 @@
-use std::{ops::{DerefMut, Deref}, marker::PhantomData, panic::{catch_unwind, resume_unwind}, any::{Any, TypeId}};
+use std::{ops::{DerefMut, Deref}, marker::PhantomData, any::{Any, TypeId}};
 
-use crate::{symbol::Symbol, parser::{TokenCursor, ParseToken}, interface::File, string_internals};
+use crate::{symbol::Symbol, parser::{TokenCursor, ParseToken}, interface::File, string_internals::{self, run_utf8_validation}};
 use clyde_macros::{LexFromString, Operator};
 
 use tinyvec::ArrayVec;
@@ -289,9 +289,6 @@ impl<'a> TokenStream<'a> {
     }
 }
 
-#[derive(Debug)]
-struct Utf8Error;
-
 #[derive(Clone)]
 struct SourceCursor<'a> {
     current: *const u8,
@@ -318,7 +315,6 @@ impl<'a> SourceCursor<'a> {
         unsafe {
             let char = string_internals::next_code_point(self)
                 .and_then(char::from_u32)
-                .ok_or(Utf8Error)
                 .unwrap();
 
             Some(char)
@@ -340,7 +336,8 @@ impl<'a> SourceCursor<'a> {
         unsafe { 
             let ptr = self.current.sub(relative_start + 1);
             let slice = std::slice::from_raw_parts(ptr, length);
-            Some(std::str::from_utf8_unchecked(slice))
+            Some(std::str::from_utf8(slice)
+                 .unwrap())
         }
     }
 
@@ -753,25 +750,19 @@ impl<'a> DerefMut for Tokenizer<'a> {
     }
 }
 
-fn is_utf8_error(err: &(dyn Any + 'static)) -> bool {
-    err.type_id() == TypeId::of::<Utf8Error>()
-}
 
 pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
-    let cursor = SourceCursor::new(source_file.contents());
-    let error = catch_unwind(
-        || Tokenizer::tokenize_relative_source(cursor, source_file.relative_start()));
-    match error {
-        Ok(ok) => return ok,
-        Err(err) if is_utf8_error(&err) => {
-            let err = LexError {
-                kind: LexErrorKind::InvalidUtf8,
-                span: Span::zero()
-            };
-            return (TokenStream::empty(), vec![err]);
-        }
-        Err(e) => resume_unwind(e)
+    let contents = source_file.contents();
+    if !run_utf8_validation(contents) {
+        let err = LexError {
+            kind: LexErrorKind::InvalidUtf8,
+            span: Span::zero()
+        };
+        return (TokenStream::empty(), vec![err]);
     }
+    let cursor = SourceCursor::new(contents);
+    let (stream, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
+    (stream, errors)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]
