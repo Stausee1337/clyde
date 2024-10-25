@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::hash::Hash;
 
-use crate::diagnostics::{JoinToHumanReadable, DiagnosticsCtxt};
+use crate::lexer::Span;
 use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
@@ -67,7 +67,7 @@ pub struct Body<'ast> {
 #[derive(Debug, Clone, Eq)]
 pub struct Ident {
     pub symbol: Symbol,
-    pub span: Range<usize>
+    pub span: Span
 }
 
 impl PartialEq for Ident {
@@ -136,14 +136,14 @@ impl QName {
 #[derive(Debug)]
 pub struct SourceFile {
     pub items: Vec<Item>,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId,
 }
 
 #[derive(Debug)]
 pub struct Item {
     pub kind: ItemKind,
-    pub span: Range<usize>,
+    pub span: Span,
     pub ident: Ident,
     pub node_id: NodeId
 }
@@ -169,7 +169,7 @@ pub struct FieldDef {
     pub name: Ident,
     pub ty: TypeExpr,
     pub default_init: Option<Box<Expr>>,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId,
     pub def_id: DefId
 }
@@ -185,7 +185,7 @@ pub struct Enum {
 pub struct VariantDef {
     pub name: Ident,
     pub sset: Option<Box<Expr>>,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId,
     pub def_id: DefId
 }
@@ -194,7 +194,7 @@ pub struct VariantDef {
 pub struct Function {
     pub sig: FnSignature,
     pub body: Option<Box<Expr>>,
-    pub span: Range<usize>,
+    pub span: Span,
     pub attributes: Vec<Attribute>
 }
 
@@ -207,28 +207,28 @@ pub struct FnSignature {
 
 #[derive(Debug)]
 pub struct Attribute {
-    pub span: Range<usize>,
+    pub span: Span,
 }
 
 #[derive(Debug)]
 pub struct Param {
     pub ident: Ident,
     pub ty: TypeExpr,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId,
 }
 
 #[derive(Debug)]
 pub struct Stmt {
     pub kind: StmtKind,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId
 }
 
@@ -253,11 +253,11 @@ pub struct OutsideLoopScope;
 pub struct ControlFlow {
     pub kind: ControlFlowKind,
     pub destination: Result<NodeId, OutsideLoopScope>,
-    pub span: Range<usize>,
+    pub span: Span,
 }
 
 impl ControlFlow {
-    pub fn new(kind: ControlFlowKind, span: Range<usize>,) -> ControlFlow { 
+    pub fn new(kind: ControlFlowKind, span: Span,) -> ControlFlow { 
         ControlFlow {
             kind, span,
             destination: Err(OutsideLoopScope) 
@@ -282,7 +282,7 @@ impl std::fmt::Display for ControlFlowKind {
 #[derive(Debug)]
 pub struct Expr {
     pub kind: ExprKind,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId
 }
 
@@ -312,7 +312,7 @@ pub enum FieldIdent {
     Named(Ident),
     Tuple {
         value: u64,
-        span: Range<usize>
+        span: Span
     }
 }
 
@@ -393,7 +393,7 @@ pub enum Constant {
 #[derive(Debug)]
 pub struct NestedConst {
     pub expr: Box<Expr>,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId,
     pub def_id: DefId,
 }
@@ -401,7 +401,7 @@ pub struct NestedConst {
 #[derive(Debug)]
 pub struct TypeExpr {
     pub kind: TypeExprKind,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId
 }
 
@@ -426,7 +426,7 @@ pub enum GenericArgument {
 pub struct GenericParam {
     pub ident: Ident,
     pub kind: GenericParamKind,
-    pub span: Range<usize>,
+    pub span: Span,
     pub node_id: NodeId
 }
 
@@ -439,12 +439,6 @@ pub enum GenericParamKind {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u32);
 pub const NODE_ID_UNDEF: NodeId = NodeId(u32::MAX);
-
-#[derive(Debug)]
-pub struct UserError {
-    pub message: &'static str,
-    pub span: Range<usize>,
-}
 
 impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

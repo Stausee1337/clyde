@@ -1,7 +1,7 @@
 
-use std::{collections::HashMap, ops::Range};
+use std::collections::HashMap;
 
-use crate::{ast::{self, Resolution, DefinitionKind, NodeId}, node_visitor::{MutVisitor, self}, diagnostics::DiagnosticsCtxt, symbol::Symbol, context::TyCtxt};
+use crate::{ast::{self, Resolution, DefinitionKind, NodeId}, node_visitor::{MutVisitor, self}, diagnostics::DiagnosticsCtxt, symbol::Symbol, context::TyCtxt, lexer::Span};
 
 /// AST (&tree) 
 ///     |          |
@@ -41,13 +41,13 @@ impl From<DefinitionKind> for NameSpace {
 struct Declaration {
     site: ast::DefId,
     kind: DefinitionKind,
-    span: Range<usize>,
+    span: Span,
 }
 
 #[derive(Clone)]
 struct Local {
     site: ast::NodeId,
-    span: Range<usize>,
+    span: Span,
 }
 
 struct ResolutionState<'tcx> {
@@ -85,7 +85,7 @@ impl<'tcx> ResolutionState<'tcx> {
             DefinitionKind::Global | DefinitionKind::Const => &mut self.globals,
         };
         let declaration = Declaration {
-            site: self.declarations.push(site).into(), kind, span: name.span.clone()
+            site: self.declarations.push(site).into(), kind, span: name.span
         };
         self.items.push(declaration.site);
         if let Some(prev) = space.insert(name.symbol, declaration) {
@@ -208,15 +208,15 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         if let Some(decl) = self.ribs.last().and_then(|rib| rib.symspace.get(&symbol)) {
             self.resolution.diagnostics
                 .error(format!("redeclaration of local {name} here", name = symbol.get()))
-                .with_span(name.span.clone());
+                .with_span(name.span);
             self.resolution.diagnostics
                 .note(format!("previous declaration of {name} here", name = symbol.get()))
-                .with_span(decl.span.clone());
+                .with_span(decl.span);
             return;
         }
         let decl = Local {
             site,
-            span: name.span.clone()
+            span: name.span
         };
         let rib = self.ribs.last_mut().unwrap();
         rib.symspace.insert(symbol, decl);
@@ -260,7 +260,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             if report_error {
                 self.resolution.diagnostics
                     .error(format!("could not find {space} {name}", name = ident.symbol.get()))
-                    .with_span(ident.span.clone());
+                    .with_span(ident.span);
                 *name = ast::QName::Resolved {
                     ident,
                     res_kind: Resolution::Err
@@ -283,7 +283,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         };
         self.resolution.diagnostics
             .error(format!("could not find {space} {name}", space = pspaces[0], name = ident.symbol.get()))
-            .with_span(ident.span.clone());
+            .with_span(ident.span);
         *name = ast::QName::Resolved {
             ident,
             res_kind: Resolution::Err
@@ -301,7 +301,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     let last = function.sig.generics.last().unwrap();
                     self.resolution.diagnostics
                         .fatal("function generics are not supported yet")
-                        .with_span(first.span.start..last.span.end);
+                        .with_span(Span::new(first.span.start, last.span.end));
                 }
                 self.visit_ty_expr(&mut function.sig.returns);
 
@@ -321,7 +321,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     let last = stc.generics.last().unwrap();
                     self.resolution.diagnostics
                         .fatal("struct generics are not supported yet")
-                        .with_span(first.span.start..last.span.end);
+                        .with_span(Span::new(first.span.start, last.span.end));
                 }
                 node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
             }
@@ -329,7 +329,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 if let Some(extends) = &en.extends {
                     self.resolution.diagnostics
                         .fatal("enum type extension is not supported yet")
-                        .with_span(extends.span.start..extends.span.end);
+                        .with_span(Span::new(extends.span.start, extends.span.end));
                 }
                 node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
             }
@@ -345,7 +345,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
         if let Some(sset) = &variant_def.sset {
             self.resolution.diagnostics
                 .fatal("setting explicit enum tag values is not supported yet")
-                .with_span(sset.span.start..sset.span.end);
+                .with_span(Span::new(sset.span.start, sset.span.end));
         }
     }
 
@@ -353,7 +353,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
         if let Some(default_init) = &field_def.default_init {
             self.resolution.diagnostics
                 .fatal("struct default initalizers are not supported yet")
-                .with_span(default_init.span.start..field_def.span.end);
+                .with_span(Span::new(default_init.span.start, field_def.span.end));
         }
         self.visit_ty_expr(&mut field_def.ty);
         node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
@@ -394,7 +394,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
     fn visit_control_flow(&mut self, control_flow: &mut ast::ControlFlow) {
         let Some(owner) = self.loop_owners.last() else {
             self.resolution.diagnostics.error(format!("`{}` found outside of loop", control_flow.kind))
-                .with_span(control_flow.span.clone());
+                .with_span(control_flow.span);
             return;
         };
         control_flow.destination = Ok(*owner);
@@ -430,7 +430,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     ast::TypeExprKind::Generic(..) => {
                         self.resolution.diagnostics
                             .fatal("generic types are not supported yet")
-                            .with_span(ty.span.clone());
+                            .with_span(ty.span);
                     }
                     ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Tuple(..) =>
                         panic!("invalid state after parsing type init"),
@@ -443,7 +443,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 if generic_args.len() > 0 {
                     self.resolution.diagnostics
                         .fatal("generic function calls are not supported yet")
-                        .with_span(expr.span.clone());
+                        .with_span(expr.span);
                     return;
                 }
                 node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
@@ -466,11 +466,11 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     if let ast::QName::Resolved { res_kind: ast::Resolution::Def(_, ast::DefinitionKind::Enum), .. }
                         = name {
                         assert!(res);
-                        let span = expr.span.clone();
+                        let span = expr.span;
                         let node_id = expr.node_id;
 
                         let enm = {
-                            let span = name.ident().span.clone();
+                            let span = name.ident().span;
                             ast::TypeExpr {
                                 span,
                                 kind: ast::TypeExprKind::Name(name.clone()),
@@ -510,7 +510,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
             ast::TypeExprKind::Generic(..) => {
                 self.resolution.diagnostics
                     .fatal("generic types are not supported yet")
-                    .with_span(ty.span.clone());
+                    .with_span(ty.span);
             }
             ast::TypeExprKind::Array(base, cap) => {
                 self.visit_ty_expr(base);

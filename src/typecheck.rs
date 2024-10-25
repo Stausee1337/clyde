@@ -1,7 +1,7 @@
 use core::panic;
-use std::{collections::HashMap, ops::Range, cell::Cell};
+use std::{collections::HashMap, cell::Cell};
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::DiagnosticsCtxt};
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::DiagnosticsCtxt, lexer::Span};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -19,32 +19,17 @@ impl<'tcx> From<Option<Ty<'tcx>>> for Expectation<'tcx> {
     }
 }
 
-/// FIXME: This is very fishy (because I copied the Diverges
-/// handling from rustc). The only reason the correct statements
-/// show up in the `NOTE: ...` diagnostics is because thier
-/// span are typically longer, than the shorter more nested
-/// onse. Eventhough this really *should always* hold,
-/// I'm not to happy with it
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
-struct DSpan(usize, usize);
-
-impl Ord for DSpan {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.1 - self.0).cmp(&(other.1 - other.0))
-    }
-}
-
+/// NOTE: This is very finicky (because I copied the Diverges
+/// handling from rustc). The only reason statements
+/// show up correctly in `NOTE: ...` diagnostics is because 
+/// `lexer::Span` is implementing `Ord` by comparing Span lengths.
+/// Longer, more high-level Spans get priorotized over shorter,
+/// more nested ones, making the "larger Node win".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Diverges {
     Maybe,
-    Always(DSpan),
+    Always(Span),
     WarnedAlways
-}
-
-impl Diverges {
-    fn always(span: Range<usize>) -> Self {
-        Self::Always(DSpan(span.start, span.end))
-    }
 }
 
 #[derive(Debug)]
@@ -127,7 +112,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         None
     }
     
-    fn deref(&self, ty: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
+    fn deref(&self, ty: Ty<'tcx>, span: Span) -> Ty<'tcx> {
         let Some(deref) = self.autoderef(ty, 1) else {
             self.diagnostics().error(format!("type {ty} cannot be derefrenced"))
                 .with_span(span);
@@ -143,11 +128,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         };
         if !is_valid_lhs {
             self.diagnostics().error("invalid left hand side in assignment")
-                .with_span(lhs.span.clone());
+                .with_span(lhs.span);
         }
         let lhs_ty = self.check_expr_with_expectation(lhs, Expectation::None);
         if let Ty(types::TyKind::Never) = self.check_expr_with_expectation(rhs, Expectation::Coerce(lhs_ty)) {
-            self.diverges.set(Diverges::always(rhs.span.clone()));
+            self.diverges.set(Diverges::Always(rhs.span));
         }
     }
 
@@ -157,7 +142,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         self.check_expr_with_expectation(
             condition, Expectation::Coerce(Ty::new_primitive(self.tcx, types::Primitive::Bool)));
 
-        self.maybe_warn_unreachable(body.span.clone(), "block");
+        self.maybe_warn_unreachable(body.span, "block");
 
         let cond_diverges = self.diverges.replace(Diverges::Maybe);
 
@@ -169,7 +154,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             let else_ty = self.check_stmt(else_branch);
             let else_diverges = self.diverges.get();
 
-            body_ty = self.maybe_emit_type_error(else_ty, body_ty, else_branch.span.clone());
+            body_ty = self.maybe_emit_type_error(else_ty, body_ty, else_branch.span);
 
             self.diverges.set(std::cmp::max(cond_diverges, std::cmp::min(body_diverges, else_diverges)));
         } else {
@@ -188,7 +173,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let bool = Ty::new_primitive(self.tcx, types::Primitive::Bool);
         let res = self.check_expr_with_expectation(condition, Expectation::Coerce(bool));
 
-        self.maybe_warn_unreachable(body.span.clone(), "block");
+        self.maybe_warn_unreachable(body.span, "block");
 
         let cond_diverges = self.diverges.replace(Diverges::Maybe);
 
@@ -219,7 +204,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         let iter_ty  = self.check_expr_with_expectation(iter, Expectation::None);
 
-        self.maybe_warn_unreachable(body.span.clone(), "block");
+        self.maybe_warn_unreachable(body.span, "block");
 
         let iter_diverges = self.diverges.replace(Diverges::Maybe);
 
@@ -260,7 +245,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         if let Some(expected) = expected {
             if expected.is_incomplete() {
-                let span = unsafe { ty.unwrap_unchecked() }.span.clone();
+                let span = unsafe { ty.unwrap_unchecked() }.span;
                 self.diagnostics().fatal(format!("type infrence in local variables is not supported"))
                     .with_span(span);
             }
@@ -268,7 +253,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         if expected.is_none() && expr.is_none() {
             self.diagnostics().error("type-anonymous variable declarations require an init expresssion")
-                .with_span(stmt.span.clone());
+                .with_span(stmt.span);
             self.ty_assoc(stmt.node_id, Ty::new_error(self.tcx));
             return;
         } else if let Some(expr) = expr {
@@ -279,7 +264,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 // maybe some sort of a `Bendable` TyKind, for this
                 // specific situations. For now its `Never`
                 // eg. var test = todo();
-                self.diverges.set(Diverges::always(stmt.span.clone()));
+                self.diverges.set(Diverges::Always(stmt.span));
                 return;
             }
             self.ty_assoc(stmt.node_id, expected.unwrap_or(ty));
@@ -315,9 +300,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::StmtKind::Return(expr) => {
                 let Some(return_ty) = self.return_ty else {
                     self.diagnostics().error("`return` found outside of function body")
-                        .with_span(stmt.span.clone());
+                        .with_span(stmt.span);
                     self.diagnostics().note("use break ...; for producing values")
-                        .with_span(stmt.span.clone());
+                        .with_span(stmt.span);
                     return Ty::new_error(self.tcx);
                 };
                 let ty = expr
@@ -327,7 +312,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     Some(ty) => ty,
                     None => {
                         let ty = Ty::new_primitive(self.tcx, types::Primitive::Void);
-                        self.maybe_emit_type_error(ty, return_ty, stmt.span.clone());
+                        self.maybe_emit_type_error(ty, return_ty, stmt.span);
                         ty
                     }
                 };
@@ -366,11 +351,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_block(&mut self, block: &'tcx ast::Block, expectation: Expectation<'tcx>) -> Ty<'tcx> {
         for stmt in &block.stmts {
-            self.maybe_warn_unreachable(stmt.span.clone(), "statement");
+            self.maybe_warn_unreachable(stmt.span, "statement");
 
             let prev_diverge = self.diverges.replace(Diverges::Maybe);
             if let Ty(types::TyKind::Never) = self.check_stmt(stmt) {
-                self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::always(stmt.span.clone())));
+                self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::Always(stmt.span)));
             }
 
             self.diverges.set(std::cmp::max(self.diverges.get(), prev_diverge));
@@ -384,7 +369,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
 
         if let Expectation::Coerce(expected) = expectation {
-            self.maybe_emit_type_error(ty, expected, block.span.clone())
+            self.maybe_emit_type_error(ty, expected, block.span)
         } else {
             ty
         }
@@ -492,7 +477,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         return None;
     }
 
-    fn check_expr_binop(&mut self, binop: &'tcx ast::BinOp, span: Range<usize>, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
+    fn check_expr_binop(&mut self, binop: &'tcx ast::BinOp, span: Span, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         use ast::BinaryOperator::*;
         match binop.operator {
             Plus | Minus | Mul | Div | Mod |
@@ -589,7 +574,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let ty = self.check_expr_with_expectation(expr, expectation);
                 let Ty(Primitive(SByte | Short | Int | Long | Nint) | Err | Never) = ty else {
                     self.diagnostics().error(format!("negation `-` is not defined for type {ty}"))
-                        .with_span(expr.span.clone());
+                        .with_span(expr.span);
                     return Ty::new_error(self.tcx);
                 };
                 ty
@@ -605,7 +590,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let ty = self.check_expr_with_expectation(expr, expectation);
                 let Ty(Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint) | Err | Never) = ty else {
                     self.diagnostics().error(format!("invert `~` is not defined for type {ty}"))
-                        .with_span(expr.span.clone());
+                        .with_span(expr.span);
                     return Ty::new_error(self.tcx);
                 };
                 ty
@@ -628,14 +613,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
     }
 
-    fn check_expr_call(&mut self, expr: &'tcx ast::Expr, args: &'tcx [ast::FunctionArgument], span: Range<usize>) -> Ty<'tcx> {
+    fn check_expr_call(&mut self, expr: &'tcx ast::Expr, args: &'tcx [ast::FunctionArgument], span: Span) -> Ty<'tcx> {
         let ty = self.check_expr_with_expectation(expr, Expectation::None);
         if let Ty(types::TyKind::Never | types::TyKind::Err) = ty {
             return ty;
         }
         let Ty(types::TyKind::Function(fn_def)) = ty else {
             self.diagnostics().error(format!("expected function, found {ty}"))
-                .with_span(expr.span.clone());
+                .with_span(expr.span);
             return Ty::new_error(self.tcx);
         }; 
 
@@ -670,7 +655,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let index_span = unsafe {
             let start = args.first().unwrap_unchecked().span.start;
             let end = args.last().unwrap_unchecked().span.end;
-            start..end
+            Span { start, end }
         };
         let base = {
             use types::TyKind::{Err, Never, Array, DynamicArray, Slice};
@@ -691,7 +676,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         if args.len() > 1 { 
             self.diagnostics().error(
                 format!("indexer of type {ty} expected 1 arugment, {} were supplied", args.len()))
-                .with_span(index_span.clone());
+                .with_span(index_span);
         }
         let nuint = Ty::new_primitive(self.tcx, types::Primitive::NUint);
         let arg = self.check_expr_with_expectation(args.first().unwrap(), Expectation::Guide(nuint));
@@ -710,16 +695,16 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         Ty::new_error(self.tcx)
     }
 
-    fn check_expr_ftuple(&mut self, ty: Ty<'tcx>, idx: usize, span: Range<usize>) -> Ty<'tcx> {
+    fn check_expr_ftuple(&mut self, ty: Ty<'tcx>, idx: usize, span: Span) -> Ty<'tcx> {
         let Ty(types::TyKind::Tuple(tys)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             self.diagnostics().error(format!("unnamed fields are only found on tuples {ty}"))
-                .with_span(span.clone());
+                .with_span(span);
             return Ty::new_error(self.tcx);
         };
 
         if idx >= tys.len() {
             self.diagnostics().error(format!("can't find field `{idx}` on {ty}"))
-                .with_span(span.clone());
+                .with_span(span);
             return Ty::new_error(self.tcx);
         }
 
@@ -734,17 +719,17 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let field = match field {
             ast::FieldIdent::Named(ident) => ident,
             ast::FieldIdent::Tuple { value, span } =>
-                return self.check_expr_ftuple(ty, *value as usize, span.clone()),
+                return self.check_expr_ftuple(ty, *value as usize, *span),
         };
         let Ty(types::TyKind::Adt(adt_def)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             self.diagnostics().error(format!("fields are only found on structs {ty}"))
-                .with_span(expr.span.clone());
+                .with_span(expr.span);
             return Ty::new_error(self.tcx);
         };
 
         // types::AdtKind::Enum => {
         //     self.diagnostics.error(format!("can't find variant `{}` on enum {ty}", field.symbol.get()))
-        //         .with_span(field.span.clone());
+        //         .with_span(field.span);
         // }
 
         let Some((idx, fdef)) = adt_def.fields()
@@ -754,7 +739,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     unreachable!("Enum shouldn't apear here"),
                 types::AdtKind::Struct => {
                     self.diagnostics().error(format!("can't find field `{}` on struct {ty}", field.symbol.get()))
-                        .with_span(field.span.clone());
+                        .with_span(field.span);
                 }
                 types::AdtKind::Union =>
                     panic!("unions are not even parsable with this parser")
@@ -768,7 +753,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
  
     fn check_expr_variant(
         &mut self, ty_expr: Option<&'tcx ast::TypeExpr>,
-        variant: &'tcx ast::Ident, node_id: ast::NodeId, expected: Option<Ty<'tcx>>, span: Range<usize>) -> Ty<'tcx> {
+        variant: &'tcx ast::Ident, node_id: ast::NodeId, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
         let ty = ty_expr.map(|expr| self.lowering_ctxt.lower_ty(expr));
         
         let Some(ty) = ty.or(expected) else {
@@ -799,7 +784,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let Some((idx, _)) = adt_def.fields()
             .find(|(_, vriant)| vriant.symbol == variant.symbol) else {
             self.diagnostics().error(format!("can't find variant `{}` on enum {ty}", variant.symbol.get()))
-                .with_span(variant.span.clone());
+                .with_span(variant.span);
             return Ty::new_error(self.tcx);
         };
 
@@ -809,7 +794,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_init(
         &mut self, ty_epxr: Option<&'tcx TypeExpr>,
-        inits: &'tcx [ast::TypeInit], expected: Option<Ty<'tcx>>, span: Range<usize>) -> Ty<'tcx> {
+        inits: &'tcx [ast::TypeInit], expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
         let ty = ty_epxr.map(|expr| self.lowering_ctxt.lower_ty(expr));
         
         let Some(ty) = ty.or(expected) else {
@@ -854,7 +839,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         }
                         ast::TypeInit::Field(ident, expr) => {
                             self.diagnostics().error("field initializer in array initialization is invalid")
-                                .with_span(ident.span.start..expr.span.end);
+                                .with_span(Span::new(ident.span.start, expr.span.end));
                         }
                     }
                 }
@@ -883,7 +868,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                             ast::TypeInit::Field(ident, expr) => {
                                 let Some((idx, fdef)) = fields.get(&ident.symbol) else {
                                     self.diagnostics().error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
-                                        .with_span(ident.span.clone());
+                                        .with_span(ident.span);
                                     continue;
                                 };
                                 let fty = self.tcx.type_of(fdef.def);
@@ -898,7 +883,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 };
                                 let Some((idx, fdef)) = fields.get(&ident.symbol) else {
                                     self.diagnostics().error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
-                                        .with_span(ident.span.clone());
+                                        .with_span(ident.span);
                                     continue;
                                 };
                                 let fty = self.tcx.type_of(fdef.def);
@@ -907,7 +892,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                             }
                             ast::TypeInit::Direct(expr) => {
                                 self.diagnostics().error("immediate initializer in struct initialization is invalid")
-                                    .with_span(expr.span.clone());
+                                    .with_span(expr.span);
                             }
                         }
                     }
@@ -962,7 +947,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_conv(
-        &mut self, expr: &'tcx ast::Expr, ty_expr: Option<&'tcx ast::TypeExpr>, conversion: ast::TypeConversion, expected: Option<Ty<'tcx>>, span: Range<usize>) -> Ty<'tcx> {
+        &mut self, expr: &'tcx ast::Expr, ty_expr: Option<&'tcx ast::TypeExpr>, conversion: ast::TypeConversion, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
 
         let ty = ty_expr.map(|expr| self.lowering_ctxt.lower_ty(expr));
         
@@ -1028,12 +1013,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Constant(ast::Constant::Null) => {
                 let Some(expected) = expected else {
                     self.diagnostics().error("can't infer type of anonymous null")
-                        .with_span(expr.span.clone());
+                        .with_span(expr.span);
                     return Ty::new_error(self.tcx);
                 };
                 let Ty(types::TyKind::Never | types::TyKind::Err | types::TyKind::Refrence(..)) = expected else {
                     self.diagnostics().error(format!("non refrence-type {expected} cannot be null"))
-                        .with_span(expr.span.clone());
+                        .with_span(expr.span);
                     return expected
                 };
                 expected
@@ -1046,7 +1031,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_integer(int, Negative, expected)
             }
             ast::ExprKind::BinOp(binop) =>
-                self.check_expr_binop(binop, expr.span.clone(), expected),
+                self.check_expr_binop(binop, expr.span, expected),
             ast::ExprKind::UnaryOp(expr, unop) => 
                 self.check_expr_unary(*unop, expr, expected),
             ast::ExprKind::Deref(base) => {
@@ -1055,7 +1040,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     _ => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(base, expectation);
-                self.deref(ty, expr.span.clone())
+                self.deref(ty, expr.span)
             }
             ast::ExprKind::Name(name) =>
                 self.check_expr_name(name),
@@ -1064,15 +1049,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Err =>
                 Ty::new_error(self.tcx),
             ast::ExprKind::FunctionCall(base, args, _) =>
-                self.check_expr_call(base, args, expr.span.clone()),
+                self.check_expr_call(base, args, expr.span),
             ast::ExprKind::Subscript(base, args) =>
                 self.check_expr_subscript(base, args),
             ast::ExprKind::Field(base, field) =>
                 self.check_expr_field(base, field, expr.node_id),
             ast::ExprKind::TypeInit(ty_expr, init) =>
-                self.check_expr_init(ty_expr.as_deref(), init, expected, expr.span.clone()),
+                self.check_expr_init(ty_expr.as_deref(), init, expected, expr.span),
             ast::ExprKind::Cast(conv, ty, kind) =>
-                self.check_expr_conv(conv, ty.as_deref(), *kind, expected, expr.span.clone()),
+                self.check_expr_conv(conv, ty.as_deref(), *kind, expected, expr.span),
             ast::ExprKind::Range(start, end, inclusive) => {
                 {
                     let mut start = &start;
@@ -1095,7 +1080,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let end_ty = unsafe { *self.associations.get(&end.node_id).unwrap_unchecked() };
                 let mut has_error = false;
                 if start_ty != end_ty {
-                    self.maybe_emit_type_error(end_ty, start_ty, expr.span.clone());
+                    self.maybe_emit_type_error(end_ty, start_ty, expr.span);
                     has_error = true;
                 }
                 if !matches!(
@@ -1104,7 +1089,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                        Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
                     self.diagnostics().error(
                         format!("type {start_ty} is not steppable")
-                    ).with_span(start.span.clone());
+                    ).with_span(start.span);
                     has_error = true;
                 }
                 if !matches!(
@@ -1113,7 +1098,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                        Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
                     self.diagnostics().error(
                         format!("type {end_ty} is not steppable")
-                    ).with_span(end.span.clone());
+                    ).with_span(end.span);
                     has_error = true;
                 }
                 if has_error {
@@ -1124,9 +1109,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Tuple(exprs) =>
                 self.check_expr_tuple(exprs, expected),
             ast::ExprKind::EnumVariant(ty, variant) =>
-                self.check_expr_variant(Some(ty), variant, expr.node_id, expected, expr.span.clone()),
+                self.check_expr_variant(Some(ty), variant, expr.node_id, expected, expr.span),
             ast::ExprKind::ShorthandEnum(variant) =>
-                self.check_expr_variant(None, variant, expr.node_id, expected, expr.span.clone()),
+                self.check_expr_variant(None, variant, expr.node_id, expected, expr.span),
         }
     }
 
@@ -1158,13 +1143,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = self.check_expr(&expr, expected); 
 
         if let Expectation::Coerce(expected) = expectation {
-            self.maybe_emit_type_error(ty, expected, expr.span.clone());
+            self.maybe_emit_type_error(ty, expected, expr.span);
         }
 
-        self.maybe_warn_unreachable(expr.span.clone(), "expression");
+        self.maybe_warn_unreachable(expr.span, "expression");
 
         if let Ty(types::TyKind::Never) = ty {
-            self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::always(expr.span.clone())));
+            self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::Always(expr.span)));
         }
 
         self.ty_assoc(expr.node_id, ty);
@@ -1174,7 +1159,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         ty
     }
 
-    fn check_return_ty(&mut self, expr: &'tcx ast::Expr, ret_ty: Ty<'tcx>, ret_ty_span: Range<usize>) {
+    fn check_return_ty(&mut self, expr: &'tcx ast::Expr, ret_ty: Ty<'tcx>, ret_ty_span: Span) {
         self.return_ty = Some(ret_ty);
 
         let ty = self.check_expr(&expr, Some(ret_ty));
@@ -1189,17 +1174,17 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         self.ty_assoc(expr.node_id, ty); 
     }
 
-    fn maybe_warn_unreachable(&self, span: Range<usize>, what: &'static str) {
-        if let Diverges::Always(DSpan(start, end)) = self.diverges.get() {
+    fn maybe_warn_unreachable(&self, span: Span, what: &'static str) {
+        if let Diverges::Always(span2) = self.diverges.get() {
             self.diagnostics().warning(format!("unreachable {what}"))
                 .with_span(span);
             self.diagnostics().note("any code following this expression is unreachable")
-                .with_span(start..end);
+                .with_span(span2);
             self.diverges.set(Diverges::WarnedAlways);
         }
     }
 
-    fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Range<usize>) -> Ty<'tcx> {
+    fn maybe_emit_type_error(&self, found: Ty<'tcx>, expected: Ty<'tcx>, span: Span) -> Ty<'tcx> {
         if found != expected {
             self.diagnostics().error(format!("mismatched types: expected {expected}, found {found}"))
                 .with_span(span);
@@ -1265,7 +1250,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
 
                         if let types::Const(types::ConstInner::Err { msg, span }) = &cap {
                             self.diagnostics().error(msg)
-                                .with_span(span.clone());
+                                .with_span(*span);
                             return Ty::new_error(self.tcx);
                         }
 
@@ -1363,7 +1348,7 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults {
         for param in sig.params {
             ctxt.ty_assoc(param.node_id, param.ty);
         }
-        ctxt.check_return_ty(body.body, sig.returns, returns.span.clone());
+        ctxt.check_return_ty(body.body, sig.returns, returns.span);
     } else {
         let ty = tcx.type_of(def_id);
         ctxt.check_expr_with_expectation(body.body, Expectation::Coerce(ty));
@@ -1384,7 +1369,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
             if returns.is_incomplete() {
                 diagnostics.error(
                     format!("type {returns} is incomplete, incomplete types are not allowed in function signatures"))
-                    .with_span(func.sig.returns.span.clone());
+                    .with_span(func.sig.returns.span);
                 returns = Ty::new_error(tcx);
             }
 
@@ -1395,7 +1380,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
 
                 if ty.is_incomplete() {
                     diagnostics.error(format!("type {ty} is incomplete, incomplete types are not allowed in function signatures"))
-                        .with_span(param.ty.span.clone());
+                        .with_span(param.ty.span);
                     ty = Ty::new_error(tcx);
                 }
 

@@ -107,10 +107,16 @@ pub struct LexError {
     span: Span
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
 pub struct Span {
     pub start: u32,
     pub end: u32
+}
+
+impl Ord for Span {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.end - self.start).cmp(&(other.end - other.start))
+    }
 }
 
 impl Span {

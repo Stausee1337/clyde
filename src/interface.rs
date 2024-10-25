@@ -308,15 +308,6 @@ impl ContinuousSourceStorage {
             (buf, start)
         }
     }
-
-    fn bytes_from_absolute_range<'l>(&self, start: usize, end: usize) -> &'l [u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                self.start.add(start),
-                end - start
-            )
-        }
-    }
 }
 
 thread_local! {

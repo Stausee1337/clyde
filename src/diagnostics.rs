@@ -1,12 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 use std::mem::transmute;
-use std::ops::Range;
 use std::fmt::Write;
 use std::hash::Hash;
 
 use bitflags::bitflags;
 
-use crate::interface::FileCacher;
+use crate::{interface::FileCacher, lexer::Span};
 
 pub trait JoinToHumanReadable {
     fn join_to_human_readable(&self) -> String;
@@ -54,12 +53,12 @@ impl DiagnosticsCtxtInner {
             let pos_a = match &a.location {
                 Where::Span(span) => span.start,
                 Where::Position(pos) => *pos,
-                Where::Unspecified => usize::MAX
+                Where::Unspecified => u32::MAX
             };
             let pos_b = match &b.location {
                 Where::Span(span) => span.start,
                 Where::Position(pos) => *pos,
-                Where::Unspecified => usize::MAX
+                Where::Unspecified => u32::MAX
             };
             pos_a.cmp(&pos_b)
         });
@@ -147,12 +146,12 @@ pub struct Reported {
 }
 
 impl Reported {
-    pub fn with_span(&mut self, span: Range<usize>) -> &mut Self {
+    pub fn with_span(&mut self, span: Span) -> &mut Self {
         self.location = Where::Span(span);
         self
     }
 
-    pub fn with_pos(&mut self, pos: usize) -> &mut Self {
+    pub fn with_pos(&mut self, pos: u32) -> &mut Self {
         self.location = Where::Position(pos);
         self
     }
@@ -175,16 +174,16 @@ impl std::fmt::Display for DiagnosticKind {
 
 enum Where {
     Unspecified,
-    Position(usize),
-    Span(Range<usize>)
+    Position(u32),
+    Span(Span)
 }
 
 impl Where {
     fn pos_in_source(&self, source: &str) -> Vec<SourcePosition> {
-        let (start, end) = match self {
+        /*let (start, end) = match self {
             Where::Unspecified => return vec![],
             Where::Position(pos) => (*pos, *pos),
-            Where::Span(Range { start, end }) => (*start, *end)
+            Where::Span(Span { start, end }) => (*start, *end)
         };
 
         let mut bol = 0;
@@ -215,7 +214,8 @@ impl Where {
                 line_flushed = false;
             }
         }
-        positions
+        positions*/
+        todo!()
     }
 
     fn has_span(&self) -> bool {

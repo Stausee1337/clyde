@@ -1,8 +1,8 @@
-use std::{mem::transmute, ops::{Deref, Range}};
+use std::{mem::transmute, ops::Deref};
 
 use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::TyCtxt};
+use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::TyCtxt, lexer::Span};
 use clyde_macros::Internable;
 
 #[derive(Debug, Hash)]
@@ -117,7 +117,7 @@ pub enum ConstInner<'tcx> {
     Placeholder,
     Err {
         msg: String,
-        span: Range<usize>
+        span: Span
     }
 }
 
@@ -136,13 +136,13 @@ impl<'tcx> Const<'tcx> {
             Some(v) => v,
             None => tcx.intern(ConstInner::Err {
                 msg: "Sry, propper const evaluation is not a priority".to_string(),
-                span: body.body.span.clone()
+                span: body.body.span
             })
         }
     }
 
     fn int_to_val(
-        tcx: TyCtxt<'tcx>, val: u64, ty: Ty<'tcx>, sign: NumberSign, span: Range<usize>) -> ConstInner<'tcx> {
+        tcx: TyCtxt<'tcx>, val: u64, ty: Ty<'tcx>, sign: NumberSign, span: Span) -> ConstInner<'tcx> {
         if let Ty(TyKind::Primitive(primitive)) = ty {
             if primitive.integer_fit(val, sign) {
                 let scalar = Scalar {
@@ -203,13 +203,13 @@ impl<'tcx> Const<'tcx> {
             (TyKind::Primitive(Char), ExprKind::Constant(Constant::Char(char))) =>
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
             (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Constant(Constant::Integer(int))) =>
-                Self::int_to_val(tcx, *int, ty, NumberSign::Positive, expr.span.clone()),
+                Self::int_to_val(tcx, *int, ty, NumberSign::Positive, expr.span),
             (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(iexpr, UnaryOperator::Neg))
                 if matches!(iexpr.kind, ExprKind::Constant(Constant::Integer(..))) => {
                 let ExprKind::Constant(Constant::Integer(int)) = iexpr.kind else {
                     unreachable!()
                 };
-                Self::int_to_val(tcx, int, ty, NumberSign::Negative, expr.span.clone())
+                Self::int_to_val(tcx, int, ty, NumberSign::Negative, expr.span)
             }
             (TyKind::Refrence(..), ExprKind::Constant(ast::Constant::Null)) =>
                 // FIXME: `as usize` here will make the size of the scalar depend on the size
@@ -217,11 +217,11 @@ impl<'tcx> Const<'tcx> {
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(0 as usize))),
             (_, ExprKind::Constant(ast::Constant::Null)) => ConstInner::Err {
                 msg: format!("non refrence-type {ty} cannot be null"),
-                span: expr.span.clone()
+                span: expr.span
             },
             _ => ConstInner::Err {
                 msg: format!("mismatched types: expected {ty}, found {}", Self::kind_to_ty(tcx, &expr.kind)),
-                span: expr.span.clone()
+                span: expr.span
             }
         };
 
