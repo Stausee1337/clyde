@@ -1,29 +1,11 @@
+use std::cell::OnceCell;
 use std::{cell::RefCell, rc::Rc};
-use std::mem::transmute;
-use std::fmt::Write;
 use std::hash::Hash;
 
 use bitflags::bitflags;
 
+use crate::interface::File;
 use crate::{interface::FileCacher, lexer::Span};
-
-pub trait JoinToHumanReadable {
-    fn join_to_human_readable(&self) -> String;
-}
-
-impl JoinToHumanReadable for Vec<String> {
-    fn join_to_human_readable(&self) -> String {
-        let mut result = String::new();
-        for (idx, item) in self.iter().enumerate() {
-            let needle = self.len().checked_sub(2);
-            let glue = if idx < needle.unwrap_or(0) { ", " }
-            else if Some(idx) == needle { " or " }
-            else { "" };
-            write!(result, "{item}{glue}").unwrap();
-        }
-        result
-    }
-}
 
 bitflags! {
     pub struct HappenedEvents: u8 {
@@ -32,64 +14,77 @@ bitflags! {
     }
 }
 
+pub struct InternalMessage {
+    kind: MessageKind,
+    span: Span,
+    message: String,
+    hint: Option<(String, Span)>,
+    note: Option<String>
+}
+
 struct DiagnosticsCtxtInner {
     file_cacher: Rc<FileCacher>,
-    events: Vec<Reported>,
-    flags: HappenedEvents
+    messages: Vec<InternalMessage>,
+    flags: HappenedEvents,
 }
 
 impl DiagnosticsCtxtInner {
-    fn push_event<'a>(&mut self, kind: DiagnosticKind, message: String) -> &'a mut Reported {
-        self.events.push(Reported {
-            kind,
-            message,
-            location: Where::Unspecified 
-        });
-        unsafe { transmute::<&mut Reported, &mut Reported>(self.events.last_mut().unwrap()) }
+    fn push_event<'a>(&mut self, message: InternalMessage) {
+        self.messages.push(message);
     }
 
     pub fn render(&mut self) {
-        self.events.sort_by(|a, b| {
-            let pos_a = match &a.location {
-                Where::Span(span) => span.start,
-                Where::Position(pos) => *pos,
-                Where::Unspecified => u32::MAX
-            };
-            let pos_b = match &b.location {
-                Where::Span(span) => span.start,
-                Where::Position(pos) => *pos,
-                Where::Unspecified => u32::MAX
-            };
-            pos_a.cmp(&pos_b)
-        });
-        for event in &self.events {
-            let location = match &event.location {
-                Where::Span(span) => span.start,
-                Where::Position(pos) => *pos,
-                Where::Unspecified => todo!()
-            };
-            let file = self.file_cacher.lookup_file(location as u32);
-            let source = std::str::from_utf8(file.contents()).unwrap();
-            let source_positions = event.location.pos_in_source(source);
-            eprintln!("{}: {}:{}: {}",
-                event.kind,
+        self.messages.sort_by(
+            |a, b| a.span.start.cmp(&b.span.start));
+        for message in &self.messages {
+            let file = self.file_cacher.lookup_file(message.span.start);
+
+            let (row, col) = file.decode_to_file_pos(message.span.start);
+            eprintln!("{}:{row}:{col}: {}: {}",
                 file.path(),
-                source_positions.first()
-                    .map(|SourcePosition { position: (row, col), .. }| format!("{row}:{col}"))
-                    .unwrap_or(String::new()),
-                event.message);
-            if event.location.has_span() {
-                for (idx, source_pos) in source_positions.iter().enumerate() {
-                    let lineno = source_pos.position.0.to_string();
-                    eprintln!(" {lineno}|{line}", line = source_pos.line(source));
-                    if idx == 0 || idx == source_positions.len() - 1 {
-                        eprintln!(" {npad}|{lpad}{span}",
-                            npad = " ".repeat(lineno.len()), lpad = " ".repeat(source_pos.position.1 - 1),
-                            span = "^".repeat(source_pos.length));
-                    }
+                message.kind,
+                message.message);
+
+            let mut pre_hint = None;
+            let mut post_hint = None;
+            if let Some(hint) = &message.hint {
+                if hint.1.start < message.span.start {
+                    pre_hint = Some(hint);
+                } else {
+                    post_hint = Some(hint);
                 }
             }
+
+            if let Some(pre_hint) = pre_hint {
+                render_code(&file, pre_hint.1, "-", Some(&pre_hint.0));
+            }
+
+            render_code(&file, message.span, "^", None);
+
+            if let Some(post_hint) = post_hint {
+                render_code(&file, post_hint.1, "-", Some(&post_hint.0));
+            }
+
+            if let Some(note) = &message.note {
+                eprintln!("  -> NOTE: {note}");
+            }
         }
+    }
+}
+
+fn render_code(file: &File, span: Span, decoration: &'static str, annotation: Option<&str>) {
+    let mut row = file.decode_to_lineno(span.start).unwrap();
+    let end_row = file.decode_to_lineno(span.end).unwrap();
+
+    while row <= end_row {
+        let char_start = file.unicode_slice(span.start);
+        let char_end = file.unicode_slice(span.end);
+        eprintln!(" {row}|{line}", line = file.get_line(row - 1));
+        eprintln!(" {npad}|{lpad}{span} {annotation}",
+                  npad = " ".repeat(format!("{row}").len()), lpad = " ".repeat(char_start),
+                  span = decoration.repeat(char_end - char_start),
+                  annotation = annotation.unwrap_or(""));
+        row += 1;
     }
 }
 
@@ -99,7 +94,7 @@ impl DiagnosticsCtxt {
     pub fn new(file_cacher: Rc<FileCacher>) -> DiagnosticsCtxt {
         let inner = DiagnosticsCtxtInner {
             file_cacher,
-            events: Vec::new(),
+            messages: Vec::new(),
             flags: HappenedEvents::empty()
         };
         DiagnosticsCtxt(RefCell::new(inner))
@@ -107,26 +102,6 @@ impl DiagnosticsCtxt {
 
     pub fn render(&self) {
         self.0.borrow_mut().render();
-    }
-
-    pub fn error<T: Into<String>>(&self, message: T) -> &mut Reported {
-        let mut inner = self.0.borrow_mut();
-        inner.flags |= HappenedEvents::ERROR;
-        inner.push_event(DiagnosticKind::Error, message.into())
-    }
-
-    pub fn fatal<T: Into<String>>(&self, message: T) -> &mut Reported {
-        let mut inner = self.0.borrow_mut();
-        inner.flags |= HappenedEvents::FATAL;
-        inner.push_event(DiagnosticKind::Fatal, message.into())
-    }
-
-    pub fn warning<T: Into<String>>(&self, message: T) -> &mut Reported {  
-        self.0.borrow_mut().push_event(DiagnosticKind::Warning, message.into())
-    }
-
-    pub fn note<T: Into<String>>(&self, message: T) -> &mut Reported {
-        self.0.borrow_mut().push_event(DiagnosticKind::Note, message.into())
     }
 
     pub fn has_error(&self) -> bool {
@@ -138,105 +113,120 @@ impl DiagnosticsCtxt {
     }
 }
 
-
-pub struct Reported {
-    kind: DiagnosticKind,
+pub struct Message {
+    kind: MessageKind,
     message: String,
-    location: Where
+    note: OnceCell<String>,
+    hint: OnceCell<(String, Span)>,
+    location: OnceCell<Span>
 }
 
-impl Reported {
-    pub fn with_span(&mut self, span: Span) -> &mut Self {
-        self.location = Where::Span(span);
+impl Message {
+    fn new(kind: MessageKind, message: String) -> Self {
+        Self {
+            kind, message,
+            note: OnceCell::new(),
+            hint: OnceCell::new(),
+            location: OnceCell::new()
+        }
+    }
+
+    #[must_use]
+    pub fn warning<T: Into<String>>(message: T) -> Self {  
+        Self::new(MessageKind::Warning, message.into())
+    }
+
+    #[must_use]
+    pub fn error<T: Into<String>>(message: T) -> Self {  
+        Self::new(MessageKind::Error, message.into()) 
+    }
+
+    #[must_use]
+    pub fn fatal<T: Into<String>>(message: T) -> Self {   
+        Self::new(MessageKind::Fatal, message.into()) 
+    }
+
+    #[must_use]
+    pub fn at(self, span: Span) -> Self {
+        self.location.set(span)
+            .unwrap();
         self
     }
 
-    pub fn with_pos(&mut self, pos: u32) -> &mut Self {
-        self.location = Where::Position(pos);
+    #[must_use]
+    pub fn note<T: Into<String>>(self, message: T) -> Self {
+        self.note.set(message.into())
+            .unwrap();
         self
+    }
+
+    #[must_use]
+    pub fn hint<T: Into<String>>(self, message: T, span: Span) -> Self {
+        self.hint.set((message.into(), span)).unwrap();
+        self
+    }
+
+    pub fn push(self, _diagnostics: &DiagnosticsCtxt) {
+        todo!()
     }
 }
 
-enum DiagnosticKind {
-    Error, Fatal, Warning, Note
+// Message::warning(format!())
+//  .at(span)
+//  .note(format!())
+//  .push(diagnostics);
+
+enum MessageKind {
+    Error, Fatal, Warning
 }
 
-impl std::fmt::Display for DiagnosticKind {
+impl std::fmt::Display for MessageKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", match self {
-            DiagnosticKind::Error => "ERROR",
-            DiagnosticKind::Fatal => "FATAL",
-            DiagnosticKind::Note => "NOTE",
-            DiagnosticKind::Warning => "WARNING"
+            MessageKind::Error => "error",
+            MessageKind::Fatal => "fatal",
+            MessageKind::Warning => "warning"
         })
     }
 }
 
-enum Where {
-    Unspecified,
-    Position(u32),
-    Span(Span)
-}
 
-impl Where {
-    fn pos_in_source(&self, source: &str) -> Vec<SourcePosition> {
-        /*let (start, end) = match self {
-            Where::Unspecified => return vec![],
-            Where::Position(pos) => (*pos, *pos),
-            Where::Span(Span { start, end }) => (*start, *end)
-        };
+/*fn pos_in_source(&self, source: &str) -> Vec<SourcePosition> {
+    let (start, end) = match self {
+        Where::Unspecified => return vec![],
+        Where::Position(pos) => (*pos, *pos),
+        Where::Span(Span { start, end }) => (*start, *end)
+    };
 
-        let mut bol = 0;
-        let mut line = 1;
-        let mut positions = vec![];
-        let mut line_flushed = false;
-        for (offset, char) in source.chars().enumerate() {
-            if offset >= start && offset <= end && !line_flushed {
-                positions.push(SourcePosition {
-                    bol,
-                    length: 0,
-                    position: (line, offset - bol),
-                });
-                line_flushed = true;
-            } else if offset > end {
-                if let Some(pos) = positions.last_mut() {
-                    pos.length = (offset - 1) - (pos.position.1 + pos.bol);
-                }
-                break;
+    let mut bol = 0;
+    let mut line = 1;
+    let mut positions = vec![];
+    let mut line_flushed = false;
+    for (offset, char) in source.chars().enumerate() {
+        if offset >= start && offset <= end && !line_flushed {
+            positions.push(SourcePosition {
+                bol,
+                length: 0,
+                position: (line, offset - bol),
+            });
+            line_flushed = true;
+        } else if offset > end {
+            if let Some(pos) = positions.last_mut() {
+                pos.length = (offset - 1) - (pos.position.1 + pos.bol);
             }
-
-            if char == '\n' {
-                if let Some(pos) = positions.last_mut() {
-                    pos.length = offset - (pos.position.1 + bol);
-                }
-                bol = offset;
-                line += 1;
-                line_flushed = false;
-            }
+            break;
         }
-        positions*/
-        todo!()
-    }
 
-    fn has_span(&self) -> bool {
-        match self {
-            Where::Span(..) => true,
-            _ => false
+        if char == '\n' {
+            if let Some(pos) = positions.last_mut() {
+                pos.length = offset - (pos.position.1 + bol);
+            }
+            bol = offset;
+            line += 1;
+            line_flushed = false;
         }
     }
-}
-
-#[derive(Clone)]
-struct SourcePosition {
-    position: (usize, usize),
-    bol: usize,
-    length: usize
-}
-
-impl SourcePosition {
-    fn line<'s>(&self, source: &'s str) -> &'s str {
-        let line = &source[self.bol+1..];
-        &line[..line.find('\n').unwrap_or(line.len() - 1)]
-    }
-}
+    positions
+    todo!()
+}*/
 

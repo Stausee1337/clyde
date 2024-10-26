@@ -179,6 +179,22 @@ impl File {
     pub fn relative_start(&self) -> u32 {
         self.byte_span.start
     }
+
+    pub fn unicode_slice(&self, pos: u32) -> usize {
+        todo!()
+    }
+
+    pub fn decode_to_lineno(&self, pos: u32) -> Option<usize> {
+        todo!()
+    }
+
+    pub fn decode_to_file_pos(&self, pos: u32) -> (usize, usize) {
+        todo!()
+    }
+
+    pub fn get_line(&self, idx: usize) -> &str {
+        todo!()
+    }
 }
 
 pub struct FileCacher {

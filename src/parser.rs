@@ -85,6 +85,3 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     todo!()
 }
 
-/*mod clyde {
-    include!(concat!(env!("OUT_DIR"), "/clyde.rs"));
-}*/

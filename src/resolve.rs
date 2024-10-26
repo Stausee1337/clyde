@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::{ast::{self, Resolution, DefinitionKind, NodeId}, node_visitor::{MutVisitor, self}, diagnostics::DiagnosticsCtxt, symbol::Symbol, context::TyCtxt, lexer::Span};
+use crate::{ast::{self, Resolution, DefinitionKind, NodeId}, node_visitor::{MutVisitor, self}, diagnostics::{DiagnosticsCtxt, Message}, symbol::Symbol, context::TyCtxt, lexer::Span};
 
 /// AST (&tree) 
 ///     |          |
@@ -90,12 +90,10 @@ impl<'tcx> ResolutionState<'tcx> {
         self.items.push(declaration.site);
         if let Some(prev) = space.insert(name.symbol, declaration) {
             let space: NameSpace = kind.into();
-            self.diagnostics
-                .error(format!("redeclaration of {space} {name:?}", name = name.symbol.get()))
-                .with_span(name.span);
-            self.diagnostics
-                .note(format!("previous declaration of {name:?} here", name = name.symbol.get()))
-                .with_pos(prev.span.start);
+            Message::error(format!("redeclaration of {space} {name:?}", name = name.symbol.get()))
+                .at(name.span)
+                .hint(format!("previous declaration of {name:?} here", name = name.symbol.get()), prev.span)
+                .push(self.diagnostics);
         }
     }
 
@@ -206,12 +204,10 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         assert!(self.has_rib(), "NameResolutionPass::define() called outside of vaild scope");
         let symbol = name.symbol;
         if let Some(decl) = self.ribs.last().and_then(|rib| rib.symspace.get(&symbol)) {
-            self.resolution.diagnostics
-                .error(format!("redeclaration of local {name} here", name = symbol.get()))
-                .with_span(name.span);
-            self.resolution.diagnostics
-                .note(format!("previous declaration of {name} here", name = symbol.get()))
-                .with_span(decl.span);
+           Message::error(format!("redeclaration of local {name} here", name = symbol.get()))
+                .at(name.span)
+                .hint(format!("previous declaration of {name} here", name = symbol.get()), decl.span)
+                .push(self.resolution.diagnostics);
             return;
         }
         let decl = Local {
@@ -258,9 +254,9 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             };
         } else {
             if report_error {
-                self.resolution.diagnostics
-                    .error(format!("could not find {space} {name}", name = ident.symbol.get()))
-                    .with_span(ident.span);
+                Message::error(format!("could not find {space} {name}", name = ident.symbol.get()))
+                    .at(ident.span)
+                    .push(self.resolution.diagnostics);
                 *name = ast::QName::Resolved {
                     ident,
                     res_kind: Resolution::Err
@@ -281,9 +277,9 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             ast::QName::Unresolved(ident) => ident.clone(),
             ast::QName::Resolved { .. } => panic!(),
         };
-        self.resolution.diagnostics
-            .error(format!("could not find {space} {name}", space = pspaces[0], name = ident.symbol.get()))
-            .with_span(ident.span);
+        Message::error(format!("could not find {space} {name}", space = pspaces[0], name = ident.symbol.get()))
+            .at(ident.span)
+            .push(self.resolution.diagnostics);
         *name = ast::QName::Resolved {
             ident,
             res_kind: Resolution::Err
@@ -299,9 +295,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 if function.sig.generics.len() > 0 {
                     let first = function.sig.generics.first().unwrap();
                     let last = function.sig.generics.last().unwrap();
-                    self.resolution.diagnostics
-                        .fatal("function generics are not supported yet")
-                        .with_span(Span::new(first.span.start, last.span.end));
+                    Message::fatal("function generics are not supported yet")
+                        .at(Span::new(first.span.start, last.span.end))
+                        .push(self.resolution.diagnostics);
                 }
                 self.visit_ty_expr(&mut function.sig.returns);
 
@@ -319,17 +315,17 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 if stc.generics.len() > 0 {
                     let first = stc.generics.first().unwrap();
                     let last = stc.generics.last().unwrap();
-                    self.resolution.diagnostics
-                        .fatal("struct generics are not supported yet")
-                        .with_span(Span::new(first.span.start, last.span.end));
+                    Message::fatal("struct generics are not supported yet")
+                        .at(Span::new(first.span.start, last.span.end))
+                        .push(self.resolution.diagnostics);
                 }
                 node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
             }
             ast::ItemKind::Enum(en) => {
                 if let Some(extends) = &en.extends {
-                    self.resolution.diagnostics
-                        .fatal("enum type extension is not supported yet")
-                        .with_span(Span::new(extends.span.start, extends.span.end));
+                    Message::fatal("enum type extension is not supported yet")
+                        .at(Span::new(extends.span.start, extends.span.end))
+                        .push(self.resolution.diagnostics);
                 }
                 node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
             }
@@ -343,17 +339,17 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
 
     fn visit_variant_def(&mut self, variant_def: &mut ast::VariantDef) {
         if let Some(sset) = &variant_def.sset {
-            self.resolution.diagnostics
-                .fatal("setting explicit enum tag values is not supported yet")
-                .with_span(Span::new(sset.span.start, sset.span.end));
+            Message::fatal("setting explicit enum tag values is not supported yet")
+                .at(Span::new(sset.span.start, sset.span.end))
+                .push(self.resolution.diagnostics);
         }
     }
 
     fn visit_field_def(&mut self, field_def: &mut ast::FieldDef) {
         if let Some(default_init) = &field_def.default_init {
-            self.resolution.diagnostics
-                .fatal("struct default initalizers are not supported yet")
-                .with_span(Span::new(default_init.span.start, field_def.span.end));
+            Message::fatal("struct default initalizers are not supported yet")
+                .at(Span::new(default_init.span.start, field_def.span.end))
+                .push(self.resolution.diagnostics);
         }
         self.visit_ty_expr(&mut field_def.ty);
         node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
@@ -393,8 +389,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
 
     fn visit_control_flow(&mut self, control_flow: &mut ast::ControlFlow) {
         let Some(owner) = self.loop_owners.last() else {
-            self.resolution.diagnostics.error(format!("`{}` found outside of loop", control_flow.kind))
-                .with_span(control_flow.span);
+            Message::error(format!("`{}` found outside of loop", control_flow.kind))
+                .at(control_flow.span)
+                .push(self.resolution.diagnostics);
             return;
         };
         control_flow.destination = Ok(*owner);
@@ -428,9 +425,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     ast::TypeExprKind::Slice(ty) =>
                         self.visit_ty_expr(ty),
                     ast::TypeExprKind::Generic(..) => {
-                        self.resolution.diagnostics
-                            .fatal("generic types are not supported yet")
-                            .with_span(ty.span);
+                        Message::fatal("generic types are not supported yet")
+                            .at(ty.span)
+                            .push(self.resolution.diagnostics);
                     }
                     ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Tuple(..) =>
                         panic!("invalid state after parsing type init"),
@@ -441,9 +438,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     panic!();
                 };
                 if generic_args.len() > 0 {
-                    self.resolution.diagnostics
-                        .fatal("generic function calls are not supported yet")
-                        .with_span(expr.span);
+                    Message::fatal("generic function calls are not supported yet")
+                        .at(expr.span)
+                        .push(self.resolution.diagnostics);
                     return;
                 }
                 node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
@@ -508,9 +505,9 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                 self.resolve(NameSpace::Type, name, true);
             },
             ast::TypeExprKind::Generic(..) => {
-                self.resolution.diagnostics
-                    .fatal("generic types are not supported yet")
-                    .with_span(ty.span);
+                Message::fatal("generic types are not supported yet")
+                    .at(ty.span)
+                    .push(self.resolution.diagnostics);
             }
             ast::TypeExprKind::Array(base, cap) => {
                 self.visit_ty_expr(base);
