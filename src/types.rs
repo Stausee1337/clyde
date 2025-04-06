@@ -2,7 +2,7 @@ use std::{mem::transmute, ops::Deref};
 
 use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{DefId, NodeId, self}, symbol::Symbol, context::TyCtxt, lexer::Span};
+use crate::{ast::{self, DefId, NodeId}, context::TyCtxt, lexer::{self, Span}, symbol::Symbol};
 use clyde_macros::Internable;
 
 #[derive(Debug, Hash)]
@@ -177,11 +177,11 @@ impl<'tcx> Const<'tcx> {
     }
 
     fn try_val_from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<Self> {
-        use ast::{ExprKind, Constant, UnaryOperator};
+        use ast::{ExprKind, Constant};
         use Primitive::*;
         match &expr.kind {
             ExprKind::String(..) | ExprKind::Constant(..) => (),
-            ExprKind::UnaryOp(expr, ast::UnaryOperator::Neg)
+            ExprKind::UnaryOp(expr, lexer::UnaryOp::Minus)
                 if matches!(expr.kind, ExprKind::Constant(ast::Constant::Integer(..))) => (),
             _ => return None
         }
@@ -204,7 +204,7 @@ impl<'tcx> Const<'tcx> {
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
             (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Constant(Constant::Integer(int))) =>
                 Self::int_to_val(tcx, *int, ty, NumberSign::Positive, expr.span),
-            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(iexpr, UnaryOperator::Neg))
+            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(iexpr, lexer::UnaryOp::Minus))
                 if matches!(iexpr.kind, ExprKind::Constant(Constant::Integer(..))) => {
                 let ExprKind::Constant(Constant::Integer(int)) = iexpr.kind else {
                     unreachable!()

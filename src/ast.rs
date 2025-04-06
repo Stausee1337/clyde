@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::hash::Hash;
 
-use crate::lexer::Span;
+use crate::lexer::{Span, BinaryOp, UnaryOp};
 use crate::symbol::Symbol;
 
 pub const DUMMY_SPAN: Range<usize> = 0..0;
@@ -150,7 +150,7 @@ pub struct Item {
 
 #[derive(Debug)]
 pub enum ItemKind {
-    Function(Box<Function>),
+    Function(Function),
     Struct(Struct),
     Enum(Enum),
     GlobalVar(Box<TypeExpr>, Option<Box<Expr>>, bool),
@@ -289,7 +289,7 @@ pub struct Expr {
 #[derive(Debug)]
 pub enum ExprKind {
     BinOp(Box<BinOp>),
-    UnaryOp(Box<Expr>, UnaryOperator),
+    UnaryOp(Box<Expr>, UnaryOp),
     Cast(Box<Expr>, Option<Box<TypeExpr>>, TypeConversion),
     FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
     TypeInit(Option<Box<TypeExpr>>, Vec<TypeInit>),
@@ -325,41 +325,7 @@ pub enum TypeConversion {
 pub struct BinOp {
     pub lhs: Expr,
     pub rhs: Expr,
-    pub operator: BinaryOperator
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum BinaryOperator {
-    Plus, Minus, Mul, Div, Mod,
-    ShiftLeft, ShiftRight,
-    BitwiseAnd, BitwiseOr, BitwiseXor,
-    Equal, NotEqual, GreaterThan, GreaterEqual, LessThan, LessEqual,
-    BooleanAnd, BooleanOr
-}
-
-
-impl std::fmt::Display for BinaryOperator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use BinaryOperator::{
-            Plus, Minus, Mul, Div, Mod,
-            ShiftLeft, ShiftRight,
-            BitwiseAnd, BitwiseOr, BitwiseXor,
-            Equal, NotEqual, GreaterThan, GreaterEqual, LessThan, LessEqual,
-            BooleanAnd, BooleanOr
-        };
-        f.write_str(match self {
-            Plus => "+", Minus => "-", Mul => "*", Div => "/", Mod => "%",
-            ShiftLeft => "<<", ShiftRight => ">>",
-            BitwiseAnd => "&", BitwiseOr => "|", BitwiseXor => "^",
-            Equal => "==", NotEqual => "!=", GreaterThan => ">", GreaterEqual => ">=", LessThan => "<", LessEqual => "<=",
-            BooleanAnd => "&&", BooleanOr => "||"
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum UnaryOperator {
-    BooleanNot, BitwiseInvert, Neg, Ref
+    pub operator: BinaryOp
 }
 
 #[derive(Debug)]
@@ -386,6 +352,7 @@ pub enum ArrayCapacity {
 pub enum Constant {
     Null,
     Integer(u64),
+    Floating(f64),
     Boolean(bool),
     Char(char)
 }

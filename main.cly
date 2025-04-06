@@ -4,6 +4,15 @@ enum OpenMode {
     Writing
 }
 
+/*union Stmt {
+#switch enum #infer kind {
+    #case ::Expr => using Expr expr,
+    #case ::Block => using Block block,
+}
+    Span span;
+    NodeId node_id;
+}*/
+
 struct Vector2 {
     byte x;
     byte y;
@@ -13,13 +22,14 @@ void exit(int code);
 void println(str message);
 (int, int) file_open(str path, OpenMode mode);
 
-nuint len([]str slice) {
-    var slice = transmute((nuint, *void))slice;
+nuint len(str slice[]) {
+    var slice = transmute((nuint, void*))slice;
     return slice.0;
 }
 
-int main([]str argv) {
+int main(str argv[]) {
     nuint idx = 0;
+    file_open("", ::Reading);
     for arg in argv {
         println(arg);
     }

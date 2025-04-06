@@ -166,15 +166,19 @@ impl Message {
         self
     }
 
-    pub fn push(self, _diagnostics: &DiagnosticsCtxt) {
-        todo!()
+    pub fn push(self, diagnostics: &DiagnosticsCtxt) {
+        let Self { kind, message, note, hint, location } = self;
+        let message = InternalMessage {
+            kind, message,
+            span: location.into_inner().unwrap(),
+            note: note.into_inner(),
+            hint: hint.into_inner() 
+        };
+        diagnostics.0
+            .borrow_mut()
+            .push_event(message);
     }
 }
-
-// Message::warning(format!())
-//  .at(span)
-//  .note(format!())
-//  .push(diagnostics);
 
 enum MessageKind {
     Error, Fatal, Warning

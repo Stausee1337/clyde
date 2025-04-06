@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, cell::Cell};
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, lexer::Span};
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, TypeExpr, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -413,7 +413,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
     }
 
-    fn check_op_between(&self, op: ast::BinaryOperator, lhs: Ty<'tcx>, rhs: Ty<'tcx>) -> Option<Ty<'tcx>> {
+    fn check_op_between(&self, op: lexer::BinaryOp, lhs: Ty<'tcx>, rhs: Ty<'tcx>) -> Option<Ty<'tcx>> {
         const OPERATOR_SIZES: [types::Primitive; 10] = {
             use types::Primitive::*;
             [SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint]
@@ -421,7 +421,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         macro_rules! boolop {
             ($ret:expr) => {{
-                use ast::BinaryOperator::*;
+                use lexer::BinaryOp::*;
                 if let GreaterThan | GreaterEqual | LessThan | LessEqual = op {
                     return Some(Ty::new_primitive(self.tcx, types::Primitive::Bool));
                 }
@@ -430,11 +430,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         {
-            use ast::BinaryOperator::*;
+            use lexer::BinaryOp::*;
             let (Plus | Minus | Mul | Div | Mod |
-                 ShiftLeft | ShiftRight | BitwiseAnd | BitwiseOr | BitwiseXor |
+                 LeftShift | RightShift | BitwiseAnd | BitwiseOr | BitwiseXor |
                  GreaterThan | GreaterEqual | LessThan | LessEqual) = op else {
-                panic!("check_op_between used on invalid operator {op}");
+                panic!("check_op_between used on invalid operator {op:?}");
             };
         }
         fn get_int(ty: Ty<'_>) -> Option<types::Primitive> {
@@ -484,10 +484,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_binop(&mut self, binop: &'tcx ast::BinOp, span: Span, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
-        use ast::BinaryOperator::*;
+        use lexer::BinaryOp::*;
         match binop.operator {
             Plus | Minus | Mul | Div | Mod |
-            ShiftLeft | ShiftRight | BitwiseAnd | BitwiseOr | BitwiseXor => {
+            LeftShift | RightShift | BitwiseAnd | BitwiseOr | BitwiseXor => {
                 {
                     let mut lhs = &binop.lhs;
                     let mut rhs = &binop.rhs;
@@ -513,7 +513,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 return ret_ty;
             }
-            Equal | NotEqual => {
+            Equals | NotEquals => {
                 let mut lhs = &binop.lhs;
                 let mut rhs = &binop.rhs;
                 if !self.check_expr_ty_definite(&lhs.kind) && self.check_expr_ty_definite(&rhs.kind) {
@@ -569,9 +569,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_unary(&mut self,
-                      unop: ast::UnaryOperator, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
+                      unop: lexer::UnaryOp, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         match unop {
-            ast::UnaryOperator::Neg => {
+            lexer::UnaryOp::Minus => {
                 use types::TyKind::{Err, Never, Primitive};
                 use types::Primitive::{SByte, Short, Int, Long, Nint};
 
@@ -588,7 +588,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 ty
             }
-            ast::UnaryOperator::BitwiseInvert => {
+            lexer::UnaryOp::BitwiseNot => {
                 use types::TyKind::{Err, Never, Primitive};
                 use types::Primitive::{SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint};
 
@@ -605,11 +605,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 ty
             }
-            ast::UnaryOperator::BooleanNot => {
+            lexer::UnaryOp::Not => {
                 let bool = Ty::new_primitive(self.tcx, types::Primitive::Bool);
                 self.check_expr_with_expectation(expr, Expectation::Coerce(bool))
             }
-            ast::UnaryOperator::Ref => {
+            lexer::UnaryOp::Ref => {
                 let expectation = match expected {
                     Some(Ty(types::TyKind::Refrence(ty))) => Expectation::Guide(*ty),
                     _ => Expectation::None
@@ -1036,6 +1036,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 Ty::new_primitive(self.tcx, Primitive::Char),
             ast::ExprKind::Constant(ast::Constant::Integer(int)) =>
                 self.check_expr_integer(*int, Positive, expected),
+            ast::ExprKind::Constant(ast::Constant::Floating(..)) => todo!(),
             ast::ExprKind::Constant(ast::Constant::Null) => {
                 let Some(expected) = expected else {
                     Message::error("can't infer type of anonymous null")
@@ -1051,7 +1052,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 expected
             }
-            ast::ExprKind::UnaryOp(expr, ast::UnaryOperator::Neg)
+            ast::ExprKind::UnaryOp(expr, lexer::UnaryOp::Minus)
                 if matches!(expr.kind, ast::ExprKind::Constant(ast::Constant::Integer(..))) => {
                 let ast::ExprKind::Constant(ast::Constant::Integer(int)) = expr.kind else {
                     unreachable!()

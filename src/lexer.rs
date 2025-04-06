@@ -1,63 +1,96 @@
-use std::{ops::{DerefMut, Deref}, marker::PhantomData, any::{Any, TypeId}};
+use std::{ops::{DerefMut, Deref}, marker::PhantomData};
 
-use crate::{symbol::Symbol, parser::{TokenCursor, ParseToken}, interface::File, string_internals::{self, run_utf8_validation}};
+use crate::{symbol::Symbol, interface::File, string_internals::{self, run_utf8_validation}};
 use clyde_macros::{LexFromString, Operator};
 
 use tinyvec::ArrayVec;
 
+pub(crate) trait Operator: Sized {
+    fn from_punct(punct: Punctuator) -> Option<Self>;
+}
+
+#[macro_export]
 macro_rules! Token {
-    [.] => { crate::lexer::punctuators::Dot };
-    [,] => { crate::lexer::punctuators::Comma };
-    [:] => { crate::lexer::punctuators::Colon };
-    [::] => { crate::lexer::punctuators::DoubleColon };
-    [;] => { crate::lexer::punctuators::Semicolon };
-    [=] => { crate::lexer::punctuators::Assign };
-    [..] => { crate::lexer::punctuators::DotDot };
-    [->] => { crate::lexer::punctuators::Arrow };
-    [^] => { crate::lexer::punctuators::Circumflex };
-    [?] => { crate::lexer::punctuators::Question };
+    [.] => { crate::lexer::Punctuator::Dot };
+    [,] => { crate::lexer::Punctuator::Comma };
+    [:] => { crate::lexer::Punctuator::Colon };
+    [::] => { crate::lexer::Punctuator::DoubleColon };
+    [;] => { crate::lexer::Punctuator::Semicolon };
+    [=] => { crate::lexer::Punctuator::Assign };
+    [..] => { crate::lexer::Punctuator::DotDot };
+    [->] => { crate::lexer::Punctuator::Arrow };
+    [^] => { crate::lexer::Punctuator::Circumflex };
+    [?] => { crate::lexer::Punctuator::Question };
 
-    [&] => { crate::lexer::punctuators::Ampersand };
-    [|] => { crate::lexer::punctuators::VBar };
-    [~] => { crate::lexer::punctuators::Tilde };
+    [&] => { crate::lexer::Punctuator::Ampersand };
+    [|] => { crate::lexer::Punctuator::VBar };
+    [~] => { crate::lexer::Punctuator::Tilde };
 
-    [<<] => { crate::lexer::punctuators::LDoubleChevron };
-    [>>] => { crate::lexer::punctuators::RDoubleChevron };
+    [<<] => { crate::lexer::Punctuator::LDoubleChevron };
+    [>>] => { crate::lexer::Punctuator::RDoubleChevron };
 
-    [+] => { crate::lexer::punctuators::Plus };
-    [-] => { crate::lexer::punctuators::Minus };
-    [*] => { crate::lexer::punctuators::Star };
-    [/] => { crate::lexer::punctuators::Slash };
-    [%] => { crate::lexer::punctuators::Percent };
+    [+] => { crate::lexer::Punctuator::Plus };
+    [-] => { crate::lexer::Punctuator::Minus };
+    [*] => { crate::lexer::Punctuator::Star };
+    [/] => { crate::lexer::Punctuator::Slash };
+    [%] => { crate::lexer::Punctuator::Percent };
 
-    [<] => { crate::lexer::punctuators::LChevron };
-    [<=] => { crate::lexer::punctuators::LChevronEq };
-    [>] => { crate::lexer::punctuators::RChevron };
-    [>=] => { crate::lexer::punctuators::RChevronEq };
-    [==] => { crate::lexer::punctuators::DoubleEq };
-    [!=] => { crate::lexer::punctuators::BangEq };
+    [<] => { crate::lexer::Punctuator::LChevron };
+    [<=] => { crate::lexer::Punctuator::LChevronEq };
+    [>] => { crate::lexer::Punctuator::RChevron };
+    [>=] => { crate::lexer::Punctuator::RChevronEq };
+    [==] => { crate::lexer::Punctuator::DoubleEq };
+    [!=] => { crate::lexer::Punctuator::BangEq };
 
-    [&&] => { crate::lexer::punctuators::DoubleAmpersand };
-    [||] => { crate::lexer::punctuators::DoubleVBar };
-    [!] => { crate::lexer::punctuators::Bang };
+    [&&] => { crate::lexer::Punctuator::DoubleAmpersand };
+    [||] => { crate::lexer::Punctuator::DoubleVBar };
+    [!] => { crate::lexer::Punctuator::Bang };
 
-    [:=] => { crate::lexer::punctuators::ColonAssign };
+    [:=] => { crate::lexer::Punctuator::ColonAssign };
 
-    [+=] => { crate::lexer::punctuators::PlusAssign };
-    [-=] => { crate::lexer::punctuators::MinusAssing };
-    [*=] => { crate::lexer::punctuators::StarAssign };
-    [/=] => { crate::lexer::punctuators::SlashAssign };
-    [%=] => { crate::lexer::punctuators::PercentAssign };
+    [+=] => { crate::lexer::Punctuator::PlusAssign };
+    [-=] => { crate::lexer::Punctuator::MinusAssing };
+    [*=] => { crate::lexer::Punctuator::StarAssign };
+    [/=] => { crate::lexer::Punctuator::SlashAssign };
+    [%=] => { crate::lexer::Punctuator::PercentAssign };
 
-    [||=] => { crate::lexer::punctuators::DoubleVBarAssign };
-    [&&=] => { crate::lexer::punctuators::DoubleAnpersandAssign };
-    [^=] => { crate::lexer::punctuators::CircumflexAssign };
+    [||=] => { crate::lexer::Punctuator::DoubleVBarAssign };
+    [&&=] => { crate::lexer::Punctuator::DoubleAnpersandAssign };
+    [^=] => { crate::lexer::Punctuator::CircumflexAssign };
 
-    [<<=] => { crate::lexer::punctuators::LDoubleChevronAssign };
-    [>>=] => { crate::lexer::punctuators::RDoubleChevronAssign };
+    [<<=] => { crate::lexer::Punctuator::LDoubleChevronAssign };
+    [>>=] => { crate::lexer::Punctuator::RDoubleChevronAssign };
 
-    [&=] => { crate::lexer::punctuators::AnpersandAssign };
-    [|=] => { crate::lexer::punctuators::VBarAssign };
+    [&=] => { crate::lexer::Punctuator::AnpersandAssign };
+    [|=] => { crate::lexer::Punctuator::VBarAssign };
+
+
+    [const] => { crate::lexer::Keyword::Const };
+    [use] => { crate::lexer::Keyword::Use };
+    [with] => { crate::lexer::Keyword::With };
+    [var] => { crate::lexer::Keyword::Var };
+    [static] => { crate::lexer::Keyword::Static };
+    [cast] => { crate::lexer::Keyword::Cast };
+    [transmute] => { crate::lexer::Keyword::Transmute };
+    [out] => { crate::lexer::Keyword::Out };
+    [is] => { crate::lexer::Keyword::Is };
+    [extern] => { crate::lexer::Keyword::Extern };
+    [while] => { crate::lexer::Keyword::While };
+    [for] => { crate::lexer::Keyword::For };
+    [in] => { crate::lexer::Keyword::In };
+    [if] => { crate::lexer::Keyword::If };
+    [else] => { crate::lexer::Keyword::Else };
+    [struct] => { crate::lexer::Keyword::Struct };
+    [enum] => { crate::lexer::Keyword::Enum };
+    [return] => { crate::lexer::Keyword::Return };
+    [break] => { crate::lexer::Keyword::Break };
+    [continue] => { crate::lexer::Keyword::Continue };
+    [template] => { crate::lexer::Keyword::Template };
+    [interface] => { crate::lexer::Keyword::Interface };
+    [closure] => { crate::lexer::Keyword::Closure };
+    [true] => { crate::lexer::Keyword::True };
+    [false] => { crate::lexer::Keyword::False };
+    [null] => { crate::lexer::Keyword::Null };
 }
 
 macro_rules! must {
@@ -75,7 +108,7 @@ macro_rules! goto {
     }};
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(usize)]
 enum LexState {
     Initial = 0,
@@ -257,6 +290,10 @@ impl StringParser {
     }
 }
 
+pub(crate) trait Tokenish {
+    fn matches(&self, tok: Token) -> bool;
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Token<'a> {
     pub kind: TokenKind<'a>,
@@ -286,7 +323,7 @@ pub enum NumberMode {
 }
 
 pub struct TokenStream<'a> {
-    tokens: Vec<Token<'a>>
+    pub(crate) tokens: Vec<Token<'a>>
 }
 
 impl<'a> TokenStream<'a> {
@@ -419,6 +456,7 @@ impl<'a> Tokenizer<'a> {
                         kind,
                         span: self.make_span(start, self.position())
                     });
+                    self.bump();
                 }
             }
         }
@@ -885,9 +923,12 @@ impl Punctuator {
     const MAX_LENGTH: usize = 3;
 }
 
-impl ParseToken for Punctuator {
-    fn peek(cursor: TokenCursor) -> bool {
-        cursor.punct().is_some()
+impl Tokenish for Punctuator {
+    fn matches(&self, tok: Token) -> bool {
+        if let TokenKind::Punctuator(..) = tok.kind {
+            return true;
+        }
+        false
     }
 }
 
@@ -947,17 +988,46 @@ pub enum Keyword {
     Null
 }
 
-impl ParseToken for Keyword {
-    fn peek(cursor: TokenCursor) -> bool {
-        cursor.keyword().is_some()
+/*
+ 
+*/
+
+impl Tokenish for Keyword {
+    fn matches(&self, tok: Token) -> bool { 
+        if let TokenKind::Keyword(..) = tok.kind {
+            return true;
+        }
+        false
     }
 }
+
+    /*
+    pub fn keyword(&self) -> Option<Keyword> {
+        if let TokenKind::Keyword(keyword) = self.current().kind {
+            return Some(keyword);
+        }
+        None
+    }
+
+    pub fn symbol(&self) -> Option<Symbol> {
+        if let TokenKind::Symbol(symbol) = self.current().kind {
+            return Some(symbol);
+        }
+        None
+    }
+
+    pub fn literal(&self) -> Option<(&'a str, LiteralKind)> {
+        if let TokenKind::Literal(literal, kind) = self.current().kind {
+            return Some((literal, kind));
+        }
+        None
+    }*/
 
 trait LexFromString: Sized {
     fn try_from_string(str: &str) -> Option<Self>;
 }
 
-#[derive(Clone, Copy, Operator)]
+#[derive(Debug, Clone, Copy, Operator)]
 pub enum BinaryOp {
     #[precedence = 11]
     #[token = "*"]
@@ -985,17 +1055,17 @@ pub enum BinaryOp {
 
     #[precedence = 8]
     #[token = "&"]
-    BinaryAnd,
+    BitwiseAnd,
     #[precedence = 7]
     #[token = "^"]
-    BinaryXor,
+    BitwiseXor,
     #[precedence = 6]
     #[token = "|"]
-    BinaryOr,
+    BitwiseOr,
 
     #[precedence = 5]
     #[token = "=="]
-    Eqals,
+    Equals,
     #[precedence = 5]
     #[token = "!="]
     NotEquals,
@@ -1056,18 +1126,15 @@ pub enum AssignmentOp {
     OrAssign,
 }
 
-#[derive(Clone, Copy, Operator)]
+#[derive(Debug, Clone, Copy, Operator)]
 pub enum UnaryOp {
     #[token = "~"]
     BitwiseNot,
     #[token = "!"]
     Not,
-    #[token = "+"]
-    Plus,
     #[token = "-"]
     Minus,
-    #[token = "*"]
-    Deref,
+    #[token = "&"]
+    Ref,
 }
-
 

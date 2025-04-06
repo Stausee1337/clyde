@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use proc_macro2::{TokenStream, Ident, Span, Punct};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{Meta, GenericParam, Generics, Item, Attribute, Token, ItemEnum, Fields, spanned::Spanned, Lit, parse::{Parse, ParseStream}};
+use syn::{Meta, GenericParam, Generics, Item, Attribute, ItemEnum, Fields, spanned::Spanned, Lit, parse::{Parse, ParseStream}};
 
 fn ident(item: &Item) -> Result<&Ident, syn::Error> {
     match item {
@@ -136,6 +136,7 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
 
     let mut from_punct = TokenStream::new();
     let mut precedence = TokenStream::new();
+    let mut display = TokenStream::new();
     for mapping in map {
         let (ident, attrs) = mapping;
         for (attr, lit) in attrs {
@@ -151,7 +152,8 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
                         return Err(syn::Error::new(lit.span(), "expected string"));
                     };
                     let punct = lit.parse::<MultiPunct>()?;
-                    from_punct.extend(quote! { <Token![#punct]>::TOKEN => #enm_ident::#ident, })
+                    from_punct.extend(quote! { Token![#punct] => #enm_ident::#ident, });
+                    display.extend(quote! { #enm_ident::#ident => #lit, });
                 }
                 _ => unreachable!()
             }
@@ -159,8 +161,8 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
     }
 
     let converter = quote! {
-        impl #enm_ident {
-            pub fn from_punct(punct: Punctuator) -> Option<Self> {
+        impl Operator for #enm_ident {
+            fn from_punct(punct: Punctuator) -> Option<Self> {
                 Some(match punct {
                     #from_punct
                     _ => return None
@@ -183,13 +185,13 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
         None
     };
 
-    let peek = quote! {
-        impl ParseToken for #enm_ident {
-            fn peek(cursor: TokenCursor) -> bool {
-                if let Some(punct) = cursor.punct() {
-                    return Self::from_punct(punct).is_some();
-                }
-                false
+    let display = quote! {
+        impl std::fmt::Display for #enm_ident {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let dis = match self {
+                    #display
+                };
+                f.write_str(dis)
             }
         }
     };
@@ -197,17 +199,19 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
     Ok(quote! {
         #converter
         #precedence
-        #peek
+        #display
     })
 }
 
 pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
     let enm: ItemEnum = syn::parse2(token_stream)?;
     let enm_ident = &enm.ident;
+
+    // let xxx = Token![->](12);
     
     let map = map_enum_attributes(&enm, &["str"])?;
 
-    let mut structs = TokenStream::new();
+    // let mut structs = TokenStream::new();
     let mut mappings = TokenStream::new();
     for mapping in map {
         let (ident, attrs) = mapping;
@@ -216,17 +220,17 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
             return Err(syn::Error::new(lit.span(), "expected string"));
         };
         mappings.extend(quote! { #lit => #enm_ident::#ident, });
-        structs.extend(quote! {
+        /*structs.extend(quote! {
             pub struct #ident;
             impl #ident {
                 pub const TOKEN: #enm_ident = #enm_ident::#ident;
             }
-        });
+        });*/
     }
 
-    let mod_ident = Ident::new(
+    /*let mod_ident = Ident::new(
         &format!("{}s", enm_ident.to_string().to_lowercase()),
-        Span::call_site());
+        Span::call_site());*/
 
     Ok(quote! {
         impl LexFromString for #enm_ident {
@@ -238,9 +242,9 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
             }
         }
 
-        mod #mod_ident {
+        /*mod #mod_ident {
             use super::#enm_ident;
             #structs
-        }
+        }*/
     })
 }
