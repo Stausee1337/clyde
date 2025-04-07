@@ -346,7 +346,7 @@ pub struct Compiler<'tcx> {
 }
 
 impl<'tcx> Compiler<'tcx> {
-    pub fn parse_entry(&'tcx self) -> Result<ast::SourceFile, ()> {
+    pub fn parse_entry(&'tcx self) -> Result<ast::SourceFile<'tcx>, ()> {
         parser::parse_file(&self.sess, &self.sess.input)
     }
 

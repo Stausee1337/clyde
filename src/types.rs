@@ -181,8 +181,8 @@ impl<'tcx> Const<'tcx> {
         use Primitive::*;
         match &expr.kind {
             ExprKind::String(..) | ExprKind::Constant(..) => (),
-            ExprKind::UnaryOp(expr, lexer::UnaryOp::Minus)
-                if matches!(expr.kind, ExprKind::Constant(ast::Constant::Integer(..))) => (),
+            ExprKind::UnaryOp(unary)
+                if matches!(unary.expr.kind, ExprKind::Constant(ast::Constant::Integer(..))) => (),
             _ => return None
         }
         let inner = match (ty.0, &expr.kind) {
@@ -204,9 +204,9 @@ impl<'tcx> Const<'tcx> {
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
             (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Constant(Constant::Integer(int))) =>
                 Self::int_to_val(tcx, *int, ty, NumberSign::Positive, expr.span),
-            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(iexpr, lexer::UnaryOp::Minus))
-                if matches!(iexpr.kind, ExprKind::Constant(Constant::Integer(..))) => {
-                let ExprKind::Constant(Constant::Integer(int)) = iexpr.kind else {
+            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(unary))
+                if matches!(unary.expr.kind, ExprKind::Constant(Constant::Integer(..))) => {
+                let ExprKind::Constant(Constant::Integer(int)) = unary.expr.kind else {
                     unreachable!()
                 };
                 Self::int_to_val(tcx, int, ty, NumberSign::Negative, expr.span)

@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::{ast::{self, Resolution, DefinitionKind, NodeId}, node_visitor::{MutVisitor, self}, diagnostics::{DiagnosticsCtxt, Message}, symbol::Symbol, context::TyCtxt, lexer::Span};
+use crate::{ast::{self, DefinitionKind, NodeId, OutsideLoopScope, Resolution}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -120,47 +120,50 @@ impl<'r, 'tcx> TypeResolutionPass<'r, 'tcx> {
     }
 }
 
-impl<'r, 'tcx> MutVisitor for TypeResolutionPass<'r, 'tcx> {
-    fn visit_item(&mut self, item: &mut ast::Item) {
-        match &mut item.kind {
+impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
+    fn visit_item(&mut self, item: &ast::Item) {
+        match &item.kind {
             ast::ItemKind::Struct(stc) => {
                 self.resolution.define(DefinitionKind::Struct, item.ident.clone(), item.node_id);
-                node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
-                node_visitor::visit_vec(&mut stc.generics, |generic| self.visit_generic_param(generic));
+                node_visitor::visit_slice(stc.fields, |field_def| self.visit_field_def(field_def));
+                node_visitor::visit_slice(stc.generics, |generic| self.visit_generic_param(generic));
             }, 
             ast::ItemKind::Enum(en) => {
                 self.resolution.define(DefinitionKind::Enum, item.ident.clone(), item.node_id);
-                node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
+                node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
                 self.resolution.define(DefinitionKind::Function, item.ident.clone(), item.node_id);
                 node_visitor::visit_fn(function, self);
             },
-            ast::ItemKind::GlobalVar(ty, expr, is_const) => {
+            ast::ItemKind::GlobalVar(global) => {
                 self.resolution.define(
-                    if *is_const {DefinitionKind::Global} else {DefinitionKind::Const},
+                    if global.constant {DefinitionKind::Global} else {DefinitionKind::Const},
                     item.ident.clone(), item.node_id);
-                self.visit_ty_expr(ty);
-                node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
+                self.visit_ty_expr(global.ty);
+                node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
         } 
     }
 
-    fn visit_field_def(&mut self, field_def: &mut ast::FieldDef) {
-        self.visit_ty_expr(&mut field_def.ty);
-        node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
-        field_def.def_id = self.resolution.declarations.push(field_def.node_id).into();
+    fn visit_field_def(&mut self, field_def: &ast::FieldDef) {
+        self.visit_ty_expr(field_def.ty);
+        node_visitor::visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
+        field_def.def_id.set(self.resolution.declarations.push(field_def.node_id).into())
+            .unwrap();
     }
 
-    fn visit_variant_def(&mut self, variant_def: &mut ast::VariantDef) {
-        node_visitor::visit_option(&mut variant_def.sset, |sset| self.visit_expr(sset));
-        variant_def.def_id = self.resolution.declarations.push(variant_def.node_id).into();
+    fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
+        node_visitor::visit_option(variant_def.sset, |sset| self.visit_expr(sset));
+        variant_def.def_id.set(self.resolution.declarations.push(variant_def.node_id).into())
+            .unwrap();
     }
 
-    fn visit_nested_const(&mut self, expr: &mut ast::NestedConst) {
-        self.visit_expr(&mut expr.expr);
-        expr.def_id = self.resolution.declarations.push(expr.node_id).into();
+    fn visit_nested_const(&mut self, expr: &ast::NestedConst) {
+        self.visit_expr(expr.expr);
+        expr.def_id.set(self.resolution.declarations.push(expr.node_id).into())
+            .unwrap();
     }
 }
 
@@ -227,70 +230,50 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         None
     }
 
-    fn resolve(&self, space: NameSpace, name: &mut ast::QName, report_error: bool) -> bool {
-        let ident = match name {
-            ast::QName::Unresolved(ident) => ident.clone(),
-            ast::QName::Resolved { .. } => return true,
-        };
+    fn resolve(&self, space: NameSpace, name: &ast::Name, report_error: bool) -> bool {
+        if name.resolution().is_some() {
+            return true;
+        }
         let decl = match space {
-            NameSpace::Type => self.resolution.types.get(&ident.symbol),
-            NameSpace::Function => self.resolution.functions.get(&ident.symbol),
-            NameSpace::Variable => self.resolution.globals.get(&ident.symbol)
+            NameSpace::Type => self.resolution.types.get(&name.ident.symbol),
+            NameSpace::Function => self.resolution.functions.get(&name.ident.symbol),
+            NameSpace::Variable => self.resolution.globals.get(&name.ident.symbol)
         };
         if let Some(decl) = decl {
-            *name = ast::QName::Resolved {
-                ident,
-                res_kind: Resolution::Def(decl.site, decl.kind)
-            };
-        } else if let Some(local) = self.resolve_local(ident.symbol) {
-            *name = ast::QName::Resolved {
-                ident,
-                res_kind: Resolution::Local(local.site)
-            };
-        } else if ident.symbol.is_primtive() && space == NameSpace::Type {
-            *name = ast::QName::Resolved {
-                ident,
-                res_kind: Resolution::Primitive
-            };
+            name.resolve(Resolution::Def(decl.site, decl.kind));
+        } else if let Some(local) = self.resolve_local(name.ident.symbol) {
+            name.resolve(Resolution::Local(local.site));
+        } else if name.ident.symbol.is_primtive() && space == NameSpace::Type {
+            name.resolve(Resolution::Primitive);
         } else {
             if report_error {
-                Message::error(format!("could not find {space} {name}", name = ident.symbol.get()))
-                    .at(ident.span)
+                Message::error(format!("could not find {space} {name}", name = name.ident.symbol.get()))
+                    .at(name.ident.span)
                     .push(self.resolution.diagnostics);
-                *name = ast::QName::Resolved {
-                    ident,
-                    res_kind: Resolution::Err
-                };
+                name.resolve(Resolution::Err);
             }
             return false;
         };
         true
     }
 
-    fn resolve_priority(&self, pspaces: &[NameSpace], name: &mut ast::QName) -> bool {
+    fn resolve_priority(&self, pspaces: &[NameSpace], name: &ast::Name) -> bool {
         for space in pspaces {
             if self.resolve(*space, name, false) {
                 return true;
             }
         }
-        let ident = match name {
-            ast::QName::Unresolved(ident) => ident.clone(),
-            ast::QName::Resolved { .. } => panic!(),
-        };
-        Message::error(format!("could not find {space} {name}", space = pspaces[0], name = ident.symbol.get()))
-            .at(ident.span)
+        Message::error(format!("could not find {space} {name}", space = pspaces[0], name = name.ident.symbol.get()))
+            .at(name.ident.span)
             .push(self.resolution.diagnostics);
-        *name = ast::QName::Resolved {
-            ident,
-            res_kind: Resolution::Err
-        };
+        name.resolve(Resolution::Err);
         false
     }
 }
 
-impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
-    fn visit_item(&mut self, item: &mut ast::Item) {
-        match &mut item.kind {
+impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
+    fn visit_item(&mut self, item: &ast::Item) {
+        match &item.kind {
             ast::ItemKind::Function(function) => {
                 if function.sig.generics.len() > 0 {
                     let first = function.sig.generics.first().unwrap();
@@ -299,15 +282,15 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         .at(Span::new(first.span.start, last.span.end))
                         .push(self.resolution.diagnostics);
                 }
-                self.visit_ty_expr(&mut function.sig.returns);
+                self.visit_ty_expr(function.sig.returns);
 
-                let Some(ref mut body) = function.body else {
-                    node_visitor::visit_vec(&mut function.sig.params, |p| self.visit_param(p));
+                let Some(ref body) = function.body else {
+                    node_visitor::visit_slice(function.sig.params, |p| self.visit_param(p));
                     return;
                 };
 
                 self.with_rib(|this| {
-                    node_visitor::visit_vec(&mut function.sig.params, |p| this.visit_param(p));
+                    node_visitor::visit_slice(function.sig.params, |p| this.visit_param(p));
                     this.visit_expr(body);
                 });
             }
@@ -319,7 +302,7 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         .at(Span::new(first.span.start, last.span.end))
                         .push(self.resolution.diagnostics);
                 }
-                node_visitor::visit_vec(&mut stc.fields, |field_def| self.visit_field_def(field_def));
+                node_visitor::visit_slice(stc.fields, |field_def| self.visit_field_def(field_def));
             }
             ast::ItemKind::Enum(en) => {
                 if let Some(extends) = &en.extends {
@@ -327,17 +310,17 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         .at(Span::new(extends.span.start, extends.span.end))
                         .push(self.resolution.diagnostics);
                 }
-                node_visitor::visit_vec(&mut en.variants, |variant_def| self.visit_variant_def(variant_def));
+                node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             }
-            ast::ItemKind::GlobalVar(ty, expr, _) => {
-                self.visit_ty_expr(ty);
-                node_visitor::visit_option(expr, |expr| self.visit_expr(expr));
+            ast::ItemKind::GlobalVar(global_var) => {
+                self.visit_ty_expr(global_var.ty);
+                node_visitor::visit_option(global_var.init, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
         }
     }
 
-    fn visit_variant_def(&mut self, variant_def: &mut ast::VariantDef) {
+    fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
         if let Some(sset) = &variant_def.sset {
             Message::fatal("setting explicit enum tag values is not supported yet")
                 .at(Span::new(sset.span.start, sset.span.end))
@@ -345,79 +328,81 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn visit_field_def(&mut self, field_def: &mut ast::FieldDef) {
+    fn visit_field_def(&mut self, field_def: &ast::FieldDef) {
         if let Some(default_init) = &field_def.default_init {
             Message::fatal("struct default initalizers are not supported yet")
                 .at(Span::new(default_init.span.start, field_def.span.end))
                 .push(self.resolution.diagnostics);
         }
-        self.visit_ty_expr(&mut field_def.ty);
-        node_visitor::visit_option(&mut field_def.default_init, |default_init| self.visit_expr(default_init));
+        self.visit_ty_expr(field_def.ty);
+        node_visitor::visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
     }
 
-    fn visit_stmt(&mut self, stmt: &mut ast::Stmt) {
-        match &mut stmt.kind {
-            ast::StmtKind::Local(ident, ret_ty, init) => {
-                node_visitor::visit_option(ret_ty, |ret_ty| self.visit_ty_expr(ret_ty));
-                node_visitor::visit_option(init, |init| self.visit_expr(init));
+    fn visit_stmt(&mut self, stmt: &ast::Stmt) {
+        match &stmt.kind {
+            ast::StmtKind::Local(local) => {
+                node_visitor::visit_option(local.ty, |ret_ty| self.visit_ty_expr(ret_ty));
+                node_visitor::visit_option(local.init, |init| self.visit_expr(init));
 
-                self.define(ident.clone(), stmt.node_id);
+                self.define(local.ident.clone(), stmt.node_id);
             }
-            ast::StmtKind::If(cond, body, else_body) => {
-                self.visit_expr(cond);
+            ast::StmtKind::If(if_stmt) => {
+                self.visit_expr(if_stmt.condition);
                 self.with_rib(|this| {
-                    this.visit_block(body);
+                    this.visit_block(&if_stmt.body);
                 });
-                node_visitor::visit_option(else_body, |else_body| self.visit_stmt(else_body))
+                node_visitor::visit_option(if_stmt.else_branch, |else_body| self.visit_stmt(else_body))
             }
-            ast::StmtKind::While(cond, body) => {
-                self.visit_expr(cond);
+            ast::StmtKind::While(while_loop) => {
+                self.visit_expr(while_loop.condition);
                 self.with_rib(|this| {
-                    this.enter_loop_ctxt(body.node_id, |this| this.visit_block(body));
-                });
-            }
-            ast::StmtKind::For(ident, iter, body) => {
-                self.define(ident.clone(), stmt.node_id);
-                self.visit_expr(iter);
-                self.with_rib(|this| {
-                    this.enter_loop_ctxt(body.node_id, |this| this.visit_block(body));
+                    this.enter_loop_ctxt(while_loop.body.node_id, |this| this.visit_block(&while_loop.body));
                 });
             }
-            _ => node_visitor::noop_visit_stmt_kind(&mut stmt.kind, self),
+            ast::StmtKind::For(for_loop) => {
+                self.define(for_loop.bound_var.clone(), stmt.node_id);
+                self.visit_expr(for_loop.iterator);
+                self.with_rib(|this| {
+                    this.enter_loop_ctxt(for_loop.body.node_id, |this| this.visit_block(&for_loop.body));
+                });
+            }
+            _ => node_visitor::noop_visit_stmt_kind(&stmt.kind, self),
         }
     }
 
-    fn visit_control_flow(&mut self, control_flow: &mut ast::ControlFlow) {
+    fn visit_control_flow(&mut self, control_flow: &ast::ControlFlow) {
         let Some(owner) = self.loop_owners.last() else {
             Message::error(format!("`{}` found outside of loop", control_flow.kind))
                 .at(control_flow.span)
                 .push(self.resolution.diagnostics);
+
+            control_flow.destination.set(Err(OutsideLoopScope));
             return;
         };
-        control_flow.destination = Ok(*owner);
+        control_flow.destination.set(Ok(*owner));
     }
 
-    fn visit_name(&mut self, name: &mut ast::QName) {
+    fn visit_name(&mut self, name: &ast::Name) {
         self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], name);
     }
 
-    fn visit_expr(&mut self, expr: &mut ast::Expr) {
-        match &mut expr.kind {
+    fn visit_expr(&mut self, expr: &ast::Expr) {
+        match &expr.kind {
             ast::ExprKind::Name(name) =>
                 self.visit_name(name),
-            ast::ExprKind::TypeInit(ty, fields) => {
-                node_visitor::visit_vec(fields, |field| self.visit_type_init(field));
-                let Some(ty) = ty else {
+            ast::ExprKind::TypeInit(ty_init) => {
+                node_visitor::visit_slice(ty_init.initializers, |field| self.visit_type_init(field));
+                let Some(ty) = ty_init.ty else {
                     return;
                 };
-                match &mut ty.kind {
+                match &ty.kind {
                     ast::TypeExprKind::Name(name) => {
                         self.resolve(NameSpace::Type, name, true);
                     },
-                    ast::TypeExprKind::Array(ty, cap) => {
+                    ast::TypeExprKind::Array(array) => {
                         self.visit_ty_expr(ty);
-                        match cap {
-                            ast::ArrayCapacity::Discrete(expr) =>
+                        match array.cap {
+                            ast::ArrayCapacity::Discrete(ref expr) =>
                                 self.visit_nested_const(expr),
                             ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                         }
@@ -433,17 +418,17 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                         panic!("invalid state after parsing type init"),
                 }
             }
-            ast::ExprKind::FunctionCall(base, args, generic_args) if matches!(&base.kind, ast::ExprKind::Name(..)) => {
-                let ast::ExprKind::Name(name) = &mut base.kind else {
-                    panic!();
+            ast::ExprKind::FunctionCall(call) if matches!(&call.callable.kind, ast::ExprKind::Name(..)) => {
+                let ast::ExprKind::Name(name) = &call.callable.kind else {
+                    unreachable!();
                 };
-                if generic_args.len() > 0 {
+                if call.generic_args.len() > 0 {
                     Message::fatal("generic function calls are not supported yet")
                         .at(expr.span)
                         .push(self.resolution.diagnostics);
                     return;
                 }
-                node_visitor::visit_vec(args, |arg| self.visit_argument(arg));
+                node_visitor::visit_slice(call.args, |arg| self.visit_argument(arg));
                 self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], name);
             }
             ast::ExprKind::Block(body) => {
@@ -451,45 +436,14 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     this.visit_block(body);
                 });
             }
-            ast::ExprKind::Field(base, ident) => match (base.as_mut(), ident) {
-                (ast::Expr { kind: ast::ExprKind::Name(name), node_id: spare_id, .. }, ast::FieldIdent::Named(variant)) => {
-                    let res = if name.ident().symbol.get().chars().nth(0).unwrap().is_uppercase() {
-                        // types (enums) get higher priority if the beginning char of the name is
-                        // uppercase
-                        self.resolve_priority(&[NameSpace::Type, NameSpace::Variable, NameSpace::Function], name)
-                    } else {
-                        self.resolve_priority(&[NameSpace::Variable, NameSpace::Function, NameSpace::Type], name)
-                    };
-                    if let ast::QName::Resolved { res_kind: ast::Resolution::Def(_, ast::DefinitionKind::Enum), .. }
-                        = name {
-                        assert!(res);
-                        let span = expr.span;
-                        let node_id = expr.node_id;
-
-                        let enm = {
-                            let span = name.ident().span;
-                            ast::TypeExpr {
-                                span,
-                                kind: ast::TypeExprKind::Name(name.clone()),
-                                node_id: *spare_id
-                            }
-                        };
-
-                        *expr = ast::Expr {
-                            kind: ast::ExprKind::EnumVariant(Box::new(enm), variant.clone()),
-                            span,
-                            node_id
-                        };
-                    }
-                }
-                _ => self.visit_expr(base)
-            },
-            _ => node_visitor::noop_visit_expr_kind(&mut expr.kind, self)
+            ast::ExprKind::Field(field) =>
+                self.visit_expr(field.expr),
+            _ => node_visitor::noop_visit_expr_kind(&expr.kind, self)
         }
     }
 
-    fn visit_param(&mut self, param: &mut ast::Param) {
-        self.visit_ty_expr(&mut param.ty);
+    fn visit_param(&mut self, param: &ast::Param) {
+        self.visit_ty_expr(&param.ty);
 
         if !self.has_rib() {
             return;
@@ -498,8 +452,8 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
         self.define(param.ident.clone(), param.node_id);
     }
 
-    fn visit_ty_expr(&mut self, ty: &mut ast::TypeExpr) {
-        match &mut ty.kind {
+    fn visit_ty_expr(&mut self, ty: &ast::TypeExpr) {
+        match &ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
             ast::TypeExprKind::Name(name) => {
                 self.resolve(NameSpace::Type, name, true);
@@ -509,10 +463,10 @@ impl<'r, 'tcx> MutVisitor for NameResolutionPass<'r, 'tcx> {
                     .at(ty.span)
                     .push(self.resolution.diagnostics);
             }
-            ast::TypeExprKind::Array(base, cap) => {
-                self.visit_ty_expr(base);
-                match cap {
-                    ast::ArrayCapacity::Discrete(expr) =>
+            ast::TypeExprKind::Array(array) => {
+                self.visit_ty_expr(array.ty);
+                match array.cap {
+                    ast::ArrayCapacity::Discrete(ref expr) =>
                         self.visit_nested_const(expr),
                     ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                 }

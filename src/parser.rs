@@ -151,7 +151,7 @@ impl<'a> Parser<'a> {
         return None;
     }
 
-    fn parse_statement(&mut self) -> Stmt {
+    /*fn parse_statement(&mut self) -> Stmt {
         let start = self.cursor.pos();
 
         if let Some(keyword) = self.parse::<Keyword>() {
@@ -187,11 +187,26 @@ impl<'a> Parser<'a> {
             ParseTy::None => ()
         }
 
-        StmtKind::Expr(self.parse_expression(Restrictions::NO_MULTIPLICATION))
-    }
+        let lhs = self.parse_expression(Restrictions::NO_MULTIPLICATION);
+        if self.skip_if(Token![=]).is_none() {
+            return Stmt {
+                kind: StmtKind::Expr(lhs),
+                span: self.cursor.spanned(start),
+                node_id: self.make_id()
+            };
+        }
+
+        let rhs = self.parse_expression(Restrictions::empty());
+        
+        return Stmt {
+            kind: StmtKind::Assign(lhs, rhs),
+            span: self.cursor.spanned(start),
+            node_id: self.make_id()
+        };
+    }*/
 }
 
-pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile, ()> {
+pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile<'sess>, ()> {
     let _diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 

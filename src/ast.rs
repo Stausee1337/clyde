@@ -1,21 +1,21 @@
-use std::ops::Range;
+use std::cell::OnceCell;
 use std::hash::Hash;
 
-use crate::lexer::{Span, BinaryOp, UnaryOp};
+use crate::lexer::{self, Span};
 use crate::symbol::Symbol;
 
-pub const DUMMY_SPAN: Range<usize> = 0..0;
+// pub const DUMMY_SPAN: Range<usize> = 0..0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Node<'ast> {
-    Expr(&'ast Expr),
-    NestedConst(&'ast NestedConst),
-    Item(&'ast Item),
-    SourceFile(&'ast SourceFile),
-    Stmt(&'ast Stmt),
-    TypeExpr(&'ast TypeExpr),
-    Field(&'ast FieldDef),
-    Variant(&'ast VariantDef),
+    Expr(&'ast Expr<'ast>),
+    NestedConst(&'ast NestedConst<'ast>),
+    Item(&'ast Item<'ast>),
+    SourceFile(&'ast SourceFile<'ast>),
+    Stmt(&'ast Stmt<'ast>),
+    TypeExpr(&'ast TypeExpr<'ast>),
+    Field(&'ast FieldDef<'ast>),
+    Variant(&'ast VariantDef<'ast>),
 }
 
 impl<'ast> Node<'ast> {
@@ -33,8 +33,8 @@ impl<'ast> Node<'ast> {
                         None
                     }
                 }
-                ItemKind::GlobalVar(_, body, _) => {
-                    if let Some(ref body) = body {
+                ItemKind::GlobalVar(global) => {
+                    if let Some(ref body) = global.init {
                         Some(Body { params: &[], body })
                     } else {
                         None
@@ -49,7 +49,7 @@ impl<'ast> Node<'ast> {
         }
     }
 
-    pub fn signature(self) -> Option<&'ast FnSignature> {
+    pub fn signature(self) -> Option<&'ast FnSignature<'ast>> {
         match self {
             Node::Item(Item { kind: ItemKind::Function(func), .. }) =>
                 Some(&func.sig),
@@ -60,8 +60,8 @@ impl<'ast> Node<'ast> {
 
 #[derive(Debug)]
 pub struct Body<'ast> {
-    pub params: &'ast [Param],
-    pub body: &'ast Expr
+    pub params: &'ast [Param<'ast>],
+    pub body: &'ast Expr<'ast>
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -116,93 +116,99 @@ pub enum Resolution {
 }
 
 #[derive(Debug, Clone)]
-pub enum QName {
-    Unresolved(Ident),
-    Resolved {
-        ident: Ident,
-        res_kind: Resolution
-    },
+pub struct Name {
+    pub ident: Ident,
+    resolution: OnceCell<Resolution>
 }
 
-impl QName {
-    pub fn ident(&self) -> &Ident {
-        match self {
-            QName::Unresolved(ident) => ident,
-            QName::Resolved { ident, .. } => ident,
-        }
+impl Name {
+    pub fn resolution(&self) -> Option<&Resolution> {
+        self.resolution.get() 
+    }
+
+    pub fn resolve(&self, resolution: Resolution) {
+        self.resolution.set(resolution)
+            .expect("resolve() on resolved name")
     }
 }
 
 #[derive(Debug)]
-pub struct SourceFile {
-    pub items: Vec<Item>,
+pub struct SourceFile<'ast> {
+    pub items: &'ast [Item<'ast>],
     pub span: Span,
     pub node_id: NodeId,
 }
 
 #[derive(Debug)]
-pub struct Item {
-    pub kind: ItemKind,
+pub struct Item<'ast> {
+    pub kind: ItemKind<'ast>,
     pub span: Span,
     pub ident: Ident,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
-pub enum ItemKind {
-    Function(Function),
-    Struct(Struct),
-    Enum(Enum),
-    GlobalVar(Box<TypeExpr>, Option<Box<Expr>>, bool),
+pub enum ItemKind<'ast> {
+    Function(Function<'ast>),
+    Struct(Struct<'ast>),
+    Enum(Enum<'ast>),
+    GlobalVar(GlobalVar<'ast>),
     Err
 }
 
 #[derive(Debug)]
-pub struct Struct {
-    pub generics: Vec<GenericParam>,
-    pub fields: Vec<FieldDef>,
-    pub attributes: Vec<Attribute>
+pub struct GlobalVar<'ast> {
+    pub ty: &'ast TypeExpr<'ast>,
+    pub init: Option<&'ast Expr<'ast>>,
+    pub constant: bool
 }
 
 #[derive(Debug)]
-pub struct FieldDef {
+pub struct Struct<'ast> {
+    pub generics: &'ast [&'ast GenericParam<'ast>],
+    pub fields: &'ast [FieldDef<'ast>],
+    pub attributes: &'ast [Attribute]
+}
+
+#[derive(Debug)]
+pub struct FieldDef<'ast> {
     pub name: Ident,
-    pub ty: TypeExpr,
-    pub default_init: Option<Box<Expr>>,
+    pub ty: &'ast TypeExpr<'ast>,
+    pub default_init: Option<&'ast Expr<'ast>>,
     pub span: Span,
     pub node_id: NodeId,
-    pub def_id: DefId
+    pub def_id: OnceCell<DefId>
 }
 
 #[derive(Debug)]
-pub struct Enum {
-    pub extends: Option<Box<TypeExpr>>,
-    pub variants: Vec<VariantDef>,
-    pub attributes: Vec<Attribute>
+pub struct Enum<'ast> {
+    pub extends: Option<&'ast TypeExpr<'ast>>,
+    pub variants: &'ast [VariantDef<'ast>],
+    pub attributes: &'ast [Attribute]
 }
 
 #[derive(Debug)]
-pub struct VariantDef {
+pub struct VariantDef<'ast> {
     pub name: Ident,
-    pub sset: Option<Box<Expr>>,
+    pub sset: Option<&'ast Expr<'ast>>,
     pub span: Span,
     pub node_id: NodeId,
-    pub def_id: DefId
+    pub def_id: OnceCell<DefId>
 }
 
 #[derive(Debug)]
-pub struct Function {
-    pub sig: FnSignature,
-    pub body: Option<Box<Expr>>,
+pub struct Function<'ast> {
+    pub sig: FnSignature<'ast>,
+    pub body: Option<&'ast Expr<'ast>>,
     pub span: Span,
-    pub attributes: Vec<Attribute>
+    pub attributes: &'ast [Attribute]
 }
 
 #[derive(Debug)]
-pub struct FnSignature {
-    pub returns: TypeExpr,
-    pub params: Vec<Param>,
-    pub generics: Vec<GenericParam>,
+pub struct FnSignature<'ast> {
+    pub returns: &'ast TypeExpr<'ast>,
+    pub params: &'ast [Param<'ast>],
+    pub generics: &'ast [&'ast GenericParam<'ast>],
 }
 
 #[derive(Debug)]
@@ -211,39 +217,72 @@ pub struct Attribute {
 }
 
 #[derive(Debug)]
-pub struct Param {
+pub struct Param<'ast> {
     pub ident: Ident,
-    pub ty: TypeExpr,
+    pub ty: TypeExpr<'ast>,
     pub span: Span,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
-pub struct Block {
-    pub stmts: Vec<Stmt>,
+pub struct Block<'ast> {
+    pub stmts: &'ast [&'ast Stmt<'ast>],
     pub span: Span,
     pub node_id: NodeId,
 }
 
 #[derive(Debug)]
-pub struct Stmt {
-    pub kind: StmtKind,
+pub struct Stmt<'ast> {
+    pub kind: StmtKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
-pub enum StmtKind {
-    Expr(Box<Expr>),
-    Block(Block),
-    Assign(Box<Expr>, Box<Expr>),
-    If(Box<Expr>, Block, Option<Box<Stmt>>),
-    While(Box<Expr>, Block),
-    For(Ident, Box<Expr>, Block),
-    Local(Ident, Option<Box<TypeExpr>>, Option<Box<Expr>>),
-    Return(Option<Box<Expr>>),
+pub enum StmtKind<'ast> {
+    Expr(&'ast Expr<'ast>),
+    Block(Block<'ast>),
+    Assign(Assign<'ast>),
+    If(If<'ast>),
+    While(While<'ast>),
+    For(For<'ast>),
+    Local(Local<'ast>),
+    Return(Option<&'ast Expr<'ast>>),
     ControlFlow(ControlFlow),
     Err
+}
+
+#[derive(Debug)]
+pub struct Local<'ast> {
+    pub ident: Ident,
+    pub ty: Option<&'ast TypeExpr<'ast>>,
+    pub init: Option<&'ast Expr<'ast>>
+}
+
+#[derive(Debug)]
+pub struct For<'ast> {
+    pub bound_var: Ident,
+    pub iterator: &'ast Expr<'ast>,
+    pub body: Block<'ast>
+}
+
+#[derive(Debug)]
+pub struct While<'ast> {
+    pub condition: &'ast Expr<'ast>,
+    pub body: Block<'ast>,
+}
+
+#[derive(Debug)]
+pub struct If<'ast> {
+    pub condition: &'ast Expr<'ast>,
+    pub body: Block<'ast>,
+    pub else_branch: Option<&'ast Stmt<'ast>>
+}
+
+#[derive(Debug)]
+pub struct Assign<'ast> {
+    pub lhs: &'ast Expr<'ast>,
+    pub rhs: &'ast Expr<'ast>
 }
 
 #[derive(Debug)]
@@ -252,7 +291,7 @@ pub struct OutsideLoopScope;
 #[derive(Debug)]
 pub struct ControlFlow {
     pub kind: ControlFlowKind,
-    pub destination: Result<NodeId, OutsideLoopScope>,
+    pub destination: OnceCell<Result<NodeId, OutsideLoopScope>>,
     pub span: Span,
 }
 
@@ -260,7 +299,7 @@ impl ControlFlow {
     pub fn new(kind: ControlFlowKind, span: Span,) -> ControlFlow { 
         ControlFlow {
             kind, span,
-            destination: Err(OutsideLoopScope) 
+            destination: OnceCell::new()
         }
     }
 }
@@ -280,31 +319,82 @@ impl std::fmt::Display for ControlFlowKind {
 }
 
 #[derive(Debug)]
-pub struct Expr {
-    pub kind: ExprKind,
+pub struct Expr<'ast> {
+    pub kind: ExprKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
-pub enum ExprKind {
-    BinOp(Box<BinOp>),
-    UnaryOp(Box<Expr>, UnaryOp),
-    Cast(Box<Expr>, Option<Box<TypeExpr>>, TypeConversion),
-    FunctionCall(Box<Expr>, Vec<FunctionArgument>, Vec<GenericArgument>),
-    TypeInit(Option<Box<TypeExpr>>, Vec<TypeInit>),
-    Subscript(Box<Expr>, Vec<Expr>),
-    Field(Box<Expr>, FieldIdent),
+pub enum ExprKind<'ast> {
+    BinaryOp(BinaryOp<'ast>),
+    UnaryOp(UnaryOp<'ast>),
+    Cast(Cast<'ast>),
+    FunctionCall(FunctionCall<'ast>),
+    TypeInit(TypeInit<'ast>),
+    Subscript(Subscript<'ast>),
+    Field(Field<'ast>),
     Constant(Constant),
     String(String),
-    Name(QName),
-    Tuple(Vec<Expr>),
-    EnumVariant(Box<TypeExpr>, Ident),
-    ShorthandEnum(Ident),
-    Range(Box<Expr>, Box<Expr>, bool),
-    Deref(Box<Expr>),
-    Block(Block),
+    Tuple(&'ast [&'ast Expr<'ast>]),
+    // FIXME: EnumVariant (and ShorthandEnum) need to be handled using `Path`
+    // (which will replace Name) since those will be resolvable using the OnceCell<Resolution>
+    // field.
+    // NOTE: Path is going to be a slice of `Ident`s representing a coloned path
+    // (e.g. sys::io::file or FileMode::Read for enum variants)
+    /*EnumVariant(EnumVariant<'ast>),*/
+    Name(Name),
+    /*ShorthandEnum(Ident),*/
+    Range(Range<'ast>),
+    Deref(&'ast Expr<'ast>),
+    Block(Block<'ast>),
     Err
+}
+
+#[derive(Debug)]
+pub struct Range<'ast> {
+    pub start: &'ast Expr<'ast>,
+    pub end: &'ast Expr<'ast>,
+    pub inclusive: bool
+}
+
+#[derive(Debug)]
+pub struct Field<'ast> {
+    pub expr: &'ast Expr<'ast>,
+    pub field: FieldIdent
+}
+
+#[derive(Debug)]
+pub struct Subscript<'ast> {
+    pub expr: &'ast Expr<'ast>,
+    pub args: &'ast [&'ast Expr<'ast>]
+
+}
+
+#[derive(Debug)]
+pub struct TypeInit<'ast> {
+    pub ty: Option<&'ast TypeExpr<'ast>>,
+    pub initializers: &'ast [TypeInitKind<'ast>]
+}
+
+#[derive(Debug)]
+pub enum TypeInitKind<'ast> {
+    Direct(&'ast Expr<'ast>),
+    Field(Ident, &'ast Expr<'ast>)
+}
+
+#[derive(Debug)]
+pub struct FunctionCall<'ast> {
+    pub callable: &'ast Expr<'ast>,
+    pub args: &'ast [FunctionArgument<'ast>],
+    pub generic_args: &'ast [GenericArgument<'ast>]
+}
+
+#[derive(Debug)]
+pub struct Cast<'ast> {
+    pub expr: &'ast Expr<'ast>,
+    pub ty: Option<&'ast TypeExpr<'ast>>,
+    pub kind: TypeConversion
 }
 
 #[derive(Debug)]
@@ -322,30 +412,29 @@ pub enum TypeConversion {
 }
 
 #[derive(Debug)]
-pub struct BinOp {
-    pub lhs: Expr,
-    pub rhs: Expr,
-    pub operator: BinaryOp
+pub struct BinaryOp<'ast> {
+    pub lhs: &'ast Expr<'ast>,
+    pub rhs: &'ast Expr<'ast>,
+    pub operator: lexer::BinaryOp
 }
 
 #[derive(Debug)]
-pub enum FunctionArgument {
-    Direct(Box<Expr>),
-    Keyword(Ident, Box<Expr>)
+pub struct UnaryOp<'ast> {
+    pub expr: &'ast Expr<'ast>,
+    pub operator: lexer::UnaryOp
 }
 
 #[derive(Debug)]
-pub enum TypeInit {
-    Field(Ident, Box<Expr>),
-    Direct(Box<Expr>),
+pub enum FunctionArgument<'ast> {
+    Direct(&'ast Expr<'ast>),
+    Keyword(Ident, &'ast Expr<'ast>)
 }
 
-
 #[derive(Debug)]
-pub enum ArrayCapacity {
+pub enum ArrayCapacity<'ast> {
     Infer,
     Dynamic,
-    Discrete(NestedConst)
+    Discrete(NestedConst<'ast>)
 }
 
 #[derive(Debug)]
@@ -358,49 +447,60 @@ pub enum Constant {
 }
 
 #[derive(Debug)]
-pub struct NestedConst {
-    pub expr: Box<Expr>,
+pub struct NestedConst<'ast> {
+    pub expr: &'ast Expr<'ast>,
     pub span: Span,
     pub node_id: NodeId,
-    pub def_id: DefId,
+    pub def_id: OnceCell<DefId>,
 }
 
 #[derive(Debug)]
-pub struct TypeExpr {
-    pub kind: TypeExprKind,
+pub struct TypeExpr<'ast> {
+    pub kind: TypeExprKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
-pub enum TypeExprKind {
-    Ref(Box<TypeExpr>),
-    Name(QName),
-    Generic(QName, Vec<GenericArgument>),
-    Array(Box<TypeExpr>, ArrayCapacity),
-    Slice(Box<TypeExpr>),
-    Tuple(Vec<TypeExpr>),
+pub enum TypeExprKind<'ast> {
+    Ref(&'ast TypeExpr<'ast>),
+    Name(Name),
+    Generic(Generic<'ast>),
+    Array(Array<'ast>),
+    Slice(&'ast TypeExpr<'ast>),
+    Tuple(&'ast  [&'ast TypeExpr<'ast>]),
+}
+#[derive(Debug)]
+pub struct Array<'ast> {
+    pub ty: &'ast TypeExpr<'ast>,
+    pub cap: ArrayCapacity<'ast>
 }
 
 #[derive(Debug)]
-pub enum GenericArgument {
-    Ty(TypeExpr),
-    Expr(NestedConst),
+pub struct Generic<'ast> {
+    pub name: Name,
+    pub args: &'ast [GenericArgument<'ast>]
+}
+
+#[derive(Debug)]
+pub enum GenericArgument<'ast> {
+    Ty(&'ast TypeExpr<'ast>),
+    Expr(NestedConst<'ast>),
     Constant(Constant),
 }
 
 #[derive(Debug)]
-pub struct GenericParam {
+pub struct GenericParam<'ast> {
     pub ident: Ident,
-    pub kind: GenericParamKind,
+    pub kind: GenericParamKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
 }
 
 #[derive(Debug)]
-pub enum GenericParamKind {
-    Type(Vec<TypeExpr>),
-    Const(TypeExpr)
+pub enum GenericParamKind<'ast> {
+    Type(&'ast [&'ast TypeExpr<'ast>]),
+    Const(&'ast TypeExpr<'ast>)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
