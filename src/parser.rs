@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use crate::{
-    ast::{self, Constant, Stmt, StmtKind},
+    ast::{self, Constant, NodeId, Stmt, StmtKind},
     interface::Session,
-    lexer::{self, Keyword, LiteralKind, NumberMode, Operator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish},
+    lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish},
     symbol::Symbol,
     Token
 };
@@ -16,6 +16,10 @@ pub struct TokenCursor<'a> {
 impl<'a> TokenCursor<'a> {
     fn current(&self) -> Token<'a> {
         self.stream.tokens[self.current]
+    }
+
+    fn replace(&mut self, new: Token<'static>) {
+        self.stream.tokens[self.current] = new;
     }
 
     fn span(&self) -> Span {
@@ -47,6 +51,15 @@ impl Parsable for Keyword {
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Keyword(keyword) = token.kind {
             return Some(keyword);
+        }
+        None
+    }
+}
+
+impl Parsable for Punctuator {
+    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
+        if let TokenKind::Punctuator(punct) = token.kind {
+            return Some(punct);
         }
         None
     }
@@ -118,22 +131,36 @@ impl Parsable for Constant {
                 let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
                 Some(Constant::Integer(int))
             }
-            TokenKind::Keyword(Token![null]) => Some(Constant::Null),
             _ => None
         }
     }
 }
 
-pub struct Parser<'a> {
-    cursor: TokenCursor<'a>
+impl Parsable for AssociotiveOp {
+    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
+        if let TokenKind::Punctuator(punct) = token.kind {
+            if let Some(binop) = lexer::BinaryOp::from_punct(punct) {
+                return Some(Self::BinaryOp(binop));
+            }
+            if let Some(assignop) = lexer::AssignmentOp::from_punct(punct) {
+                return Some(Self::AssignOp(assignop));
+            }
+        }
+        None
+    }
 }
 
-impl<'a> Parser<'a> {
+pub struct Parser<'src, 'ast> {
+    cursor: TokenCursor<'src>,
+    arena: &'ast bumpalo::Bump
+}
+
+impl<'src, 'ast> Parser<'src, 'ast> {
     fn matches(&self, token: impl Tokenish) -> bool {
         token.matches(self.cursor.current())
     }
 
-    fn skip_if(&mut self, token: impl Tokenish) -> Option<Token> {
+    fn bump_if(&mut self, token: impl Tokenish) -> Option<Token> {
         let current = self.cursor.current();
         if token.matches(current) {
             self.cursor.advance();
@@ -142,13 +169,216 @@ impl<'a> Parser<'a> {
         None
     }
 
-    fn parse<P: Parsable>(&mut self) -> Option<P> {
+    fn bump_on<P: Parsable>(&mut self) -> Option<P> {
         let current = self.cursor.current();
         if let Some(p) = P::from_token(current) {
             self.cursor.advance();
             return Some(p);
         }
         return None;
+    }
+
+    fn bump(&mut self) {
+        self.cursor.advance();
+    }
+
+    fn match_on<P: Parsable>(&mut self) -> Option<P> {
+        let current = self.cursor.current();
+        if let Some(p) = P::from_token(current) {
+            return Some(p);
+        }
+        return None;
+    }
+
+    fn alloc<T>(&self, object: T) -> &'ast T {
+        self.arena.alloc(object)
+    }
+
+    fn alloc_slice<T: Clone>(&self, slice: &[T]) -> &'ast [T] {
+        self.arena.alloc_slice_clone(slice)
+    }
+    
+    fn make_id(&mut self) -> NodeId {
+        // FIXME: actually advance ids
+        NodeId(0)
+    }
+
+    fn parse_primary(&mut self) -> &'ast ast::Expr<'ast> {
+        let token = self.cursor.current();
+        if let Some(keyword) = self.bump_on::<Keyword>() {
+            let kind = match keyword {
+                Token![null] =>
+                    ast::ExprKind::Constant(ast::Constant::Null),
+                Token![true] =>
+                    ast::ExprKind::Constant(ast::Constant::Boolean(true)),
+                Token![false] =>
+                    ast::ExprKind::Constant(ast::Constant::Boolean(false)),
+                _ =>
+                    ast::ExprKind::Err
+            };
+            let expr = ast::Expr {
+                kind,
+                span: token.span,
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        } else if let Some(literal) = self.bump_on::<Constant>() {
+            let expr = ast::Expr {
+                kind: ast::ExprKind::Constant(literal),
+                span: token.span,
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        } else if let Some(stringlit) = self.bump_on::<String>() {
+            let expr = ast::Expr {
+                kind: ast::ExprKind::String(stringlit),
+                span: token.span,
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        } else if let Some(symbol) = self.bump_on::<Symbol>() {
+            let name = ast::Name::from_ident(ast::Ident {
+                symbol,
+                span: token.span
+            });
+            // maybe this could be a discrete type init like: 
+            // `MyType { a: b }`
+            let expr = if self.matches(lexer::Punctuator::LCurly) {
+                self.parse_type_init_body()
+            } else {
+                let expr = ast::Expr {
+                    kind: ast::ExprKind::Name(name),
+                    span: token.span,
+                    node_id: self.make_id()
+                };
+                self.alloc(expr)
+            };
+            return expr;
+        }
+
+        let Some(punct) = self.bump_on::<Punctuator>() else {
+            let expr = ast::Expr {
+                kind: ast::ExprKind::Err,
+                span: token.span,
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        };
+
+        // Tuple (or nomral Expr resetting precedence), TypeInit or Block
+        let end = None;
+        let kind = match punct {
+            Punctuator::LParen => {
+                todo!()
+            },
+            _ => ast::ExprKind::Err
+        };
+
+        let end = end.unwrap_or(token.span);
+
+        let expr = ast::Expr {
+            kind,
+            span: Span::interpolate(token.span, end),
+            node_id: self.make_id()
+        };
+        self.alloc(expr)
+    }
+
+    fn parse_expr_prefix(&mut self) -> &'ast ast::Expr<'ast> {
+        let start = self.cursor.span();
+        if let Some(op) = self.bump_on::<lexer::UnaryOp>() {
+            let expr = self.parse_expr_prefix();
+            let expr = ast::Expr {
+                kind: ast::ExprKind::UnaryOp(ast::UnaryOp {
+                    expr,
+                    operator: op
+                }),
+                span: Span::interpolate(start, expr.span),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        } else if let Some(..) = self.bump_if(Token![*]) {
+            let expr = self.parse_expr_prefix();
+            let expr = ast::Expr {
+                kind: ast::ExprKind::Deref(expr),
+                span: Span::interpolate(start, expr.span),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        } else if self.matches(Token![&&]) {
+            // parse double refrence
+            let tok = self.cursor.current();
+            self.cursor.replace(Token {
+                kind: TokenKind::Punctuator(Token![&]),
+                span: Span {
+                    start: tok.span.start + 1,
+                    end: tok.span.end
+                }
+            });
+            let expr = self.parse_expr_prefix();
+
+            let expr = ast::Expr {
+                kind: ast::ExprKind::UnaryOp(ast::UnaryOp {
+                    expr,
+                    operator: lexer::UnaryOp::Ref
+                }),
+                span: Span::interpolate(start, expr.span),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        } else if self.matches(Token![cast]) || self.matches(Token![transmute]) {
+            let _token = self.cursor.current();
+            self.cursor.advance();
+            todo!("self.parse_ty_expr()")
+        }
+        let expr = self.parse_primary();
+        /*
+        FIXME: These are postfix expressions they will need to be parsed here
+        (or rahter in seperate method)
+        FunctionCall(FunctionCall<'ast>),
+        Subscript(Subscript<'ast>),
+        Field(Field<'ast>),
+        */
+        expr
+    }
+
+    fn parse_expr_assoc(&mut self, min_precendence: u32) -> &'ast ast::Expr<'ast> {
+        let mut lhs = self.parse_expr_prefix();
+
+        while let Some(op) = self.match_on::<AssociotiveOp>() {
+            let prec = op.precedence();
+            if prec < min_precendence {
+                break;
+            }
+            self.bump();
+
+            let rhs = self.parse_expr_assoc(prec + op.associotivity() as u32);
+
+            let span = Span::interpolate(lhs.span, rhs.span);
+
+            let kind = match op {
+                AssociotiveOp::BinaryOp(op) =>
+                    ast::ExprKind::BinaryOp(ast::BinaryOp {
+                        lhs,
+                        rhs,
+                        operator: op
+                    }),
+                AssociotiveOp::AssignOp(op) =>
+                    ast::ExprKind::AssignOp(ast::AssignOp {
+                        lhs,
+                        rhs,
+                        operator: op
+                    })
+            };
+
+            let expr = ast::Expr {
+                kind,
+                span,
+                node_id: self.make_id()
+            };
+            lhs = self.alloc(expr);
+        }
+        lhs
     }
 
     /*fn parse_statement(&mut self) -> Stmt {

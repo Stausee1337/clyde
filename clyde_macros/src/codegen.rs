@@ -174,7 +174,7 @@ pub fn generate_operator(token_stream: TokenStream) -> Result<TokenStream, syn::
     let precedence = if !precedence.is_empty() {
         Some(quote! {
             impl #enm_ident {
-                pub fn precedence(self) -> i32 {
+                pub fn precedence(self) -> u32 {
                     match self {
                         #precedence
                     }

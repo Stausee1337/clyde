@@ -1,6 +1,6 @@
 use std::{ops::{DerefMut, Deref}, marker::PhantomData};
 
-use crate::{symbol::Symbol, interface::File, string_internals::{self, run_utf8_validation}};
+use crate::{interface::File, string_internals::{self, run_utf8_validation}, symbol::Symbol};
 use clyde_macros::{LexFromString, Operator};
 
 use tinyvec::ArrayVec;
@@ -163,6 +163,13 @@ impl Span {
 
     pub const fn zero() -> Span {
         Span::new(0, 0)
+    }
+
+    pub const fn interpolate(start: Span, end: Span) -> Self {
+        Self {
+            start: start.start,
+            end: end.end
+        }
     }
 }
 
@@ -1027,6 +1034,13 @@ trait LexFromString: Sized {
     fn try_from_string(str: &str) -> Option<Self>;
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug)]
+pub enum Associotivity {
+    Right = 0,
+    Left = 1
+}
+
 #[derive(Debug, Clone, Copy, Operator)]
 pub enum BinaryOp {
     #[precedence = 11]
@@ -1124,6 +1138,36 @@ pub enum AssignmentOp {
     AndAssign,
     #[token = "|="]
     OrAssign,
+}
+
+impl AssignmentOp {
+    const ASSIGMENT_PRECEDENCE: u32 = 2;
+}
+
+#[derive(Clone, Copy)]
+pub enum AssociotiveOp {
+    BinaryOp(BinaryOp),
+    AssignOp(AssignmentOp),
+}
+
+impl AssociotiveOp {
+    pub fn precedence(&self) -> u32 {
+        match self {
+            AssociotiveOp::BinaryOp(binary) =>
+                binary.precedence(),
+            AssociotiveOp::AssignOp(..) =>
+                AssignmentOp::ASSIGMENT_PRECEDENCE
+        }
+    }
+
+    pub fn associotivity(&self) -> Associotivity {
+        match self {
+            AssociotiveOp::BinaryOp(..) =>
+                Associotivity::Left,
+            AssociotiveOp::AssignOp(..) =>
+                Associotivity::Right
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Operator)]

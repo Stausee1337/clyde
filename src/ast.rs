@@ -122,6 +122,13 @@ pub struct Name {
 }
 
 impl Name {
+    pub fn from_ident(ident: Ident) -> Self {
+        Self {
+            ident,
+            resolution: OnceCell::new()
+        }
+    }
+
     pub fn resolution(&self) -> Option<&Resolution> {
         self.resolution.get() 
     }
@@ -349,7 +356,7 @@ pub enum ExprKind<'ast> {
 pub struct AssignOp<'ast> {
     pub lhs: &'ast Expr<'ast>,
     pub rhs: &'ast Expr<'ast>,
-    pub operatior: lexer::AssignmentOp
+    pub operator: lexer::AssignmentOp
 }
 
 #[derive(Debug)]
