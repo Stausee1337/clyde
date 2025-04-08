@@ -1,19 +1,35 @@
 use std::path::Path;
 
 use crate::{
-    ast::{self, Constant, NodeId, Stmt, StmtKind},
+    ast::{self, Constant, FunctionArgument, NodeId, Stmt, StmtKind},
     interface::Session,
     lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish},
     symbol::Symbol,
     Token
 };
 
+enum ParseTry<'src, T> {
+    Sure(T),
+    Doubt(T, TokenCursor<'src>),
+    Never,
+}
+
+// FIXME: cursor shouldn't OWN the stream!
+// It should work with borrowed refrences (unsafely)
 pub struct TokenCursor<'a> {
     stream: TokenStream<'a>,
     current: usize
 }
 
 impl<'a> TokenCursor<'a> {
+    fn fork(&mut self) -> TokenCursor<'a> {
+        todo!()
+    }
+
+    fn sync(&mut self, other: TokenCursor<'a>) -> TokenCursor<'a> {
+        todo!()
+    }
+
     fn current(&self) -> Token<'a> {
         self.stream.tokens[self.current]
     }
@@ -136,6 +152,23 @@ impl Parsable for Constant {
     }
 }
 
+impl Parsable for u64 {
+    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
+        if let TokenKind::Literal(repr, LiteralKind::IntNumber(mode)) = token.kind {
+            let radix = match mode {
+                NumberMode::Binary => 2,
+                NumberMode::Octal => 8,
+                NumberMode::Decimal => 10,
+                NumberMode::Hex => 16
+            };
+
+            let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
+            return Some(int);
+        }
+        None
+    }
+}
+
 impl Parsable for AssociotiveOp {
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Punctuator(punct) = token.kind {
@@ -203,7 +236,67 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         NodeId(0)
     }
 
-    fn parse_primary(&mut self) -> &'ast ast::Expr<'ast> {
+    fn enter_speculative_block<'a, R, F: FnOnce(&mut Self) -> R>(
+        &mut self, do_work: F) -> (R, TokenCursor<'src>) {
+        let cursor = self.cursor.fork();
+        let result = do_work(self);
+        let cursor = self.cursor.sync(cursor);
+        (result, cursor)
+    }
+
+    fn maybe_parse_ty_expr(&mut self) -> ParseTry<'src, &'ast ast::TypeExpr<'ast>> {
+        // TODO:
+        ParseTry::Never
+    }
+
+    fn maybe_parse_generic_args(&mut self) -> ParseTry<'src, &'ast [ast::GenericArgument<'ast>]> {
+        todo!()
+    }
+
+    fn parse_type_init_body(
+        &mut self,
+        ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Expr<'ast> {
+        todo!()
+    }
+
+    fn try_parse_block(&mut self) -> Option<ast::Block<'ast>> {
+        let (block, cursor) = self.enter_speculative_block(|this| {
+            let Some(start) = this.bump_if(Punctuator::LCurly) else {
+                return None;
+            };
+            let start = start.span;
+
+            let Some(stmt) = this.try_parse_stmt() else {
+                return None;
+            };
+
+            let mut stmts = vec![stmt];
+
+            while !this.matches(Punctuator::RCurly) {
+                stmts.push(this.parse_stmt());
+            }
+
+            let end = this.cursor.current();
+            this.cursor.advance();
+
+            let stmts = this.alloc_slice(&stmts);
+
+            Some(ast::Block {
+                stmts,
+                span: Span::interpolate(start, end.span),
+                node_id: this.make_id()
+            })
+        });
+
+        if let Some(block) = block {
+            self.cursor.sync(cursor);
+            return Some(block);
+        }
+
+        None
+    }
+
+    fn parse_expr_primary(&mut self) -> &'ast ast::Expr<'ast> {
         let token = self.cursor.current();
         if let Some(keyword) = self.bump_on::<Keyword>() {
             let kind = match keyword {
@@ -236,16 +329,42 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 node_id: self.make_id()
             };
             return self.alloc(expr);
-        } else if let Some(symbol) = self.bump_on::<Symbol>() {
-            let name = ast::Name::from_ident(ast::Ident {
-                symbol,
-                span: token.span
-            });
+        } else if let Some(symbol) = self.match_on::<Symbol>() {
             // maybe this could be a discrete type init like: 
-            // `MyType { a: b }`
-            let expr = if self.matches(lexer::Punctuator::LCurly) {
-                self.parse_type_init_body()
+            // `Simple { a }`, `Wrapper<int> { inner: 42 }` or `int[_] { 1, 2, 3 }`
+            let try_ty = self.maybe_parse_ty_expr();
+            let mut ty_expr = None;
+            match try_ty {
+                ParseTry::Sure(expr) => {
+                    ty_expr = Some(expr);
+                    if !self.matches(Punctuator::LCurly) {
+                        let expr = ast::Expr {
+                            kind: ast::ExprKind::Err,
+                            span: token.span,
+                            node_id: self.make_id()
+                        };
+                        return self.alloc(expr);
+                    }
+                }
+                ParseTry::Doubt(expr, cursor) => {
+                    if let TokenKind::Punctuator(
+                        Punctuator::LCurly) = cursor.current().kind {
+                        self.cursor.sync(cursor);
+                        self.cursor.advance();
+                        ty_expr = Some(expr);
+                    }
+                }
+                ParseTry::Never => (),
+            }
+
+            let expr = if let Some(ty_expr) = ty_expr {
+                self.parse_type_init_body(Some(ty_expr))
             } else {
+                let name = ast::Name::from_ident(ast::Ident {
+                    symbol,
+                    span: token.span
+                });
+                self.cursor.advance(); // advance past the Symbol we matched
                 let expr = ast::Expr {
                     kind: ast::ExprKind::Name(name),
                     span: token.span,
@@ -256,7 +375,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             return expr;
         }
 
-        let Some(punct) = self.bump_on::<Punctuator>() else {
+        let Some(punct) = self.match_on::<Punctuator>() else {
             let expr = ast::Expr {
                 kind: ast::ExprKind::Err,
                 span: token.span,
@@ -266,11 +385,57 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         };
 
         // Tuple (or nomral Expr resetting precedence), TypeInit or Block
-        let end = None;
+        let mut end = None;
         let kind = match punct {
             Punctuator::LParen => {
-                todo!()
+                self.cursor.advance();
+                if let Some(rparen) = self.bump_if(Punctuator::RParen) {
+                    let expr = ast::Expr {
+                        kind: ast::ExprKind::Tuple(&[]),
+                        span: Span::interpolate(token.span, rparen.span),
+                        node_id: self.make_id()
+                    };
+                    return self.alloc(expr);
+                }
+
+                let mut expr = self.parse_expr_assoc(0);
+
+                let mut tuple_args = vec![];
+                let mut flushed = false;
+                while let Some(..) = self.bump_if(Token![,]) {
+                    tuple_args.push(expr);
+
+                    if self.matches(Punctuator::RParen) {
+                        flushed = true;
+                        break;
+                    }
+
+                    expr = self.parse_expr_assoc(0);
+                }
+                if !flushed {
+                    tuple_args.push(expr);
+                }
+                if let Some(rparen) = self.bump_if(Punctuator::RParen) {
+                    if tuple_args.is_empty() {
+                        // FIXME: we currently don't take into account the added
+                        // span changes from the parens, this can only be solved
+                        // using new ExprKind::Paren
+                        return expr;
+                    }
+                    end = Some(rparen.span);
+                    ast::ExprKind::Tuple(self.alloc_slice(&tuple_args))
+                } else {
+                    end = Some(self.cursor.span());
+                    ast::ExprKind::Err
+                }
             },
+            Punctuator::LCurly => {
+                let Some(block) = self.try_parse_block() else {
+                    return self.parse_type_init_body(None);
+                };
+                end = Some(block.span);
+                ast::ExprKind::Block(block)
+            }
             _ => ast::ExprKind::Err
         };
 
@@ -279,6 +444,126 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let expr = ast::Expr {
             kind,
             span: Span::interpolate(token.span, end),
+            node_id: self.make_id()
+        };
+        self.alloc(expr)
+    }
+
+    fn parse_call_expr(&mut self, expr: &'ast ast::Expr<'ast>, generic_args: &'ast [ast::GenericArgument<'ast>]) -> &'ast ast::Expr<'ast> {
+        let start = self.cursor.current();
+        self.cursor.advance();
+
+
+        let mut args = vec![];
+        while !self.matches(Punctuator::RParen) {
+            // TODO: implement lookahead
+            let keyword: Option<ast::Ident> = None;
+            /*if let Some(symbol) = self.match_on::<Symbol>() {
+                if self.lookahead().matches(Token![:]).is_some() {
+                    self.cursor.advance();
+                    self.cursor.advance();
+                    keyword = Some(symbol);
+                }
+            }*/
+
+            let expr = self.parse_expr_assoc(0);
+            let argument = if let Some(keyword) = keyword {
+                ast::FunctionArgument::Keyword(keyword, expr)
+            } else {
+                ast::FunctionArgument::Direct(expr)
+            };
+
+            args.push(argument);
+            
+            if self.bump_if(Token![,]).is_none() {
+                let expr = ast::Expr {
+                    kind: ast::ExprKind::Err,
+                    span: Span::interpolate(start.span, self.cursor.span()),
+                    node_id: self.make_id()
+                };
+                return self.alloc(expr);
+            }
+        }
+        self.cursor.advance();
+
+        let args = self.alloc_slice(&args);
+
+        let expr = ast::Expr {
+            kind: ast::ExprKind::FunctionCall(ast::FunctionCall {
+                callable: expr,
+                args,
+                generic_args
+            }),
+            span: Span::interpolate(start.span, self.cursor.span()),
+            node_id: self.make_id()
+        };
+        self.alloc(expr)
+    }
+
+    fn parse_subscript_expr(
+        &mut self, expr: &'ast ast::Expr<'ast>) -> &'ast ast::Expr<'ast> {
+        let start = self.cursor.current();
+        self.cursor.advance();
+
+        let mut args = vec![];
+        while !self.matches(Punctuator::RBracket) {
+            args.push(self.parse_expr_assoc(0));
+            
+            if self.bump_if(Token![,]).is_none() {
+                let expr = ast::Expr {
+                    kind: ast::ExprKind::Err,
+                    span: Span::interpolate(start.span, self.cursor.span()),
+                    node_id: self.make_id()
+                };
+                return self.alloc(expr);
+            }
+        }
+        self.cursor.advance();
+
+        let args = self.alloc_slice(&args);
+
+        let expr = ast::Expr {
+            kind: ast::ExprKind::Subscript(ast::Subscript {
+                expr,
+                args,
+            }),
+            span: Span::interpolate(start.span, self.cursor.span()),
+            node_id: self.make_id()
+        };
+        self.alloc(expr)
+    }
+
+    fn parse_field_expr(
+        &mut self, expr: &'ast ast::Expr<'ast>) -> &'ast ast::Expr<'ast> {
+        let start = self.cursor.current();
+        self.cursor.advance();
+        
+        let ident; 
+        if let Some(symbol) = self.bump_on::<Symbol>() {
+            ident = ast::FieldIdent::Named(ast::Ident {
+                symbol,
+                span: start.span
+            })
+        } else if let Some(index) = self.bump_on::<u64>() {
+            ident = ast::FieldIdent::Tuple {
+                value: index,
+                span: start.span
+            }
+        } else {
+            let expr = ast::Expr {
+                kind: ast::ExprKind::Err,
+                span: self.cursor.span(),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        }
+
+        let expr = ast::Expr {
+            kind: ast::ExprKind::Field(ast::Field {
+                expr,
+                field: ident
+            }),
+            span: Span::interpolate(expr.span, start.span),
             node_id: self.make_id()
         };
         self.alloc(expr)
@@ -331,14 +616,33 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             self.cursor.advance();
             todo!("self.parse_ty_expr()")
         }
-        let expr = self.parse_primary();
-        /*
-        FIXME: These are postfix expressions they will need to be parsed here
-        (or rahter in seperate method)
-        FunctionCall(FunctionCall<'ast>),
-        Subscript(Subscript<'ast>),
-        Field(Field<'ast>),
-        */
+        let mut expr = self.parse_expr_primary();
+        while let Some(punct) = self.match_on::<Punctuator>() {
+            expr = match punct {
+                Punctuator::LParen =>
+                    self.parse_call_expr(expr, &[]),
+                Punctuator::LBracket =>
+                    self.parse_subscript_expr(expr),
+                Token![.] =>
+                    self.parse_field_expr(expr),
+                Token![<] if matches!(expr.kind, ast::ExprKind::Name(..)) => {
+                    match self.maybe_parse_generic_args() {
+                        ParseTry::Sure(generic_args) =>
+                            self.parse_call_expr(expr, generic_args),
+                        ParseTry::Doubt(generic_args, cursor) => {
+                            if let TokenKind::Punctuator(Punctuator::LParen) = cursor.current().kind {
+                                self.cursor.sync(cursor);
+                                self.parse_call_expr(expr, generic_args)
+                            } else {
+                                break;
+                            }
+                        }
+                        ParseTry::Never => break
+                    }
+                }
+                _ => break,
+            };
+        }
         expr
     }
 
@@ -381,8 +685,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         lhs
     }
 
-    /*fn parse_statement(&mut self) -> Stmt {
-        let start = self.cursor.pos();
+    fn try_parse_stmt(&mut self) -> Option<&'ast Stmt<'ast>> {
+        todo!()
+    }
+
+    fn parse_stmt(&mut self) -> &'ast Stmt<'ast> {
+        todo!()
+        /*let start = self.cursor.pos();
 
         if let Some(keyword) = self.parse::<Keyword>() {
             let kind = match keyword {
@@ -405,16 +714,17 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             };
         }
 
-        let result = self.try_parse_ty_expr();
+        let result = self.maybe_parse_ty_expr();
         match result {
-            ParseTy::TyExpr(expr) =>
+            ParseTry::Some(expr) =>
                 return self.parse_variable_declartion(Some(expr)),
-            ParseTy::Doubt(ty_expr) => {
+            ParseTry::Doubt(ty_expr, cursor) => {
+                self.cursor.sync(cursor);
                 if let Some(stmt) = self.maybe_parse_variable_declaration(Some(ty_expr)) {
                     return stmt;
                 }
             }
-            ParseTy::None => ()
+            ParseTry::None => ()
         }
 
         let lhs = self.parse_expression(Restrictions::NO_MULTIPLICATION);
@@ -432,8 +742,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             kind: StmtKind::Assign(lhs, rhs),
             span: self.cursor.spanned(start),
             node_id: self.make_id()
-        };
-    }*/
+        };*/
+    }
 }
 
 pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile<'sess>, ()> {

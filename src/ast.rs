@@ -64,7 +64,7 @@ pub struct Body<'ast> {
     pub body: &'ast Expr<'ast>
 }
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub struct Ident {
     pub symbol: Symbol,
     pub span: Span
@@ -432,7 +432,7 @@ pub struct UnaryOp<'ast> {
     pub operator: lexer::UnaryOp
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum FunctionArgument<'ast> {
     Direct(&'ast Expr<'ast>),
     Keyword(Ident, &'ast Expr<'ast>)
