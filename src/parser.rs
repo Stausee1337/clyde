@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::{
-    ast::{self, Constant, FunctionArgument, NodeId, Stmt, StmtKind},
+    ast::{self, Constant, NodeId, Stmt},
     interface::Session,
     lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish},
     symbol::Symbol,
@@ -14,39 +14,47 @@ enum ParseTry<'src, T> {
     Never,
 }
 
-// FIXME: cursor shouldn't OWN the stream!
-// It should work with borrowed refrences (unsafely)
-pub struct TokenCursor<'a> {
-    stream: TokenStream<'a>,
-    current: usize
+pub struct TokenCursor<'src> {
+    current: *mut Token<'src>,
+    end: *mut Token<'src>
 }
 
-impl<'a> TokenCursor<'a> {
-    fn fork(&mut self) -> TokenCursor<'a> {
-        todo!()
+impl<'src> TokenCursor<'src> {
+    fn fork(&mut self) -> TokenCursor<'src> {
+        TokenCursor {
+            current: self.current,
+            end: self.end
+        }
     }
 
-    fn sync(&mut self, other: TokenCursor<'a>) -> TokenCursor<'a> {
-        todo!()
+    fn sync(&mut self, other: TokenCursor<'src>) -> Option<TokenCursor<'src>> {
+        if self.end == other.end {
+            return Some(std::mem::replace(self, other));
+        }
+        None
     }
 
-    fn current(&self) -> Token<'a> {
-        self.stream.tokens[self.current]
+    fn current(&self) -> Token<'src> {
+        unsafe { *self.current }
     }
 
     fn replace(&mut self, new: Token<'static>) {
-        self.stream.tokens[self.current] = new;
+        unsafe { *self.current = new }
     }
 
     fn span(&self) -> Span {
         self.current().span
     }
 
+    fn is_eos(&self) -> bool {
+        self.current == self.end
+    }
+
     fn advance(&mut self) {
-        if self.stream.tokens.len() <= self.current {
+        if self.end <= self.current {
             panic!("TokenCursor is at EOS");
         }
-        self.current += 1;
+        unsafe { self.current = self.current.add(1) };
     }
 }
 
@@ -184,11 +192,26 @@ impl Parsable for AssociotiveOp {
 }
 
 pub struct Parser<'src, 'ast> {
+    _tokens: Box<[Token<'src>]>,
     cursor: TokenCursor<'src>,
     arena: &'ast bumpalo::Bump
 }
 
 impl<'src, 'ast> Parser<'src, 'ast> {
+    fn new(stream: TokenStream<'src>, arena: &'ast bumpalo::Bump) -> Self {
+        let mut tokens = stream.into_boxed_slice();
+        let start = tokens.as_mut_ptr();
+        let cursor = TokenCursor {
+            current: start,
+            end: unsafe { start.add(tokens.len() - 1) }
+        };
+        Self {
+            _tokens: tokens,
+            cursor,
+            arena
+        }
+    }
+
     fn matches(&self, token: impl Tokenish) -> bool {
         token.matches(self.cursor.current())
     }
@@ -241,7 +264,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let cursor = self.cursor.fork();
         let result = do_work(self);
         let cursor = self.cursor.sync(cursor);
-        (result, cursor)
+        (result, cursor.unwrap())
     }
 
     fn maybe_parse_ty_expr(&mut self) -> ParseTry<'src, &'ast ast::TypeExpr<'ast>> {
@@ -450,9 +473,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_call_expr(&mut self, expr: &'ast ast::Expr<'ast>, generic_args: &'ast [ast::GenericArgument<'ast>]) -> &'ast ast::Expr<'ast> {
-        let start = self.cursor.current();
         self.cursor.advance();
-
 
         let mut args = vec![];
         while !self.matches(Punctuator::RParen) {
@@ -478,12 +499,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             if self.bump_if(Token![,]).is_none() {
                 let expr = ast::Expr {
                     kind: ast::ExprKind::Err,
-                    span: Span::interpolate(start.span, self.cursor.span()),
+                    span: Span::interpolate(expr.span, self.cursor.span()),
                     node_id: self.make_id()
                 };
                 return self.alloc(expr);
             }
         }
+        let end = self.cursor.span();
         self.cursor.advance();
 
         let args = self.alloc_slice(&args);
@@ -494,7 +516,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 args,
                 generic_args
             }),
-            span: Span::interpolate(start.span, self.cursor.span()),
+            span: Span::interpolate(expr.span, end),
             node_id: self.make_id()
         };
         self.alloc(expr)
@@ -502,7 +524,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn parse_subscript_expr(
         &mut self, expr: &'ast ast::Expr<'ast>) -> &'ast ast::Expr<'ast> {
-        let start = self.cursor.current();
         self.cursor.advance();
 
         let mut args = vec![];
@@ -512,12 +533,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             if self.bump_if(Token![,]).is_none() {
                 let expr = ast::Expr {
                     kind: ast::ExprKind::Err,
-                    span: Span::interpolate(start.span, self.cursor.span()),
+                    span: Span::interpolate(expr.span, self.cursor.span()),
                     node_id: self.make_id()
                 };
                 return self.alloc(expr);
             }
         }
+        let end = self.cursor.span();
         self.cursor.advance();
 
         let args = self.alloc_slice(&args);
@@ -527,7 +549,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 expr,
                 args,
             }),
-            span: Span::interpolate(start.span, self.cursor.span()),
+            span: Span::interpolate(expr.span, end),
             node_id: self.make_id()
         };
         self.alloc(expr)
@@ -757,9 +779,16 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
         println!("{:?}", err);
     }
 
-    for tok in stream.tokens {
-        println!("{:?}", tok);
-    }
+    /*let xxx = stream.into_boxed_slice();
+    for x in xxx {
+        println!("{:?}", x);
+    }*/
+    
+    let tmp = bumpalo::Bump::new();
+
+    let mut parser = Parser::new(stream, &tmp);
+    let xxx = parser.parse_expr_assoc(0);
+    println!("{xxx:#?}");
 
     todo!()
 }

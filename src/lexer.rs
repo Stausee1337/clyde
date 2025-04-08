@@ -313,6 +313,7 @@ pub enum TokenKind<'a> {
     Punctuator(Punctuator),
     Literal(&'a str, LiteralKind),
     Symbol(Symbol),
+    EOS
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -330,12 +331,16 @@ pub enum NumberMode {
 }
 
 pub struct TokenStream<'a> {
-    pub(crate) tokens: Vec<Token<'a>>
+    tokens: Vec<Token<'a>>
 }
 
 impl<'a> TokenStream<'a> {
     pub fn empty() -> Self {
         Self { tokens: Vec::new() }
+    }
+
+    pub fn into_boxed_slice(self) -> Box<[Token<'a>]> {
+        self.tokens.into_boxed_slice()
     }
 }
 
@@ -466,7 +471,11 @@ impl<'a> Tokenizer<'a> {
                     self.bump();
                 }
             }
-        }
+        } 
+        tokens.push(Token {
+            kind: TokenKind::EOS,
+            span: self.make_span(self.position(), self.position())
+        });
         let stream = TokenStream { tokens };
         (stream, errors)
     }
