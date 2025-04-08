@@ -1,7 +1,11 @@
 
-use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::FromStr, os::unix::ffi::OsStrExt, ffi::OsStr, io::Read, fs, cell::{OnceCell, RefCell}, rc::Rc};
+use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::FromStr, ffi::OsStr, io::Read, fs, cell::{OnceCell, RefCell}, rc::Rc};
 
+#[cfg(target_family = "unix")]
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
+
+#[cfg(target_family = "windows")]
+use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE};
 
 use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck, lexer::Span};
 
@@ -242,7 +246,7 @@ impl FileCacher {
 
     fn decode_path(path: &Path) -> &str {
         let osstr = path.as_os_str();
-        let bytes = osstr.as_bytes();
+        let bytes = osstr.as_encoded_bytes();
         unsafe { std::str::from_utf8_unchecked(bytes) }
     }
 }
@@ -257,6 +261,7 @@ impl ContinuousSourceStorage {
     const STORAGE_SIZE: usize = u32::MAX as usize;
     const PAGE_SIZE: usize = 4096;
 
+    #[cfg(target_family = "unix")]
     fn allocate() -> Self {
         unsafe {
             let ptr = mmap_anonymous(
@@ -270,6 +275,29 @@ impl ContinuousSourceStorage {
                 abort();
             })
             .unwrap_unchecked();
+
+            Self {
+                start: ptr as *mut u8,
+                current_end: ptr as *mut u8,
+                allocated_bytes: 0
+            }
+        }
+    }
+
+    #[cfg(target_family = "windows")]
+    fn allocate() -> Self {
+        unsafe {
+            let ptr = VirtualAlloc(
+                None,
+                Self::STORAGE_SIZE,
+                MEM_RESERVE,
+                PAGE_READWRITE
+            );
+            if ptr == std::ptr::null_mut() {
+                eprintln!("Win32 Memory Allocation Failure");
+                abort();
+            }
+
 
             Self {
                 start: ptr as *mut u8,
@@ -296,15 +324,28 @@ impl ContinuousSourceStorage {
             eprintln!("Memory Allocation Failure: Attempt to allocate to many files (> 4 GiB) in one thread");
             abort();
         }
-        mprotect(
-            self.current_end as *mut _, len,
-            MprotectFlags::WRITE | MprotectFlags::READ
-        )
-        .map_err(|err| {
-            eprintln!("Memory Allocation Failure: {}", err.to_string());
-            abort();
-        })
-        .unwrap_unchecked();
+        #[cfg(target_family = "unix")]
+        {
+            mprotect(
+                self.current_end as *mut _, len,
+                MprotectFlags::WRITE | MprotectFlags::READ
+            )
+            .map_err(|err| {
+                eprintln!("Memory Allocation Failure: {}", err.to_string());
+                abort();
+            })
+            .unwrap_unchecked();
+        }
+        #[cfg(target_family = "windows")]
+        {
+            assert!(len % Self::PAGE_SIZE == 0);
+            VirtualAlloc(
+                Some(self.current_end as *const _),
+                len,
+                MEM_COMMIT,
+                PAGE_READWRITE
+            );
+        }
         self.current_end = new_end;
     }
 
@@ -335,7 +376,8 @@ fn get_filename(path: &Path) -> Option<&str> {
 }
 
 pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
-    let bytes = osstr.as_bytes();
+    // let bytes = osstr.as_bytes();
+    let bytes = osstr.as_encoded_bytes();
     std::str::from_utf8_unchecked(bytes)
 }
 
