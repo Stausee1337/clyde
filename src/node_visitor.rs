@@ -124,10 +124,6 @@ pub fn visit_fn<T: Visitor>(func: &Function, vis: &mut T) {
 pub fn noop_visit_stmt_kind<T: Visitor>(stmt_kind: &StmtKind, vis: &mut T) {
     match stmt_kind {
         StmtKind::Expr(expr) => vis.visit_expr(expr),
-        StmtKind::Assign(assign) => {
-            vis.visit_expr(assign.lhs);
-            vis.visit_expr(assign.rhs);
-        }
         StmtKind::If(if_stmt) => {
             vis.visit_expr(if_stmt.condition);
             vis.visit_block(&if_stmt.body);
@@ -159,6 +155,10 @@ pub fn noop_visit_expr_kind<T: Visitor>(expr_kind: &ExprKind, vis: &mut T) {
         ExprKind::BinaryOp(binop) => {
             vis.visit_expr(&binop.lhs);
             vis.visit_expr(&binop.rhs);
+        }
+        ExprKind::AssignOp(assign) => {
+            vis.visit_expr(assign.lhs);
+            vis.visit_expr(assign.rhs);
         }
         ExprKind::UnaryOp(unaryop) => vis.visit_expr(unaryop.expr),
         ExprKind::Cast(cast) => {

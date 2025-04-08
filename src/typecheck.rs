@@ -122,22 +122,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         deref
     }
 
-    fn check_stmt_assign(&mut self, assign: &'tcx ast::Assign<'tcx>) {
-        let is_valid_lhs = {
-            use ast::ExprKind::{Subscript, Field, Name, Deref};
-            matches!(assign.lhs.kind, Subscript(..) | Field(..) | Name(..) | Deref(..)) 
-        };
-        if !is_valid_lhs {
-            Message::error("invalid left hand side in assignment")
-                .at(assign.lhs.span)
-                .push(self.diagnostics());
-        }
-        let lhs_ty = self.check_expr_with_expectation(assign.lhs, Expectation::None);
-        if let Ty(types::TyKind::Never) = self.check_expr_with_expectation(assign.rhs, Expectation::Coerce(lhs_ty)) {
-            self.diverges.set(Diverges::Always(assign.rhs.span));
-        }
-    }
-
     fn check_stmt_if(&mut self, if_stmt: &'tcx ast::If<'tcx>) -> Ty<'tcx> {
         self.check_expr_with_expectation(
             if_stmt.condition, Expectation::Coerce(Ty::new_primitive(self.tcx, types::Primitive::Bool)));
@@ -287,8 +271,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     return ty;
                 }
             }
-            ast::StmtKind::Assign(assign) =>
-                self.check_stmt_assign(assign), 
             ast::StmtKind::If(if_stmt) =>
                 return self.check_stmt_if(if_stmt),
             ast::StmtKind::While(while_loop) =>
@@ -386,6 +368,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         match kind {
             ast::ExprKind::BinaryOp(binop) =>
                 self.check_expr_ty_definite(&binop.lhs.kind) && self.check_expr_ty_definite(&binop.rhs.kind),
+            ast::ExprKind::AssignOp(assign) =>
+                self.check_expr_ty_definite(&assign.lhs.kind) && self.check_expr_ty_definite(&assign.rhs.kind),
             ast::ExprKind::Cast(cast) => cast.ty.is_some(),
             ast::ExprKind::UnaryOp(unary) => self.check_expr_ty_definite(&unary.expr.kind),
             ast::ExprKind::Range(range) =>
@@ -477,6 +461,24 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         return None;
+    }
+
+    fn check_expr_assignop(&mut self, assign: &'tcx ast::AssignOp<'tcx>, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
+        let is_valid_lhs = {
+            use ast::ExprKind::{Subscript, Field, Name, Deref};
+            matches!(assign.lhs.kind, Subscript(..) | Field(..) | Name(..) | Deref(..)) 
+        };
+        if !is_valid_lhs {
+            Message::error("invalid left hand side in assignment")
+                .at(assign.lhs.span)
+                .push(self.diagnostics());
+        }
+        // FIXME: handle different assignment operators
+        let lhs_ty = self.check_expr_with_expectation(assign.lhs, expected.into());
+        if let Ty(types::TyKind::Never) = self.check_expr_with_expectation(assign.rhs, Expectation::Coerce(lhs_ty)) {
+            self.diverges.set(Diverges::Always(assign.rhs.span));
+        }
+        lhs_ty
     }
 
     fn check_expr_binop(&mut self, binop: &'tcx ast::BinaryOp<'tcx>, span: Span, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
@@ -1053,6 +1055,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             ast::ExprKind::BinaryOp(binop) =>
                 self.check_expr_binop(binop, expr.span, expected),
+            ast::ExprKind::AssignOp(assign) =>
+                self.check_expr_assignop(assign, expected),
             ast::ExprKind::UnaryOp(unary) => 
                 self.check_expr_unary(unary, expected),
             ast::ExprKind::Deref(base) => {

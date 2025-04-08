@@ -242,7 +242,6 @@ pub struct Stmt<'ast> {
 pub enum StmtKind<'ast> {
     Expr(&'ast Expr<'ast>),
     Block(Block<'ast>),
-    Assign(Assign<'ast>),
     If(If<'ast>),
     While(While<'ast>),
     For(For<'ast>),
@@ -277,12 +276,6 @@ pub struct If<'ast> {
     pub condition: &'ast Expr<'ast>,
     pub body: Block<'ast>,
     pub else_branch: Option<&'ast Stmt<'ast>>
-}
-
-#[derive(Debug)]
-pub struct Assign<'ast> {
-    pub lhs: &'ast Expr<'ast>,
-    pub rhs: &'ast Expr<'ast>
 }
 
 #[derive(Debug)]
@@ -328,6 +321,7 @@ pub struct Expr<'ast> {
 #[derive(Debug)]
 pub enum ExprKind<'ast> {
     BinaryOp(BinaryOp<'ast>),
+    AssignOp(AssignOp<'ast>),
     UnaryOp(UnaryOp<'ast>),
     Cast(Cast<'ast>),
     FunctionCall(FunctionCall<'ast>),
@@ -349,6 +343,13 @@ pub enum ExprKind<'ast> {
     Deref(&'ast Expr<'ast>),
     Block(Block<'ast>),
     Err
+}
+
+#[derive(Debug)]
+pub struct AssignOp<'ast> {
+    pub lhs: &'ast Expr<'ast>,
+    pub rhs: &'ast Expr<'ast>,
+    pub operatior: lexer::AssignmentOp
 }
 
 #[derive(Debug)]

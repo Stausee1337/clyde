@@ -1090,7 +1090,7 @@ pub enum BinaryOp {
     BooleanOr,
 }
 
-#[derive(Clone, Copy, Operator)]
+#[derive(Clone, Copy, Operator, Debug)]
 pub enum AssignmentOp {
     #[token = "="]
     Assign,
