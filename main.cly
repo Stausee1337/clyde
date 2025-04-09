@@ -4,6 +4,22 @@ enum OpenMode {
     Writing
 }
 
+struct Stmt {
+    enum StmtKind {
+        Expr,
+        Block,
+    }
+
+    Span span;
+    NodeId node_id;
+#if StmtKind kind == {
+    ::Expr =>
+        using Expr *expr,
+    ::Block =>
+        using Block *block,
+}
+}
+
 /*union Stmt {
 #switch enum #infer kind {
     #case ::Expr => using Expr expr,

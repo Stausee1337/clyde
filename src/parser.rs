@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, path::Path};
+use std::{cell::OnceCell, ops::ControlFlow, path::Path};
 
 use crate::{
     ast::{self, Constant, NodeId},
@@ -20,6 +20,28 @@ pub struct TokenCursor<'src> {
 }
 
 impl<'src> TokenCursor<'src> {
+    fn substream<R, F: FnMut(Token<'src>) -> ControlFlow<R>>(&self, mut do_work: F) -> Option<(R, TokenCursor<'src>)> {
+        let start = self.current;
+        let mut current = self.current;
+        while current < self.end {
+            let flow = do_work(unsafe { *current });
+
+            match flow {
+                ControlFlow::Break(result) => {
+                    let cursor = TokenCursor {
+                        current: start,
+                        end: current
+                    };
+                    return Some((result, cursor));
+                },
+                ControlFlow::Continue(_) =>
+                    current = unsafe { current.add(1) }
+            }
+        }
+
+        None
+    }
+
     fn fork(&mut self) -> TokenCursor<'src> {
         // FIXME: this is the only source of unsafeity in TokenCursor since it clones 
         // it, while leagally it shouldn't be cloneable. Maybe there is a way to keep
@@ -58,6 +80,17 @@ impl<'src> TokenCursor<'src> {
             panic!("TokenCursor is at EOS");
         }
         unsafe { self.current = self.current.add(1) };
+    }
+
+    fn advance_to(&mut self, pos: &Token<'src>) {
+        let pos = (&raw const *pos) as *mut _;
+        if (self.current..=self.end).contains(&pos) {
+            self.current = pos;
+        }
+    }
+
+    fn pos(&self) -> &Token<'src> {
+        unsafe { &*self.current }
     }
 }
 
@@ -271,9 +304,87 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn maybe_parse_ty_expr(&mut self) -> ParseTry<'src, &'ast ast::TypeExpr<'ast>> {
-        ParseTry::Never
-    }
+        let (result, cursor) = self.enter_speculative_block(|this| {
+            let start = this.cursor.span();
+            let mut ty_expr;
+            let mut sure = false;
+            if this.matches(Punctuator::LParen) {
+                todo!("recursively check if expression is sure or remove tuple types alltogether in favor of `tuple<..>`")
+            } else if let Some(symbol) = this.bump_on::<Symbol>() {
+                let name = ast::Name::from_ident(ast::Ident {
+                    symbol,
+                    span: start
+                });
+                ty_expr = if this.matches(Token![<]) {
+                    let generic_args = match this.maybe_parse_generic_args() {
+                        ParseTry::Sure(generic_args) => {
+                            sure = true;
+                            generic_args
+                        },
+                        ParseTry::Doubt(generic_args, cursor) => {
+                            this.cursor.sync(cursor);
+                            generic_args
+                        }
+                        ParseTry::Never =>
+                            return None,
+                    };
 
+                    let expr = ast::TypeExpr {
+                        kind: ast::TypeExprKind::Generic(ast::Generic {
+                            name,
+                            args: generic_args
+                        }),
+                        span: this.cursor.span(),
+                        node_id: this.make_id()
+                    };
+                    this.alloc(expr)
+                } else {
+                    let expr = ast::TypeExpr {
+                        span: name.ident.span,
+                        kind: ast::TypeExprKind::Name(name),
+                        node_id: this.make_id()
+                    };
+                    this.alloc(expr)
+                };
+            } else {
+                return None;
+            }
+
+            while let Some(punct) = this.match_on::<Punctuator>() {
+                match punct {
+                    Punctuator::LBracket =>
+                        ty_expr = this.parse_array_or_slice(ty_expr),
+                    Token![*] => {
+                        let expr = ast::TypeExpr {
+                            kind: ast::TypeExprKind::Ref(ty_expr),
+                            span: this.cursor.span(),
+                            node_id: this.make_id()
+                        };
+                        ty_expr = this.alloc(expr);
+                    }
+                    _ => break
+                }
+                if let ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Slice(..) = ty_expr.kind {
+                    // slices are unmistakeably slices and refs are declared to be sure by the grammar
+                    sure = true;
+                }
+            }
+
+            Some((ty_expr, sure))
+        });
+
+        let Some((ty_expr, sure)) = result else {
+            return ParseTry::Never;
+        };
+
+        if sure {
+            self.cursor.sync(cursor);
+            return ParseTry::Sure(ty_expr);
+        }
+
+        ParseTry::Doubt(ty_expr, cursor)
+    }
+    
     fn parse_tuple_ty(&mut self) -> &'ast ast::TypeExpr<'ast> {
         let start = self.cursor.span();
         self.cursor.advance();
@@ -369,10 +480,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 let generic_args = match self.maybe_parse_generic_args() {
                     ParseTry::Sure(generic_args) =>
                         generic_args,
-                        ParseTry::Doubt(generic_args, cursor) => {
-                            self.cursor.sync(cursor); // there is no doubt in forced ype expression
-                            generic_args
-                        }
+                    ParseTry::Doubt(generic_args, cursor) => {
+                        self.cursor.sync(cursor); // there is no doubt in forced type expression
+                        generic_args
+                    }
                     ParseTry::Never => {
                         let expr = ast::TypeExpr {
                             kind: ast::TypeExprKind::Err,
@@ -425,19 +536,128 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
         }
         
-        // Name(Name),                             = int
-        // Generic(Generic<'ast>),                 = HashMap<string, int>
-        // Array(Array<'ast>),                     = string[5], string[..]
-        // Slice(&'ast TypeExpr<'ast>),            = string[]
-        // Tuple(&'ast  [&'ast TypeExpr<'ast>]),   = (int, bool, char)
-
-        // Ref(&'ast TypeExpr<'ast>),              = int*
-        //
         ty_expr
     }
 
     fn maybe_parse_generic_args(&mut self) -> ParseTry<'src, &'ast [ast::GenericArgument<'ast>]> {
-        todo!()
+        // searches through the token stream if there is a corresponding closing delimiter `>`
+        // or if any other closing delimiters intefere with the plausiblity of a generic args sequence
+        let result = {
+            // breaks once we've seen one more closing then opening delimiter
+            macro_rules! sub {
+                ($stack:ident) => {{
+                    let Some(s) = $stack.checked_sub(1) else {
+                        return ControlFlow::Break(false);
+                    };
+                    $stack = s;  
+                }};
+            }
+
+            // Stacks
+            let mut angle = 1usize;
+            let mut paren = 0usize;
+            let mut curly = 0usize;
+            let mut bracket = 0usize;
+
+            let result = self.cursor.substream(|token| {
+                match token.kind {
+                    TokenKind::Punctuator(Token![<]) =>
+                        angle += 1,
+                    TokenKind::Punctuator(Punctuator::LParen) =>
+                        paren += 1,
+                    TokenKind::Punctuator(Punctuator::LCurly) =>
+                        curly += 1,
+                    TokenKind::Punctuator(Punctuator::LBracket) =>
+                        bracket += 1,
+
+                    TokenKind::Punctuator(Token![>]) => {
+                        angle -= 1;
+                        if angle == 0 {
+                            return ControlFlow::Break(true);
+                        }
+                    }
+                    TokenKind::Punctuator(Punctuator::RParen) =>
+                        sub!(paren),
+                    TokenKind::Punctuator(Punctuator::RCurly) =>
+                        sub!(curly),
+                    TokenKind::Punctuator(Punctuator::RBracket) =>
+                        sub!(bracket),
+                    _ => ()
+                }
+                ControlFlow::Continue(())
+            });
+
+            result
+        };
+        
+        let Some((true, cursor)) = result else {
+            return ParseTry::Never;
+        };
+
+        let prev_cursor = std::mem::replace(&mut self.cursor, cursor);
+        self.cursor.advance();
+
+        let mut args = vec![];
+
+        let mut mismatch = false;
+        let mut sure = false;
+        while !self.matches(Token![>]) {
+            let arg = if self.matches(Punctuator::LCurly) {
+                self.cursor.advance();
+
+                let expr = self.parse_expr_assoc(0);
+
+                if self.bump_if(Punctuator::RCurly).is_none() {
+                    mismatch = true;
+                    break;
+                }
+                sure = true;
+
+                ast::GenericArgument::Expr(ast::NestedConst {
+                    expr,
+                    span: expr.span,
+                    node_id: self.make_id(),
+                    def_id: OnceCell::new()
+                })
+            } else {
+                let ty_expr = match self.maybe_parse_ty_expr() {
+                    ParseTry::Sure(ty_expr) => {
+                        sure = true;
+                        ty_expr
+                    }
+                    ParseTry::Doubt(ty_expr, cursor) => {
+                        self.cursor.sync(cursor);
+                        ty_expr
+                    }
+                    ParseTry::Never => {
+                        mismatch = true;
+                        break;
+                    }
+                };
+                ast::GenericArgument::Ty(ty_expr)
+            };
+            args.push(arg);
+            
+            if self.bump_if(Token![,]).is_none() && !self.matches(Token![>]) {
+                mismatch = true;
+                break;
+            }
+        }
+
+        let fake_cursor = std::mem::replace(&mut self.cursor, prev_cursor);
+        if mismatch {
+            return ParseTry::Never;
+        }
+        let args = self.alloc_slice(&args);
+        if sure || args.len() == 0 {
+            self.cursor.advance_to(fake_cursor.pos());
+            self.cursor.advance(); // advance over `>`
+            return ParseTry::Sure(args);
+        }
+        let mut cursor = self.cursor.fork();
+        cursor.advance_to(fake_cursor.pos());
+        cursor.advance(); // advance over `>`
+        ParseTry::Doubt(args, cursor)
     }
 
     fn parse_type_init_body(
@@ -829,6 +1049,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 _ => break,
             };
         }
+        println!("{:?}", self.cursor.current());
         expr
     }
 
@@ -872,7 +1093,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn try_parse_variable_declaration(&mut self, ty_expr: &'ast ast::TypeExpr<'ast>, cursor: TokenCursor<'src>) -> Option<&'ast ast::Stmt<'ast>> {
-        todo!()
+        None
     }
 
     fn parse_variable_declaration(&mut self, ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Stmt<'ast> {
@@ -900,7 +1121,42 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn try_parse_stmt(&mut self) -> Option<&'ast ast::Stmt<'ast>> {
-        todo!()
+        if let Some(Token![var] | Token![if] | Token![return] | Token![for] | Token![while] | Token![break] | Token![continue]) = self.match_on::<Keyword>() {
+            return Some(self.parse_stmt());
+        }
+
+        let ty_try = self.maybe_parse_ty_expr();
+        match ty_try {
+            ParseTry::Sure(ty_expr) =>
+                return Some(self.parse_variable_declaration(Some(ty_expr))),
+            ParseTry::Doubt(ty_expr, cursor) => {
+                if let Some(stmt) = self.try_parse_variable_declaration(ty_expr, cursor) {
+                    return Some(stmt);
+                }
+            }
+            ParseTry::Never => ()
+        }
+
+        let (stmt, cursor) = self.enter_speculative_block(|this| {
+            let expr = this.parse_expr_assoc(0);
+            if this.bump_if(Token![;]).is_none() {
+                return None;
+            }
+
+            let stmt = ast::Stmt {
+                kind: ast::StmtKind::Expr(expr),
+                span: expr.span,
+                node_id: this.make_id()
+            };
+            Some(this.alloc(stmt))
+        });
+
+        if let Some(stmt) = stmt {
+            self.cursor.sync(cursor);
+            return Some(stmt);
+        }
+
+        None
     }
 
     fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
@@ -932,7 +1188,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         let ty_try = self.maybe_parse_ty_expr();
-        let expr;
         match ty_try {
             ParseTry::Sure(ty_expr) =>
                 return self.parse_variable_declaration(Some(ty_expr)),
@@ -940,12 +1195,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 if let Some(stmt) = self.try_parse_variable_declaration(ty_expr, cursor) {
                     return stmt;
                 }
-                expr = self.parse_expr_assoc(0);
             }
-            ParseTry::Never => {
-                expr = self.parse_expr_assoc(0);
-            }
+            ParseTry::Never => ()
         }
+        let expr = self.parse_expr_assoc(0);
 
         if self.bump_if(Token![;]).is_none() {
             let stmt = ast::Stmt {
@@ -984,7 +1237,7 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     let tmp = bumpalo::Bump::new();
 
     let mut parser = Parser::new(stream, &tmp);
-    let xxx = parser.parse_ty_expr();
+    let xxx = parser.parse_stmt();
     println!("{xxx:#?}");
 
     todo!()

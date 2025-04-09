@@ -445,7 +445,7 @@ pub enum ArrayCapacity<'ast> {
     Discrete(NestedConst<'ast>)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Constant {
     Null,
     Integer(u64),
@@ -454,7 +454,7 @@ pub enum Constant {
     Char(char)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NestedConst<'ast> {
     pub expr: &'ast Expr<'ast>,
     pub span: Span,
@@ -491,7 +491,7 @@ pub struct Generic<'ast> {
     pub args: &'ast [GenericArgument<'ast>]
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GenericArgument<'ast> {
     Ty(&'ast TypeExpr<'ast>),
     Expr(NestedConst<'ast>),
