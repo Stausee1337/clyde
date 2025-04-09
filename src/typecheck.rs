@@ -1312,7 +1312,8 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 }
                 Ty::new_tuple(self.tcx, tys)
             }
-            ast::TypeExprKind::Generic(..) => panic!("lowering generic types is not supported yet")
+            ast::TypeExprKind::Generic(..) => panic!("lowering generic types is not supported yet"),
+            ast::TypeExprKind::Err => Ty::new_error(self.tcx)
         }
     }
 }

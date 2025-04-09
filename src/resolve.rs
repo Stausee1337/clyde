@@ -416,6 +416,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                     }
                     ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Tuple(..) =>
                         panic!("invalid state after parsing type init"),
+                    ast::TypeExprKind::Err => ()
                 }
             }
             ast::ExprKind::FunctionCall(call) if matches!(&call.callable.kind, ast::ExprKind::Name(..)) => {

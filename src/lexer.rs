@@ -11,6 +11,7 @@ pub(crate) trait Operator: Sized {
 
 #[macro_export]
 macro_rules! Token {
+    [_] => { crate::lexer::Punctuator::Underscore };
     [.] => { crate::lexer::Punctuator::Dot };
     [,] => { crate::lexer::Punctuator::Comma };
     [:] => { crate::lexer::Punctuator::Colon };
@@ -584,6 +585,11 @@ impl<'a> Tokenizer<'a> {
                 kind: TokenKind::Keyword(keyword),
                 span: self.make_span(start, start + length)
             };
+        } else if let Some(punct) = Punctuator::try_from_string(symbol) {
+            self.token = Token {
+                kind: TokenKind::Punctuator(punct),
+                span: self.make_span(start, start + length)
+            };
         } else {
             let symbol = Symbol::intern(symbol);
             self.token = Token {
@@ -827,6 +833,8 @@ pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]
 pub enum Punctuator {
+    #[str = "_"]
+    Underscore,
     #[str = "."]
     Dot,
     #[str = ","]
@@ -941,14 +949,14 @@ impl Punctuator {
 
 impl Tokenish for Punctuator {
     fn matches(&self, tok: Token) -> bool {
-        if let TokenKind::Punctuator(..) = tok.kind {
-            return true;
+        if let TokenKind::Punctuator(punct) = tok.kind {
+            return *self == punct;
         }
         false
     }
 }
 
-#[derive(Debug, Clone, Copy, LexFromString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]
 pub enum Keyword {
     #[str = "const"]
     Const,
@@ -1010,8 +1018,8 @@ pub enum Keyword {
 
 impl Tokenish for Keyword {
     fn matches(&self, tok: Token) -> bool { 
-        if let TokenKind::Keyword(..) = tok.kind {
-            return true;
+        if let TokenKind::Keyword(keyword) = tok.kind {
+            return *self == keyword;
         }
         false
     }

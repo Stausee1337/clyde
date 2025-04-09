@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{cell::OnceCell, path::Path};
 
 use crate::{
-    ast::{self, Constant, NodeId, Stmt},
+    ast::{self, Constant, NodeId},
     interface::Session,
     lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish},
     symbol::Symbol,
@@ -21,6 +21,9 @@ pub struct TokenCursor<'src> {
 
 impl<'src> TokenCursor<'src> {
     fn fork(&mut self) -> TokenCursor<'src> {
+        // FIXME: this is the only source of unsafeity in TokenCursor since it clones 
+        // it, while leagally it shouldn't be cloneable. Maybe there is a way to keep
+        // similar behaviour while not compromising memory saftey
         TokenCursor {
             current: self.current,
             end: self.end
@@ -28,7 +31,7 @@ impl<'src> TokenCursor<'src> {
     }
 
     fn sync(&mut self, other: TokenCursor<'src>) -> Option<TokenCursor<'src>> {
-        if self.end == other.end {
+        if other.end == self.end {
             return Some(std::mem::replace(self, other));
         }
         None
@@ -268,8 +271,169 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn maybe_parse_ty_expr(&mut self) -> ParseTry<'src, &'ast ast::TypeExpr<'ast>> {
-        // TODO:
         ParseTry::Never
+    }
+
+    fn parse_tuple_ty(&mut self) -> &'ast ast::TypeExpr<'ast> {
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let mut args = vec![];
+        while !self.matches(Punctuator::RParen) {
+            args.push(self.parse_ty_expr());
+            
+            if self.bump_if(Token![,]).is_none() && !self.matches(Punctuator::RParen){
+                let expr = ast::TypeExpr {
+                    kind: ast::TypeExprKind::Err,
+                    span: Span::interpolate(start, self.cursor.span()),
+                    node_id: self.make_id()
+                };
+                return self.alloc(expr);
+            }
+        }
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        let args = self.alloc_slice(&args);
+
+        let expr = ast::TypeExpr {
+            kind: ast::TypeExprKind::Tuple(args),
+            span: Span::interpolate(start, end),
+            node_id: self.make_id()
+        };
+        self.alloc(expr)
+    }
+
+    fn parse_array_or_slice(&mut self, ty: &'ast ast::TypeExpr<'ast>) -> &'ast ast::TypeExpr<'ast> {
+        self.cursor.advance();
+
+        if let Some(tok) = self.bump_if(Punctuator::RBracket) {
+            let expr = ast::TypeExpr {
+                kind: ast::TypeExprKind::Slice(ty),
+                span: Span::interpolate(ty.span, tok.span),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        }
+
+        let cap = match self.match_on::<Punctuator>() {
+            Some(Token![_]) => {
+                self.cursor.advance();
+                ast::ArrayCapacity::Infer
+            }
+            Some(Token![..]) => {
+                self.cursor.advance();
+                ast::ArrayCapacity::Dynamic
+            }
+            _ => {
+                let expr = self.parse_expr_assoc(0);
+                let expr = ast::NestedConst {
+                    span: expr.span,
+                    expr,
+                    node_id: self.make_id(),
+                    def_id: OnceCell::new() 
+                };
+                ast::ArrayCapacity::Discrete(expr)
+            }
+        };
+
+        let end = self.cursor.span();
+        if self.bump_if(Punctuator::RBracket).is_none() {
+            let expr = ast::TypeExpr {
+                kind: ast::TypeExprKind::Err,
+                span: self.cursor.span(),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        }
+
+        let expr = ast::TypeExpr {
+            kind: ast::TypeExprKind::Array(ast::Array { ty, cap }),
+            span: Span::interpolate(ty.span, end),
+            node_id: self.make_id()
+        };
+        self.alloc(expr)
+    }
+
+    fn parse_ty_expr(&mut self) -> &'ast ast::TypeExpr<'ast> {
+        let start = self.cursor.span();
+        let mut ty_expr;
+        if self.matches(Punctuator::LParen) {
+            ty_expr = self.parse_tuple_ty();
+        } else if let Some(symbol) = self.bump_on::<Symbol>() {
+            let name = ast::Name::from_ident(ast::Ident {
+                symbol,
+                span: start
+            });
+            ty_expr = if self.matches(Token![<]) {
+                let generic_args = match self.maybe_parse_generic_args() {
+                    ParseTry::Sure(generic_args) =>
+                        generic_args,
+                        ParseTry::Doubt(generic_args, cursor) => {
+                            self.cursor.sync(cursor); // there is no doubt in forced ype expression
+                            generic_args
+                        }
+                    ParseTry::Never => {
+                        let expr = ast::TypeExpr {
+                            kind: ast::TypeExprKind::Err,
+                            span: self.cursor.span(),
+                            node_id: self.make_id()
+                        };
+                        return self.alloc(expr);
+                    }
+                };
+
+                let expr = ast::TypeExpr {
+                    kind: ast::TypeExprKind::Generic(ast::Generic {
+                        name,
+                        args: generic_args
+                    }),
+                    span: self.cursor.span(),
+                    node_id: self.make_id()
+                };
+                self.alloc(expr)
+            } else {
+                let expr = ast::TypeExpr {
+                    span: name.ident.span,
+                    kind: ast::TypeExprKind::Name(name),
+                    node_id: self.make_id()
+                };
+                self.alloc(expr)
+            };
+        } else {
+            let expr = ast::TypeExpr {
+                kind: ast::TypeExprKind::Err,
+                span: self.cursor.span(),
+                node_id: self.make_id()
+            };
+            return self.alloc(expr);
+        }
+
+        while let Some(punct) = self.match_on::<Punctuator>() {
+            match punct {
+                Punctuator::LBracket =>
+                    ty_expr = self.parse_array_or_slice(ty_expr),
+                Token![*] => {
+                    let expr = ast::TypeExpr {
+                        kind: ast::TypeExprKind::Ref(ty_expr),
+                        span: self.cursor.span(),
+                        node_id: self.make_id()
+                    };
+                    ty_expr = self.alloc(expr);
+                }
+                _ => break
+            }
+        }
+        
+        // Name(Name),                             = int
+        // Generic(Generic<'ast>),                 = HashMap<string, int>
+        // Array(Array<'ast>),                     = string[5], string[..]
+        // Slice(&'ast TypeExpr<'ast>),            = string[]
+        // Tuple(&'ast  [&'ast TypeExpr<'ast>]),   = (int, bool, char)
+
+        // Ref(&'ast TypeExpr<'ast>),              = int*
+        //
+        ty_expr
     }
 
     fn maybe_parse_generic_args(&mut self) -> ParseTry<'src, &'ast [ast::GenericArgument<'ast>]> {
@@ -496,7 +660,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             args.push(argument);
             
-            if self.bump_if(Token![,]).is_none() {
+            if self.bump_if(Token![,]).is_none() && !self.matches(Punctuator::RParen) {
                 let expr = ast::Expr {
                     kind: ast::ExprKind::Err,
                     span: Span::interpolate(expr.span, self.cursor.span()),
@@ -530,7 +694,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         while !self.matches(Punctuator::RBracket) {
             args.push(self.parse_expr_assoc(0));
             
-            if self.bump_if(Token![,]).is_none() {
+            if self.bump_if(Token![,]).is_none() && !self.matches(Punctuator::RBracket) {
                 let expr = ast::Expr {
                     kind: ast::ExprKind::Err,
                     span: Span::interpolate(expr.span, self.cursor.span()),
@@ -707,64 +871,97 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         lhs
     }
 
-    fn try_parse_stmt(&mut self) -> Option<&'ast Stmt<'ast>> {
+    fn try_parse_variable_declaration(&mut self, ty_expr: &'ast ast::TypeExpr<'ast>, cursor: TokenCursor<'src>) -> Option<&'ast ast::Stmt<'ast>> {
         todo!()
     }
 
-    fn parse_stmt(&mut self) -> &'ast Stmt<'ast> {
+    fn parse_variable_declaration(&mut self, ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Stmt<'ast> {
         todo!()
-        /*let start = self.cursor.pos();
+    }
 
-        if let Some(keyword) = self.parse::<Keyword>() {
-            let kind = match keyword {
+    fn parse_if_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
+        todo!()
+    }
+
+    fn parse_return_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
+        todo!()
+    }
+
+    fn parse_for_loop(&mut self) -> &'ast ast::Stmt<'ast> {
+        todo!()
+    }
+
+    fn parse_while_loop(&mut self) -> &'ast ast::Stmt<'ast> {
+        todo!()
+    }
+
+    fn parse_control_flow(&mut self, keyword: Keyword) -> &'ast ast::Stmt<'ast> {
+        todo!()
+    }
+
+    fn try_parse_stmt(&mut self) -> Option<&'ast ast::Stmt<'ast>> {
+        todo!()
+    }
+
+    fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
+        let start = self.cursor.span();
+
+        if let Some(keyword) = self.match_on::<Keyword>() {
+            return match keyword {
                 Token![var] =>
                     self.parse_variable_declaration(None),
                 Token![if] =>
-                    self.parse_if_statement(),
+                    self.parse_if_stmt(),
+                Token![return] => 
+                    self.parse_return_stmt(),
                 Token![for] => 
                     self.parse_for_loop(),
                 Token![while] => 
                     self.parse_while_loop(),
                 Token![break] | Token![continue] => 
                     self.parse_control_flow(keyword),
-                _ => StmtKind::Err
-            };
-            return Stmt {
-                kind,
-                span: self.cursor.spanned(start),
-                node_id: self.make_id()
+                _ => {
+                    let stmt = ast::Stmt {
+                        kind: ast::StmtKind::Err,
+                        span: start,
+                        node_id: self.make_id()
+                    };
+                    self.alloc(stmt)
+                }
             };
         }
 
-        let result = self.maybe_parse_ty_expr();
-        match result {
-            ParseTry::Some(expr) =>
-                return self.parse_variable_declartion(Some(expr)),
+        let ty_try = self.maybe_parse_ty_expr();
+        let expr;
+        match ty_try {
+            ParseTry::Sure(ty_expr) =>
+                return self.parse_variable_declaration(Some(ty_expr)),
             ParseTry::Doubt(ty_expr, cursor) => {
-                self.cursor.sync(cursor);
-                if let Some(stmt) = self.maybe_parse_variable_declaration(Some(ty_expr)) {
+                if let Some(stmt) = self.try_parse_variable_declaration(ty_expr, cursor) {
                     return stmt;
                 }
+                expr = self.parse_expr_assoc(0);
             }
-            ParseTry::None => ()
+            ParseTry::Never => {
+                expr = self.parse_expr_assoc(0);
+            }
         }
 
-        let lhs = self.parse_expression(Restrictions::NO_MULTIPLICATION);
-        if self.skip_if(Token![=]).is_none() {
-            return Stmt {
-                kind: StmtKind::Expr(lhs),
-                span: self.cursor.spanned(start),
+        if self.bump_if(Token![;]).is_none() {
+            let stmt = ast::Stmt {
+                kind: ast::StmtKind::Err,
+                span: self.cursor.span(),
                 node_id: self.make_id()
             };
+            return self.alloc(stmt);
         }
 
-        let rhs = self.parse_expression(Restrictions::empty());
-        
-        return Stmt {
-            kind: StmtKind::Assign(lhs, rhs),
-            span: self.cursor.spanned(start),
+        let stmt = ast::Stmt {
+            kind: ast::StmtKind::Expr(expr),
+            span: expr.span,
             node_id: self.make_id()
-        };*/
+        };
+        self.alloc(stmt)
     }
 }
 
@@ -787,7 +984,7 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     let tmp = bumpalo::Bump::new();
 
     let mut parser = Parser::new(stream, &tmp);
-    let xxx = parser.parse_expr_assoc(0);
+    let xxx = parser.parse_ty_expr();
     println!("{xxx:#?}");
 
     todo!()

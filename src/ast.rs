@@ -477,6 +477,7 @@ pub enum TypeExprKind<'ast> {
     Array(Array<'ast>),
     Slice(&'ast TypeExpr<'ast>),
     Tuple(&'ast  [&'ast TypeExpr<'ast>]),
+    Err,
 }
 #[derive(Debug)]
 pub struct Array<'ast> {

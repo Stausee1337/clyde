@@ -223,7 +223,8 @@ pub fn noop_visit_ty_expr_kind<T: Visitor>(ty_kind: &TypeExprKind, vis: &mut T) 
         TypeExprKind::Slice(base) =>
             vis.visit_ty_expr(base),
         TypeExprKind::Tuple(tys) =>
-            visit_slice(tys, |ty| vis.visit_ty_expr(ty))
+            visit_slice(tys, |ty| vis.visit_ty_expr(ty)),
+        TypeExprKind::Err => ()
     }
 }
 
