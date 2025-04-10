@@ -554,7 +554,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
 
             // Stacks
-            let mut angle = 1usize;
+            let mut angle = 0usize;
             let mut paren = 0usize;
             let mut curly = 0usize;
             let mut bracket = 0usize;
@@ -1049,7 +1049,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 _ => break,
             };
         }
-        println!("{:?}", self.cursor.current());
         expr
     }
 
