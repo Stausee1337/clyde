@@ -7,7 +7,7 @@ use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 #[cfg(target_family = "windows")]
 use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE};
 
-use crate::{context::{GlobalCtxt, Providers}, ast, diagnostics::DiagnosticsCtxt, parser, typecheck, lexer::Span};
+use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, lexer::Span, parser, string_internals::{run_utf8_validation, next_code_point}, typecheck};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -158,22 +158,50 @@ fn matches_to_config(matches: &getopts::Matches) -> Cfg {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
+pub struct Utf8Error;
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RelativePosition(u32);
+
+impl std::fmt::Debug for RelativePosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
 pub struct File {
     path: PathBuf,
-    contents: &'static [u8],
-    byte_span: Span
+    contents: Result<&'static [u8], Utf8Error>,
+    byte_span: Span,
+    lines: Vec<RelativePosition>,
+    multibyte_chars: Vec<MultibyteChar>,
 }
 
 impl File {
-    pub fn contents(&self) -> &[u8] {
-        self.contents
+    fn new(path: PathBuf, bytes: &'static [u8], byte_span: Span) -> File {
+        let (contents, lines, multibyte_chars);
+        if run_utf8_validation(bytes) {
+            (lines, multibyte_chars) = unsafe {
+                // this is safe as we now know we're handling valid unicode
+                analyze_unicode(bytes)
+            };
+            contents = Ok(bytes);
+        } else {
+            (lines, multibyte_chars) = (vec![], vec![]);
+            contents = Err(Utf8Error);
+        }
+        Self {
+            path,
+            contents,
+            byte_span,
+            lines,
+            multibyte_chars
+        }
     }
 
-    pub fn translate(&self, span: Span) -> Span {
-        Span::new(
-            self.byte_span.start + span.start,
-            self.byte_span.start + span.end)
+    pub fn contents(&self) -> Result<&[u8], Utf8Error> {
+        self.contents
     }
 
     pub fn path(&self) -> &str {
@@ -184,21 +212,104 @@ impl File {
         self.byte_span.start
     }
 
-    pub fn unicode_slice(&self, pos: u32) -> usize {
-        todo!()
+    pub fn relative_position(&self, pos: u32) -> RelativePosition {
+        debug_assert!((self.byte_span.start..self.byte_span.end).contains(&pos), "position within the file");
+        RelativePosition(pos - self.byte_span.start)
     }
 
-    pub fn decode_to_lineno(&self, pos: u32) -> Option<usize> {
-        todo!()
+    /// converts a byte position `pos` to a character position
+    pub fn pos_to_charpos(&self, pos: RelativePosition) -> usize {
+        let mut extra_bytes = 0;
+
+        for item in &self.multibyte_chars {
+            if item.pos < pos {
+                extra_bytes += item.len as usize - 1;  
+                debug_assert!(pos.0 >= item.pos.0 + item.len as u32);
+            } else {
+                break;
+            }
+        }
+
+        pos.0 as usize - extra_bytes
     }
 
-    pub fn decode_to_file_pos(&self, pos: u32) -> (usize, usize) {
-        todo!()
+    /// gets the 0-based lineno for the given byte position
+    pub fn decode_to_lineno(&self, pos: RelativePosition) -> Option<usize> {
+        self.lines.partition_point(|start| *start <= pos).checked_sub(1)
     }
 
-    pub fn get_line(&self, idx: usize) -> &str {
-        todo!()
+    pub fn decode_to_file_pos(&self, pos: RelativePosition) -> (usize, usize) {
+        let char_pos = self.pos_to_charpos(pos);
+        let Some(lineno) = self.decode_to_lineno(pos) else {
+            return (0, char_pos);
+        };
+        println!("decode_to_file_pos: {pos:?}, {lineno}");
+        let linebbegin = self.lines[lineno];
+        let linecbegin = self.pos_to_charpos(linebbegin);
+
+        let col = char_pos - linecbegin;
+        (lineno + 1, col + 1)
     }
+
+    pub fn get_line(&self, lineno: usize) -> Option<&str> {
+        let begin = *self.lines.get(lineno)?;
+        let subslice = &self.contents().ok()?[begin.0 as usize..];
+        let subslice = unsafe { std::str::from_utf8_unchecked(subslice) };
+
+        let line = match subslice.find(&['\n', '\r']) {
+            Some(end) => &subslice[..end],
+            None => subslice,
+        };
+
+        Some(line)
+    }
+
+    pub fn lines(&self) -> &[RelativePosition] {
+        &self.lines
+    }
+}
+
+struct MultibyteChar {
+    pos: RelativePosition,
+    len: u8
+}
+
+unsafe fn analyze_unicode(unicode: &[u8]) -> (Vec<RelativePosition>, Vec<MultibyteChar>) {
+    let start = unicode.as_ptr();
+    let length = unicode.len() as u32;
+    let mut bytes = unicode.iter();
+
+    let (mut lines, mut multibyte_chars) = (vec![RelativePosition(0)], vec![]);
+
+    let mut offset = 0;
+    while let Some(char) = next_code_point(&mut bytes) {
+        let char = char::from_u32_unchecked(char);
+
+        let char_len = char.len_utf8();
+        if char_len >= 2 {
+            multibyte_chars.push(MultibyteChar {
+                pos: RelativePosition(offset),
+                len: char_len as u8
+            });
+        } else if char == '\n' && offset < length - 1 {
+            // \n (unix)
+            lines.push(RelativePosition(offset)); // push the beginning of the line
+        } else if char == '\r' && offset < length - 2 && bytes.as_slice()[0] == b'\n' {
+            // \r\n (windows)
+            bytes.next(); // advance over '\n'
+            lines.push(RelativePosition(offset)); // push the beginning of the line
+        } else if char == '\r' && offset < length - 1 {
+            // \r (osx)
+            lines.push(RelativePosition(offset)); // push the beginning of the line
+        }
+
+        offset = bytes.as_slice().as_ptr().offset_from(start) as u32;
+    }
+
+    println!("{:?}", unicode);
+    println!("{:?}", lines);
+
+    (lines, multibyte_chars)
 }
 
 pub struct FileCacher {
@@ -220,6 +331,12 @@ impl FileCacher {
             .and_then(|mut f| {
                 let metadata = f.metadata()?;
                 let size = metadata.len() as usize;
+                // NOTE: Should we already read into the file cacher here?
+                // Maybe the file is invalid utf8 and we're wasting space,
+                // But the compilation fails anyways so maybe it doesn't matter
+                // FIXME: (from above) maybe we should try to detect different
+                // encodings here (utf16, utf16-le-bom (common on windows), utf32, etc)
+                // in that case we couldn't write directly into the cacher to begin with
                 let (buf, pos) = storage.new_buffer(size);
                 f.read_exact(buf)?;
                 Ok((buf, pos as u32, size as u32))
@@ -229,11 +346,7 @@ impl FileCacher {
                 eprintln!("ERROR: couldn't read {file}: {err}");
             })?;
         let mut files = self.files.borrow_mut();
-        let source = Rc::new(File {
-            path: path.to_owned(),
-            contents,
-            byte_span: Span::new(pos, pos + len),
-        });
+        let source = Rc::new(File::new(path.to_owned(), contents, Span::new(pos, pos + len)));
         files.push(source.clone());
         Ok(source)
     }

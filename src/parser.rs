@@ -426,6 +426,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             .at(span)
             .push(self.diagnostics);
 
+        self.cursor.advance(); // advance past the error
         let node = self.make_node(N::ERROR, span);
         ExpectError::Fail(node)
     }
@@ -435,7 +436,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn expect_any<P: Parsable, N: ASTNode<'ast>>(&mut self) -> ExpectError<P, &'ast N> {
-        if let Some(p) = self.bump_on::<P>() {
+        if let Some(p) = self.match_on::<P>() {
             return ExpectError::Ok(p);
         }
 
@@ -444,6 +445,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
+        self.cursor.advance(); // advance past the error
         let node = self.make_node(N::ERROR, span);
         ExpectError::Fail(node)
     }
@@ -454,6 +456,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
+        self.cursor.advance(); // advance past the error
         self.make_node(N::ERROR, span)
     }
 
@@ -858,7 +861,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let punct = TRY!(self.expect_any::<Punctuator, _>());
 
         // Tuple (or nomral Expr resetting precedence), TypeInit or Block
-        let mut end = None;
+        let end;
         let kind = match punct {
             Punctuator::LParen => {
                 self.cursor.advance();
@@ -886,7 +889,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
 
                 TRY!(self.expect_one(Punctuator::RParen));
-                end = Some(self.cursor.span());
+                end = self.cursor.span();
                 self.cursor.advance();
                 if tuple_args.is_empty() {
                     // FIXME: we currently don't take into account the added
@@ -900,13 +903,15 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 let Some(block) = self.try_parse_block() else {
                     return self.parse_type_init_body(None);
                 };
-                end = Some(block.span);
+                end = block.span;
                 ast::ExprKind::Block(block)
             }
-            _ => return self.unexpected(UNEXPECTED_NONPRIMARY)
+            _ => {
+                println!("{:?}", self.cursor.current());
+                return self.unexpected(UNEXPECTED_NONPRIMARY);
+            }
         };
 
-        let end = end.unwrap_or(token.span);
         self.make_node(kind, Span::interpolate(token.span, end))
     }
 

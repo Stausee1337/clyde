@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use bitflags::bitflags;
 
-use crate::interface::File;
+use crate::interface::{File, RelativePosition};
 use crate::{interface::FileCacher, lexer::Span};
 
 bitflags! {
@@ -38,8 +38,14 @@ impl DiagnosticsCtxtInner {
             |a, b| a.span.start.cmp(&b.span.start));
         for message in &self.messages {
             let file = self.file_cacher.lookup_file(message.span.start);
+            let to_relative_span = |span: Span| (
+                file.relative_position(span.start),
+                file.relative_position(span.end)
+            );
 
-            let (row, col) = file.decode_to_file_pos(message.span.start);
+            let file_realtive_span = to_relative_span(message.span);
+
+            let (row, col) = file.decode_to_file_pos(file_realtive_span.0);
             eprintln!("{}:{row}:{col}: {}: {}",
                 file.path(),
                 message.kind,
@@ -56,13 +62,13 @@ impl DiagnosticsCtxtInner {
             }
 
             if let Some(pre_hint) = pre_hint {
-                render_code(&file, pre_hint.1, "-", Some(&pre_hint.0));
+                render_code(&file, to_relative_span(pre_hint.1), "-", Some(&pre_hint.0));
             }
 
-            render_code(&file, message.span, "^", None);
+            render_code(&file, file_realtive_span, "^", None);
 
             if let Some(post_hint) = post_hint {
-                render_code(&file, post_hint.1, "-", Some(&post_hint.0));
+                render_code(&file, to_relative_span(post_hint.1), "-", Some(&post_hint.0));
             }
 
             if let Some(note) = &message.note {
@@ -72,20 +78,28 @@ impl DiagnosticsCtxtInner {
     }
 }
 
-fn render_code(file: &File, span: Span, decoration: &'static str, annotation: Option<&str>) {
-    let mut row = file.decode_to_lineno(span.start).unwrap();
-    let end_row = file.decode_to_lineno(span.end).unwrap();
+fn render_code(file: &File, span: (RelativePosition, RelativePosition), decoration: &'static str, annotation: Option<&str>) {
+    let mut row = file.decode_to_lineno(span.0).unwrap();
+    let end_row = file.decode_to_lineno(span.1).unwrap();
 
     while row <= end_row {
-        let char_start = file.unicode_slice(span.start);
-        let char_end = file.unicode_slice(span.end);
-        eprintln!(" {row}|{line}", line = file.get_line(row - 1));
+        let line_start = file.pos_to_charpos(file.lines()[row]);
+        let char_start = file.pos_to_charpos(span.0);
+        let char_end = file.pos_to_charpos(span.1);
+        eprintln!(" {}|{line}", row + 1, line = file.get_line(row).unwrap());
         eprintln!(" {npad}|{lpad}{span} {annotation}",
-                  npad = " ".repeat(format!("{row}").len()), lpad = " ".repeat(char_start),
+                  npad = " ".repeat(num_digits(row + 1)), lpad = " ".repeat(char_start - line_start),
                   span = decoration.repeat(char_end - char_start),
                   annotation = annotation.unwrap_or(""));
         row += 1;
     }
+}
+
+fn num_digits(n: usize) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    (n as f64).log10().floor() as usize + 1
 }
 
 pub struct DiagnosticsCtxt(RefCell<DiagnosticsCtxtInner>);

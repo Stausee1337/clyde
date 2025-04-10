@@ -1,6 +1,6 @@
 use std::{fmt::Write, marker::PhantomData, ops::{Deref, DerefMut}};
 
-use crate::{interface::File, string_internals::{self, run_utf8_validation}, symbol::Symbol};
+use crate::{interface::{self, File}, string_internals, symbol::Symbol};
 use clyde_macros::{LexFromString, Operator};
 
 use tinyvec::ArrayVec;
@@ -837,14 +837,16 @@ impl<'a> DerefMut for Tokenizer<'a> {
 
 
 pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
-    let contents = source_file.contents();
-    if !run_utf8_validation(contents) {
-        let err = LexError {
-            kind: LexErrorKind::InvalidUtf8,
-            span: Span::zero()
-        };
-        return (TokenStream::empty(), vec![err]);
-    }
+    let contents = match source_file.contents() {
+        Ok(contents) => contents,
+        Err(interface::Utf8Error) => {
+            let err = LexError {
+                kind: LexErrorKind::InvalidUtf8,
+                span: Span::zero()
+            };
+            return (TokenStream::empty(), vec![err]);
+        }
+    };
     let cursor = SourceCursor::new(contents);
     let (stream, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
     (stream, errors)
