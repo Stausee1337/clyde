@@ -293,14 +293,14 @@ unsafe fn analyze_unicode(unicode: &[u8]) -> (Vec<RelativePosition>, Vec<Multiby
             });
         } else if char == '\n' && offset < length - 1 {
             // \n (unix)
-            lines.push(RelativePosition(offset)); // push the beginning of the line
+            lines.push(RelativePosition(offset + 1)); // push the beginning of the line
         } else if char == '\r' && offset < length - 2 && bytes.as_slice()[0] == b'\n' {
             // \r\n (windows)
             bytes.next(); // advance over '\n'
-            lines.push(RelativePosition(offset)); // push the beginning of the line
+            lines.push(RelativePosition(offset + 2)); // push the beginning of the line
         } else if char == '\r' && offset < length - 1 {
             // \r (osx)
-            lines.push(RelativePosition(offset)); // push the beginning of the line
+            lines.push(RelativePosition(offset + 1)); // push the beginning of the line
         }
 
         offset = bytes.as_slice().as_ptr().offset_from(start) as u32;

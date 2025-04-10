@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use proc_macro2::{TokenStream, Ident, Span, Punct};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{Meta, GenericParam, Generics, Item, Attribute, ItemEnum, Fields, spanned::Spanned, Lit, parse::{Parse, ParseStream}};
+use syn::{parse::{Parse, ParseStream}, spanned::Spanned, Attribute, Fields, GenericParam, Generics, Item, ItemEnum, Lit, LitByteStr, Meta};
 
 fn ident(item: &Item) -> Result<&Ident, syn::Error> {
     match item {
@@ -220,8 +220,9 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
         let Lit::Str(lit) = lit else {
             return Err(syn::Error::new(lit.span(), "expected string"));
         };
-        mappings.extend(quote! { #lit => #enm_ident::#ident, });
         display.extend(quote! { #enm_ident::#ident => #lit, });
+        let lit = LitByteStr::new(lit.value().as_bytes(), lit.span());
+        mappings.extend(quote! { #lit => #enm_ident::#ident, });
         /*structs.extend(quote! {
             pub struct #ident;
             impl #ident {
@@ -236,8 +237,8 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
 
     Ok(quote! {
         impl LexFromString for #enm_ident {
-            fn try_from_string(str: &str) -> Option<Self> {
-                const MAP: phf::Map<&'static str, #enm_ident> = phf::phf_map! {
+            fn try_from_string(str: &[u8]) -> Option<Self> {
+                const MAP: phf::Map<&'static [u8], #enm_ident> = phf::phf_map! {
                     #mappings
                 };
                 MAP.get(str).map(|r| *r)

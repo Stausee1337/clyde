@@ -78,6 +78,13 @@ impl<'src> TokenCursor<'src> {
         unsafe { self.current = self.current.add(1) };
     }
 
+    fn try_advance(&mut self) {
+        if self.end <= self.current {
+            return;
+        }
+        unsafe { self.current = self.current.add(1) };
+    }
+
     fn advance_to(&mut self, pos: &Token<'src>) {
         let pos = (&raw const *pos) as *mut _;
         if (self.current..=self.end).contains(&pos) {
@@ -140,6 +147,7 @@ impl Parsable for Symbol {
     }
 }
 
+// query_value<int>(?) == 3;
 impl Parsable for String {
     const CLASSNAME: Option<&'static str> = Some("<string>");
 
@@ -147,7 +155,7 @@ impl Parsable for String {
         if let TokenKind::Literal(repr, LiteralKind::String) = token.kind {
             let mut parser = StringParser::new(StringKind::String);
             let mut buffer = String::new();
-            for char in repr.chars() {
+            for char in repr[1..].chars() {
                 match parser.feed(char) {
                     Ok(out) => {
                         if let Some(out) = out {
@@ -426,7 +434,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             .at(span)
             .push(self.diagnostics);
 
-        self.cursor.advance(); // advance past the error
+        self.cursor.try_advance(); // try_advance past the error
         let node = self.make_node(N::ERROR, span);
         ExpectError::Fail(node)
     }
@@ -445,7 +453,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
-        self.cursor.advance(); // advance past the error
+        self.cursor.try_advance(); // try_advance past the error
         let node = self.make_node(N::ERROR, span);
         ExpectError::Fail(node)
     }
@@ -456,7 +464,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
-        self.cursor.advance(); // advance past the error
+        self.cursor.try_advance(); // try_advance past the error
         self.make_node(N::ERROR, span)
     }
 

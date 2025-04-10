@@ -416,6 +416,17 @@ impl<'a> SourceCursor<'a> {
         }
     }
 
+    fn slice_bytes(&self, relative_start: usize, length: usize) -> Option<&'a [u8]> {
+        if self.position() - relative_start + length > self.length() {
+            return None;
+        }
+        unsafe { 
+            let ptr = self.current.sub(relative_start + 1);
+            let slice = std::slice::from_raw_parts(ptr, length);
+            Some(slice)
+        }
+    }
+
     fn matches(&self, offset: usize, pattern: &[u8]) -> bool {
         let offset = offset as isize;
         let rem = self.length() - self.position();
@@ -598,7 +609,7 @@ impl<'a> Tokenizer<'a> {
             }
             length += current.len_utf8();
         }
-        let symbol = self.slice(self.position() - start, length).unwrap();
+        let symbol = self.slice_bytes(self.position() - start, length).unwrap();
         if let Some(keyword) = Keyword::try_from_string(symbol) {
             self.token = Token {
                 kind: TokenKind::Keyword(keyword),
@@ -610,7 +621,7 @@ impl<'a> Tokenizer<'a> {
                 span: self.make_span(start, start + length)
             };
         } else {
-            let symbol = Symbol::intern(symbol);
+            let symbol = Symbol::intern(std::str::from_utf8(symbol).unwrap());
             self.token = Token {
                 kind: TokenKind::Symbol(symbol),
                 span: self.make_span(start, start + length)
@@ -663,7 +674,7 @@ impl<'a> Tokenizer<'a> {
         let start = self.position();
         let mut length = Punctuator::MAX_LENGTH;
         let mut punctuator = self
-            .slice(0, length)
+            .slice_bytes(0, length)
             .and_then(Punctuator::try_from_string);
         while let None = punctuator {
             if length == 0 {
@@ -671,7 +682,7 @@ impl<'a> Tokenizer<'a> {
             }
             length -= 1;
             punctuator = self
-                .slice(0, length)
+                .slice_bytes(0, length)
                 .and_then(Punctuator::try_from_string);
         }
 
@@ -849,6 +860,9 @@ pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
     };
     let cursor = SourceCursor::new(contents);
     let (stream, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
+    for tok in &stream.tokens {
+        println!("{tok:?}");
+    }
     (stream, errors)
 }
 
@@ -1069,7 +1083,7 @@ impl Tokenish for Keyword {
     }*/
 
 trait LexFromString: Sized {
-    fn try_from_string(str: &str) -> Option<Self>;
+    fn try_from_string(str: &[u8]) -> Option<Self>;
 }
 
 #[repr(u32)]
