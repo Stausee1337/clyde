@@ -808,7 +808,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 let mut expr = self.parse_expr_assoc(0);
 
                 let mut tuple_args = vec![];
-                let mut flushed = false;
+                let mut flushed = true;
                 while let Some(..) = self.bump_if(Token![,]) {
                     tuple_args.push(expr);
 
@@ -816,7 +816,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                         flushed = true;
                         break;
                     }
-
+                    flushed = false;
                     expr = self.parse_expr_assoc(0);
                 }
                 if !flushed {
