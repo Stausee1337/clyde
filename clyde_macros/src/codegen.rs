@@ -213,6 +213,7 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
 
     // let mut structs = TokenStream::new();
     let mut mappings = TokenStream::new();
+    let mut display = TokenStream::new();
     for mapping in map {
         let (ident, attrs) = mapping;
         let (_, lit) = attrs.first().unwrap();
@@ -220,6 +221,7 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
             return Err(syn::Error::new(lit.span(), "expected string"));
         };
         mappings.extend(quote! { #lit => #enm_ident::#ident, });
+        display.extend(quote! { #enm_ident::#ident => #lit, });
         /*structs.extend(quote! {
             pub struct #ident;
             impl #ident {
@@ -242,9 +244,13 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
             }
         }
 
-        /*mod #mod_ident {
-            use super::#enm_ident;
-            #structs
-        }*/
+        impl std::fmt::Display for #enm_ident {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let dis = match self {
+                    #display
+                };
+                f.write_str(dis)
+            }
+        }
     })
 }

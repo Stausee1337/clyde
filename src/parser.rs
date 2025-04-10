@@ -1,11 +1,7 @@
-use std::{cell::OnceCell, ops::ControlFlow, path::Path};
+use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 
 use crate::{
-    ast::{self, Constant, NodeId},
-    interface::Session,
-    lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish},
-    symbol::Symbol,
-    Token
+    ast::{self, Constant, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, interface::Session, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol, Token
 };
 
 enum ParseTry<'src, T> {
@@ -95,10 +91,14 @@ impl<'src> TokenCursor<'src> {
 }
 
 trait Parsable: Sized {
+    const CLASSNAME: Option<&'static str>;
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self>;
 }
 
 impl<T: Operator> Parsable for T {
+    const CLASSNAME: Option<&'static str> = Some("<operator>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Punctuator(punct) = token.kind {
             return T::from_punct(punct);
@@ -108,6 +108,8 @@ impl<T: Operator> Parsable for T {
 }
 
 impl Parsable for Keyword {
+    const CLASSNAME: Option<&'static str> = None;
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Keyword(keyword) = token.kind {
             return Some(keyword);
@@ -117,6 +119,8 @@ impl Parsable for Keyword {
 }
 
 impl Parsable for Punctuator {
+    const CLASSNAME: Option<&'static str> = Some("<punct>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Punctuator(punct) = token.kind {
             return Some(punct);
@@ -126,6 +130,8 @@ impl Parsable for Punctuator {
 }
 
 impl Parsable for Symbol {
+    const CLASSNAME: Option<&'static str> = Some("<ident>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Symbol(sym) = token.kind {
             return Some(sym);
@@ -135,6 +141,8 @@ impl Parsable for Symbol {
 }
 
 impl Parsable for String {
+    const CLASSNAME: Option<&'static str> = Some("<string>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Literal(repr, LiteralKind::String) = token.kind {
             let mut parser = StringParser::new(StringKind::String);
@@ -160,6 +168,8 @@ impl Parsable for String {
 }
 
 impl Parsable for Constant {
+    const CLASSNAME: Option<&'static str> = Some("<lit>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         match token.kind {
             TokenKind::Literal(repr, LiteralKind::Char) => {
@@ -197,6 +207,8 @@ impl Parsable for Constant {
 }
 
 impl Parsable for u64 {
+    const CLASSNAME: Option<&'static str> = Some("<intnumber>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Literal(repr, LiteralKind::IntNumber(mode)) = token.kind {
             let radix = match mode {
@@ -214,6 +226,8 @@ impl Parsable for u64 {
 }
 
 impl Parsable for AssociotiveOp {
+    const CLASSNAME: Option<&'static str> = Some("<op>");
+
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
         if let TokenKind::Punctuator(punct) = token.kind {
             if let Some(binop) = lexer::BinaryOp::from_punct(punct) {
@@ -227,14 +241,111 @@ impl Parsable for AssociotiveOp {
     }
 }
 
+trait ASTNode<'ast> {
+    type Kind;
+    const ERROR: Self::Kind;
+
+    fn from_kind_and_span<'src>(p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self;
+}
+
+impl<'ast> ASTNode<'ast> for ast::Expr<'ast> {
+    type Kind = ast::ExprKind<'ast>;
+    const ERROR: Self::Kind = ast::ExprKind::Err;
+
+    fn from_kind_and_span<'src>(
+        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+        ast::Expr {
+            kind,
+            span,
+            node_id: p.make_id()
+        }
+    }
+}
+
+impl<'ast> ASTNode<'ast> for ast::TypeExpr<'ast> {
+    type Kind = ast::TypeExprKind<'ast>;
+    const ERROR: Self::Kind = ast::TypeExprKind::Err;
+
+    fn from_kind_and_span<'src>(
+        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+        ast::TypeExpr {
+            kind,
+            span,
+            node_id: p.make_id()
+        }
+    }
+}
+
+impl<'ast> ASTNode<'ast> for ast::Stmt<'ast> {
+    type Kind = ast::StmtKind<'ast>;
+    const ERROR: Self::Kind = ast::StmtKind::Err;
+
+    fn from_kind_and_span<'src>(
+        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+        ast::Stmt {
+            kind,
+            span,
+            node_id: p.make_id()
+        }
+    }
+}
+
+pub enum ExpectError<S, N> {
+    Ok(S),
+    Fail(N)
+}
+
 pub struct Parser<'src, 'ast> {
     _tokens: Box<[Token<'src>]>,
     cursor: TokenCursor<'src>,
-    arena: &'ast bumpalo::Bump
+    arena: &'ast bumpalo::Bump,
+    diagnostics: &'ast DiagnosticsCtxt
+}
+
+macro_rules! TRY {
+    ($expect:expr) => {{
+        match $expect {
+            ExpectError::Ok(ok) => ok,
+            ExpectError::Fail(node) =>
+                return node,
+        }
+    }};
+}
+
+struct TokenJoiner<'a, T: Tokenish>(&'a [T]);
+
+impl<'a, T: Tokenish> TokenJoiner<'a, T> {
+    fn one(t: &'a T, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('`')?;
+        std::fmt::Display::fmt(t, f)?;
+        f.write_char('`')
+    }
+}
+
+impl<'a, T: Tokenish> std::fmt::Display for TokenJoiner<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.len() == 1 {
+            return Self::one(&self.0[0], f);
+        }
+
+        let last = self.0.len() - 1;
+        for (i, tok) in self.0.iter().enumerate() {
+            if i == last {
+                f.write_str(" or ")?;
+            } else if i > 0 {
+                f.write_str(", ")?;
+            }
+            Self::one(tok, f)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'src, 'ast> Parser<'src, 'ast> {
-    fn new(stream: TokenStream<'src>, arena: &'ast bumpalo::Bump) -> Self {
+    fn new(
+        stream: TokenStream<'src>,
+        arena: &'ast bumpalo::Bump,
+        diagnostics: &'ast DiagnosticsCtxt) -> Self {
         let mut tokens = stream.into_boxed_slice();
         let start = tokens.as_mut_ptr();
         let cursor = TokenCursor {
@@ -244,7 +355,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Self {
             _tokens: tokens,
             cursor,
-            arena
+            arena,
+            diagnostics
         }
     }
 
@@ -295,6 +407,56 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         NodeId(0)
     }
 
+    fn make_node<N: ASTNode<'ast>>(&mut self, kind: N::Kind, span: Span) -> &'ast N {
+        let node = N::from_kind_and_span(self, kind, span);
+        self.alloc(node)
+    }
+
+    fn expect_either<N: ASTNode<'ast>>(&mut self, slice: &[impl Tokenish]) -> ExpectError<(), &'ast N> {
+        let current = self.cursor.current();
+        for test in slice {
+            if test.matches(current) {
+                // only one has to match
+                return ExpectError::Ok(());
+            }
+        }
+        let span = self.cursor.span();
+        let message = format!("expected {}, found {}", TokenJoiner(slice), self.cursor.current());
+        Message::error(message)
+            .at(span)
+            .push(self.diagnostics);
+
+        let node = self.make_node(N::ERROR, span);
+        ExpectError::Fail(node)
+    }
+
+    fn expect_one<N: ASTNode<'ast>>(&mut self, one: impl Tokenish) -> ExpectError<(), &'ast N> {
+        self.expect_either(&[one])
+    }
+
+    fn expect_any<P: Parsable, N: ASTNode<'ast>>(&mut self) -> ExpectError<P, &'ast N> {
+        if let Some(p) = self.bump_on::<P>() {
+            return ExpectError::Ok(p);
+        }
+
+        let span = self.cursor.span();
+        let message = format!("expected {}, found {}", P::CLASSNAME.expect("can't be used with expect_any()"), self.cursor.current());
+        Message::error(message)
+            .at(span)
+            .push(self.diagnostics);
+        let node = self.make_node(N::ERROR, span);
+        ExpectError::Fail(node)
+    }
+
+    fn unexpected<N: ASTNode<'ast>>(&mut self, message: &str) -> &'ast N {
+        let span = self.cursor.span();
+        let message = format!("expected {}, found {}", message, self.cursor.current());
+        Message::error(message)
+            .at(span)
+            .push(self.diagnostics);
+        self.make_node(N::ERROR, span)
+    }
+
     fn enter_speculative_block<'a, R, F: FnOnce(&mut Self) -> R>(
         &mut self, do_work: F) -> (R, TokenCursor<'src>) {
         let cursor = self.cursor.fork();
@@ -329,22 +491,14 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                             return None,
                     };
 
-                    let expr = ast::TypeExpr {
-                        kind: ast::TypeExprKind::Generic(ast::Generic {
-                            name,
-                            args: generic_args
-                        }),
-                        span: this.cursor.span(),
-                        node_id: this.make_id()
-                    };
-                    this.alloc(expr)
+                    let kind = ast::TypeExprKind::Generic(ast::Generic {
+                        name,
+                        args: generic_args
+                    });
+                    this.make_node(kind, this.cursor.span())
                 } else {
-                    let expr = ast::TypeExpr {
-                        span: name.ident.span,
-                        kind: ast::TypeExprKind::Name(name),
-                        node_id: this.make_id()
-                    };
-                    this.alloc(expr)
+                    let span = name.ident.span;
+                    this.make_node(ast::TypeExprKind::Name(name), span)
                 };
             } else {
                 return None;
@@ -355,12 +509,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     Punctuator::LBracket =>
                         ty_expr = this.parse_array_or_slice(ty_expr),
                     Token![*] => {
-                        let expr = ast::TypeExpr {
-                            kind: ast::TypeExprKind::Ref(ty_expr),
-                            span: this.cursor.span(),
-                            node_id: this.make_id()
-                        };
-                        ty_expr = this.alloc(expr);
+                        ty_expr = this.make_node(ast::TypeExprKind::Ref(ty_expr), this.cursor.span());
                     }
                     _ => break
                 }
@@ -393,38 +542,22 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         while !self.matches(Punctuator::RParen) {
             args.push(self.parse_ty_expr());
             
-            if self.bump_if(Token![,]).is_none() && !self.matches(Punctuator::RParen){
-                let expr = ast::TypeExpr {
-                    kind: ast::TypeExprKind::Err,
-                    span: Span::interpolate(start, self.cursor.span()),
-                    node_id: self.make_id()
-                };
-                return self.alloc(expr);
-            }
+            TRY!(self.expect_either(&[Token![,], Punctuator::RParen]));
+            self.bump_if(Token![,]);
         }
         let end = self.cursor.span();
         self.cursor.advance();
 
         let args = self.alloc_slice(&args);
-
-        let expr = ast::TypeExpr {
-            kind: ast::TypeExprKind::Tuple(args),
-            span: Span::interpolate(start, end),
-            node_id: self.make_id()
-        };
-        self.alloc(expr)
+        self.make_node(ast::TypeExprKind::Tuple(args), Span::interpolate(start, end))
     }
 
     fn parse_array_or_slice(&mut self, ty: &'ast ast::TypeExpr<'ast>) -> &'ast ast::TypeExpr<'ast> {
         self.cursor.advance();
 
         if let Some(tok) = self.bump_if(Punctuator::RBracket) {
-            let expr = ast::TypeExpr {
-                kind: ast::TypeExprKind::Slice(ty),
-                span: Span::interpolate(ty.span, tok.span),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            let span = Span::interpolate(ty.span, tok.span);
+            return self.make_node(ast::TypeExprKind::Slice(ty), span);
         }
 
         let cap = match self.match_on::<Punctuator>() {
@@ -449,21 +582,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         };
 
         let end = self.cursor.span();
-        if self.bump_if(Punctuator::RBracket).is_none() {
-            let expr = ast::TypeExpr {
-                kind: ast::TypeExprKind::Err,
-                span: self.cursor.span(),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
-        }
-
-        let expr = ast::TypeExpr {
-            kind: ast::TypeExprKind::Array(ast::Array { ty, cap }),
-            span: Span::interpolate(ty.span, end),
-            node_id: self.make_id()
-        };
-        self.alloc(expr)
+        TRY!(self.expect_one(Punctuator::RBracket));
+        self.cursor.advance();
+        self.make_node(ast::TypeExprKind::Array(ast::Array { ty, cap }), Span::interpolate(ty.span, end))
     }
 
     fn parse_ty_expr(&mut self) -> &'ast ast::TypeExpr<'ast> {
@@ -485,39 +606,23 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                         generic_args
                     }
                     ParseTry::Never => {
-                        let expr = ast::TypeExpr {
-                            kind: ast::TypeExprKind::Err,
-                            span: self.cursor.span(),
-                            node_id: self.make_id()
-                        };
-                        return self.alloc(expr);
+                        return self.unexpected("generic arguments");
                     }
                 };
 
-                let expr = ast::TypeExpr {
-                    kind: ast::TypeExprKind::Generic(ast::Generic {
+                self.make_node(
+                    ast::TypeExprKind::Generic(ast::Generic {
                         name,
                         args: generic_args
                     }),
-                    span: self.cursor.span(),
-                    node_id: self.make_id()
-                };
-                self.alloc(expr)
+                    self.cursor.span()
+                )
             } else {
-                let expr = ast::TypeExpr {
-                    span: name.ident.span,
-                    kind: ast::TypeExprKind::Name(name),
-                    node_id: self.make_id()
-                };
-                self.alloc(expr)
+                let span = name.ident.span;
+                self.make_node(ast::TypeExprKind::Name(name), span)
             };
         } else {
-            let expr = ast::TypeExpr {
-                kind: ast::TypeExprKind::Err,
-                span: self.cursor.span(),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            return self.unexpected("type");
         }
 
         while let Some(punct) = self.match_on::<Punctuator>() {
@@ -525,12 +630,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 Punctuator::LBracket =>
                     ty_expr = self.parse_array_or_slice(ty_expr),
                 Token![*] => {
-                    let expr = ast::TypeExpr {
-                        kind: ast::TypeExprKind::Ref(ty_expr),
-                        span: self.cursor.span(),
-                        node_id: self.make_id()
-                    };
-                    ty_expr = self.alloc(expr);
+                    ty_expr = self.make_node(ast::TypeExprKind::Ref(ty_expr), self.cursor.span());
                 }
                 _ => break
             }
@@ -704,6 +804,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_expr_primary(&mut self) -> &'ast ast::Expr<'ast> {
+        const UNEXPECTED_NONPRIMARY: &'static str = "null, true, false, <name>, <number>, <string>, <ident>, `(`, `{`"; //})
         let token = self.cursor.current();
         if let Some(keyword) = self.bump_on::<Keyword>() {
             let kind = match keyword {
@@ -713,29 +814,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     ast::ExprKind::Constant(ast::Constant::Boolean(true)),
                 Token![false] =>
                     ast::ExprKind::Constant(ast::Constant::Boolean(false)),
-                _ =>
-                    ast::ExprKind::Err
+                _ => return self.unexpected(UNEXPECTED_NONPRIMARY)
             };
-            let expr = ast::Expr {
-                kind,
-                span: token.span,
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            return self.make_node(kind, token.span);
         } else if let Some(literal) = self.bump_on::<Constant>() {
-            let expr = ast::Expr {
-                kind: ast::ExprKind::Constant(literal),
-                span: token.span,
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            return self.make_node(ast::ExprKind::Constant(literal), token.span);
         } else if let Some(stringlit) = self.bump_on::<String>() {
-            let expr = ast::Expr {
-                kind: ast::ExprKind::String(stringlit),
-                span: token.span,
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            return self.make_node(ast::ExprKind::String(stringlit), token.span);
         } else if let Some(symbol) = self.match_on::<Symbol>() {
             // maybe this could be a discrete type init like: 
             // `Simple { a }`, `Wrapper<int> { inner: 42 }` or `int[_] { 1, 2, 3 }`
@@ -744,14 +829,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             match try_ty {
                 ParseTry::Sure(expr) => {
                     ty_expr = Some(expr);
-                    if !self.matches(Punctuator::LCurly) {
-                        let expr = ast::Expr {
-                            kind: ast::ExprKind::Err,
-                            span: token.span,
-                            node_id: self.make_id()
-                        };
-                        return self.alloc(expr);
-                    }
+                    TRY!(self.expect_one(Punctuator::LCurly));
                 }
                 ParseTry::Doubt(expr, cursor) => {
                     if let TokenKind::Punctuator(
@@ -772,24 +850,12 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     span: token.span
                 });
                 self.cursor.advance(); // advance past the Symbol we matched
-                let expr = ast::Expr {
-                    kind: ast::ExprKind::Name(name),
-                    span: token.span,
-                    node_id: self.make_id()
-                };
-                self.alloc(expr)
+                self.make_node(ast::ExprKind::Name(name), token.span)
             };
             return expr;
         }
 
-        let Some(punct) = self.match_on::<Punctuator>() else {
-            let expr = ast::Expr {
-                kind: ast::ExprKind::Err,
-                span: token.span,
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
-        };
+        let punct = TRY!(self.expect_any::<Punctuator, _>());
 
         // Tuple (or nomral Expr resetting precedence), TypeInit or Block
         let mut end = None;
@@ -797,12 +863,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             Punctuator::LParen => {
                 self.cursor.advance();
                 if let Some(rparen) = self.bump_if(Punctuator::RParen) {
-                    let expr = ast::Expr {
-                        kind: ast::ExprKind::Tuple(&[]),
-                        span: Span::interpolate(token.span, rparen.span),
-                        node_id: self.make_id()
-                    };
-                    return self.alloc(expr);
+                    let span = Span::interpolate(token.span, rparen.span);
+                    return self.make_node(ast::ExprKind::Tuple(&[]), span);
                 }
 
                 let mut expr = self.parse_expr_assoc(0);
@@ -822,19 +884,17 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 if !flushed {
                     tuple_args.push(expr);
                 }
-                if let Some(rparen) = self.bump_if(Punctuator::RParen) {
-                    if tuple_args.is_empty() {
-                        // FIXME: we currently don't take into account the added
-                        // span changes from the parens, this can only be solved
-                        // using new ExprKind::Paren
-                        return expr;
-                    }
-                    end = Some(rparen.span);
-                    ast::ExprKind::Tuple(self.alloc_slice(&tuple_args))
-                } else {
-                    end = Some(self.cursor.span());
-                    ast::ExprKind::Err
+
+                TRY!(self.expect_one(Punctuator::RParen));
+                end = Some(self.cursor.span());
+                self.cursor.advance();
+                if tuple_args.is_empty() {
+                    // FIXME: we currently don't take into account the added
+                    // span changes from the parens, this can only be solved
+                    // using new ExprKind::Paren
+                    return expr;
                 }
+                ast::ExprKind::Tuple(self.alloc_slice(&tuple_args))
             },
             Punctuator::LCurly => {
                 let Some(block) = self.try_parse_block() else {
@@ -843,17 +903,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 end = Some(block.span);
                 ast::ExprKind::Block(block)
             }
-            _ => ast::ExprKind::Err
+            _ => return self.unexpected(UNEXPECTED_NONPRIMARY)
         };
 
         let end = end.unwrap_or(token.span);
-
-        let expr = ast::Expr {
-            kind,
-            span: Span::interpolate(token.span, end),
-            node_id: self.make_id()
-        };
-        self.alloc(expr)
+        self.make_node(kind, Span::interpolate(token.span, end))
     }
 
     fn parse_call_expr(&mut self, expr: &'ast ast::Expr<'ast>, generic_args: &'ast [ast::GenericArgument<'ast>]) -> &'ast ast::Expr<'ast> {
@@ -879,31 +933,22 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             };
 
             args.push(argument);
-            
-            if self.bump_if(Token![,]).is_none() && !self.matches(Punctuator::RParen) {
-                let expr = ast::Expr {
-                    kind: ast::ExprKind::Err,
-                    span: Span::interpolate(expr.span, self.cursor.span()),
-                    node_id: self.make_id()
-                };
-                return self.alloc(expr);
-            }
+            TRY!(self.expect_either(&[Token![,], Punctuator::RParen]));
+            self.bump_if(Token![,]);    
         }
         let end = self.cursor.span();
         self.cursor.advance();
 
         let args = self.alloc_slice(&args);
 
-        let expr = ast::Expr {
-            kind: ast::ExprKind::FunctionCall(ast::FunctionCall {
+        self.make_node(
+            ast::ExprKind::FunctionCall(ast::FunctionCall {
                 callable: expr,
                 args,
                 generic_args
             }),
-            span: Span::interpolate(expr.span, end),
-            node_id: self.make_id()
-        };
-        self.alloc(expr)
+            Span::interpolate(expr.span, end),
+        )
     }
 
     fn parse_subscript_expr(
@@ -914,29 +959,21 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         while !self.matches(Punctuator::RBracket) {
             args.push(self.parse_expr_assoc(0));
             
-            if self.bump_if(Token![,]).is_none() && !self.matches(Punctuator::RBracket) {
-                let expr = ast::Expr {
-                    kind: ast::ExprKind::Err,
-                    span: Span::interpolate(expr.span, self.cursor.span()),
-                    node_id: self.make_id()
-                };
-                return self.alloc(expr);
-            }
+            TRY!(self.expect_either(&[Token![,], Punctuator::RBracket]));
+            self.bump_if(Token![,]);
         }
         let end = self.cursor.span();
         self.cursor.advance();
 
         let args = self.alloc_slice(&args);
 
-        let expr = ast::Expr {
-            kind: ast::ExprKind::Subscript(ast::Subscript {
+        self.make_node(
+            ast::ExprKind::Subscript(ast::Subscript {
                 expr,
                 args,
             }),
-            span: Span::interpolate(expr.span, end),
-            node_id: self.make_id()
-        };
-        self.alloc(expr)
+            Span::interpolate(expr.span, end),
+        )
     }
 
     fn parse_field_expr(
@@ -956,46 +993,35 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 span: start.span
             }
         } else {
-            let expr = ast::Expr {
-                kind: ast::ExprKind::Err,
-                span: self.cursor.span(),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            return self.unexpected("<ident> or <intnumber>");
         }
 
-        let expr = ast::Expr {
-            kind: ast::ExprKind::Field(ast::Field {
+        self.make_node(
+            ast::ExprKind::Field(ast::Field {
                 expr,
                 field: ident
             }),
-            span: Span::interpolate(expr.span, start.span),
-            node_id: self.make_id()
-        };
-        self.alloc(expr)
+            Span::interpolate(expr.span, start.span),
+        )
     }
 
     fn parse_expr_prefix(&mut self) -> &'ast ast::Expr<'ast> {
         let start = self.cursor.span();
         if let Some(op) = self.bump_on::<lexer::UnaryOp>() {
             let expr = self.parse_expr_prefix();
-            let expr = ast::Expr {
-                kind: ast::ExprKind::UnaryOp(ast::UnaryOp {
+            return self.make_node(
+                ast::ExprKind::UnaryOp(ast::UnaryOp {
                     expr,
                     operator: op
                 }),
-                span: Span::interpolate(start, expr.span),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+                Span::interpolate(start, expr.span)
+            );
         } else if let Some(..) = self.bump_if(Token![*]) {
             let expr = self.parse_expr_prefix();
-            let expr = ast::Expr {
-                kind: ast::ExprKind::Deref(expr),
-                span: Span::interpolate(start, expr.span),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+            return self.make_node(
+                ast::ExprKind::Deref(expr),
+                Span::interpolate(start, expr.span),
+            );
         } else if self.matches(Token![&&]) {
             // parse double refrence
             let tok = self.cursor.current();
@@ -1008,15 +1034,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             });
             let expr = self.parse_expr_prefix();
 
-            let expr = ast::Expr {
-                kind: ast::ExprKind::UnaryOp(ast::UnaryOp {
+            return self.make_node(
+                ast::ExprKind::UnaryOp(ast::UnaryOp {
                     expr,
                     operator: lexer::UnaryOp::Ref
                 }),
-                span: Span::interpolate(start, expr.span),
-                node_id: self.make_id()
-            };
-            return self.alloc(expr);
+                Span::interpolate(start, expr.span),
+            );
         } else if self.matches(Token![cast]) || self.matches(Token![transmute]) {
             let _token = self.cursor.current();
             self.cursor.advance();
@@ -1081,12 +1105,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     })
             };
 
-            let expr = ast::Expr {
-                kind,
-                span,
-                node_id: self.make_id()
-            };
-            lhs = self.alloc(expr);
+            lhs = self.make_node(kind, span);
         }
         lhs
     }
@@ -1138,16 +1157,12 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let (stmt, cursor) = self.enter_speculative_block(|this| {
             let expr = this.parse_expr_assoc(0);
-            if this.bump_if(Token![;]).is_none() {
+            let Some(tok) = this.bump_if(Token![;]) else {
                 return None;
-            }
-
-            let stmt = ast::Stmt {
-                kind: ast::StmtKind::Expr(expr),
-                span: expr.span,
-                node_id: this.make_id()
             };
-            Some(this.alloc(stmt))
+
+            let span = Span::interpolate(expr.span, tok.span);
+            Some(this.make_node(ast::StmtKind::Expr(expr), span))
         });
 
         if let Some(stmt) = stmt {
@@ -1159,6 +1174,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
+        const UNEXPECTED_STMT: &'static str = "var, if, return, for, while, break, continue, <ident>, <expr>";
         let start = self.cursor.span();
 
         if let Some(keyword) = self.match_on::<Keyword>() {
@@ -1176,12 +1192,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 Token![break] | Token![continue] => 
                     self.parse_control_flow(keyword),
                 _ => {
-                    let stmt = ast::Stmt {
-                        kind: ast::StmtKind::Err,
-                        span: start,
-                        node_id: self.make_id()
-                    };
-                    self.alloc(stmt)
+                    self.unexpected(UNEXPECTED_STMT)
                 }
             };
         }
@@ -1199,26 +1210,16 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
         let expr = self.parse_expr_assoc(0);
 
-        if self.bump_if(Token![;]).is_none() {
-            let stmt = ast::Stmt {
-                kind: ast::StmtKind::Err,
-                span: self.cursor.span(),
-                node_id: self.make_id()
-            };
-            return self.alloc(stmt);
-        }
+        TRY!(self.expect_one(Token![;]));
+        let end = self.cursor.span();
+        self.cursor.advance();
 
-        let stmt = ast::Stmt {
-            kind: ast::StmtKind::Expr(expr),
-            span: expr.span,
-            node_id: self.make_id()
-        };
-        self.alloc(stmt)
+        self.make_node(ast::StmtKind::Expr(expr), Span::interpolate(expr.span, end))
     }
 }
 
 pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile<'sess>, ()> {
-    let _diagnostics = session.diagnostics();
+    let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
 
@@ -1235,9 +1236,13 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     
     let tmp = bumpalo::Bump::new();
 
-    let mut parser = Parser::new(stream, &tmp);
+    let mut parser = Parser::new(stream, &tmp, diagnostics);
     let xxx = parser.parse_stmt();
     println!("{xxx:#?}");
+
+    println!("parsed successfully");
+
+    diagnostics.render();
 
     todo!()
 }

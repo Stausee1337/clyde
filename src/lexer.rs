@@ -1,4 +1,4 @@
-use std::{ops::{DerefMut, Deref}, marker::PhantomData};
+use std::{fmt::Write, marker::PhantomData, ops::{Deref, DerefMut}};
 
 use crate::{interface::File, string_internals::{self, run_utf8_validation}, symbol::Symbol};
 use clyde_macros::{LexFromString, Operator};
@@ -298,7 +298,7 @@ impl StringParser {
     }
 }
 
-pub(crate) trait Tokenish {
+pub(crate) trait Tokenish: std::fmt::Display {
     fn matches(&self, tok: Token) -> bool;
 }
 
@@ -329,6 +329,25 @@ pub enum NumberMode {
     Octal,
     Decimal,
     Hex
+}
+
+impl<'a> std::fmt::Display for Token<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_char('`')?;
+        match self.kind {
+            TokenKind::Keyword(keyword) =>
+                std::fmt::Display::fmt(&keyword, f),
+            TokenKind::Punctuator(punct) =>
+                std::fmt::Display::fmt(&punct, f),
+            TokenKind::Symbol(symbol) =>
+                f.write_str(symbol.get()),
+            TokenKind::Literal(repr, _) =>
+                f.write_str(repr),
+            TokenKind::EOS =>
+                f.write_str("<eof>"),
+        }?;
+        f.write_char('`')
+    }
 }
 
 pub struct TokenStream<'a> {
