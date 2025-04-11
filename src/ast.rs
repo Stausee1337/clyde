@@ -141,20 +141,19 @@ impl Name {
 
 #[derive(Debug)]
 pub struct SourceFile<'ast> {
-    pub items: &'ast [Item<'ast>],
+    pub items: &'ast [&'ast Item<'ast>],
     pub span: Span,
     pub node_id: NodeId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Item<'ast> {
     pub kind: ItemKind<'ast>,
     pub span: Span,
-    pub ident: Ident,
     pub node_id: NodeId
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ItemKind<'ast> {
     Function(Function<'ast>),
     Struct(Struct<'ast>),
@@ -163,15 +162,17 @@ pub enum ItemKind<'ast> {
     Err
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct GlobalVar<'ast> {
+    pub ident: Ident,
     pub ty: &'ast TypeExpr<'ast>,
     pub init: Option<&'ast Expr<'ast>>,
     pub constant: bool
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Struct<'ast> {
+    pub ident: Ident,
     pub generics: &'ast [&'ast GenericParam<'ast>],
     pub fields: &'ast [FieldDef<'ast>],
     pub attributes: &'ast [Attribute]
@@ -187,8 +188,9 @@ pub struct FieldDef<'ast> {
     pub def_id: OnceCell<DefId>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Enum<'ast> {
+    pub ident: Ident,
     pub extends: Option<&'ast TypeExpr<'ast>>,
     pub variants: &'ast [VariantDef<'ast>],
     pub attributes: &'ast [Attribute]
@@ -203,15 +205,16 @@ pub struct VariantDef<'ast> {
     pub def_id: OnceCell<DefId>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Function<'ast> {
+    pub ident: Ident,
     pub sig: FnSignature<'ast>,
     pub body: Option<&'ast Expr<'ast>>,
     pub span: Span,
     pub attributes: &'ast [Attribute]
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct FnSignature<'ast> {
     pub returns: &'ast TypeExpr<'ast>,
     pub params: &'ast [Param<'ast>],
@@ -223,10 +226,10 @@ pub struct Attribute {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Param<'ast> {
     pub ident: Ident,
-    pub ty: TypeExpr<'ast>,
+    pub ty: &'ast TypeExpr<'ast>,
     pub span: Span,
     pub node_id: NodeId
 }
@@ -499,7 +502,6 @@ pub enum GenericArgument<'ast> {
 
 #[derive(Debug)]
 pub struct GenericParam<'ast> {
-    pub ident: Ident,
     pub kind: GenericParamKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
@@ -507,8 +509,9 @@ pub struct GenericParam<'ast> {
 
 #[derive(Debug)]
 pub enum GenericParamKind<'ast> {
-    Type(&'ast [&'ast TypeExpr<'ast>]),
-    Const(&'ast TypeExpr<'ast>)
+    Type(Ident),
+    Const(Ident, &'ast TypeExpr<'ast>),
+    Err
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

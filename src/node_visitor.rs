@@ -198,9 +198,9 @@ pub fn noop_visit_expr_kind<T: Visitor>(expr_kind: &ExprKind, vis: &mut T) {
 
 pub fn noop_visit_generic_param_kind<T: Visitor>(gp_kind: &GenericParamKind, vis: &mut T) {
     match gp_kind {
-        GenericParamKind::Type(tys) =>
-            visit_slice(*tys, |ty| vis.visit_ty_expr(ty)),
-        GenericParamKind::Const(cnst) => vis.visit_ty_expr(cnst)
+        GenericParamKind::Type(..) => (),
+        GenericParamKind::Const(_, cnst) => vis.visit_ty_expr(cnst),
+        GenericParamKind::Err => ()
     }
 }
 

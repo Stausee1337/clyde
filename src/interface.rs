@@ -173,7 +173,7 @@ impl std::fmt::Debug for RelativePosition {
 pub struct File {
     path: PathBuf,
     contents: Result<&'static [u8], Utf8Error>,
-    byte_span: Span,
+    pub byte_span: Span,
     lines: Vec<RelativePosition>,
     multibyte_chars: Vec<MultibyteChar>,
 }
@@ -499,13 +499,14 @@ pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
 
 pub struct Compiler<'tcx> {
     pub sess: Session,
+    pub xxxx: Xxxx,
     gcx_cell: OnceCell<GlobalCtxt<'tcx>>,
     gcx: RefCell<Option<&'tcx GlobalCtxt<'tcx>>>
 }
 
 impl<'tcx> Compiler<'tcx> {
-    pub fn parse_entry(&'tcx self) -> Result<ast::SourceFile<'tcx>, ()> {
-        parser::parse_file(&self.sess, &self.sess.input)
+    pub fn parse_entry(&'tcx self) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
+        parser::parse_file(&self.sess, &self.sess.input, &self.xxxx)
     }
 
     pub fn global_ctxt(&'tcx self) -> &'tcx GlobalCtxt<'tcx> {
@@ -525,11 +526,16 @@ impl<'tcx> Compiler<'tcx> {
     }
 }
 
+pub struct Xxxx {
+    pub arena: bumpalo::Bump
+}
+
 pub fn build_compiler<T, F>(sess: Session, f: F) -> T
 where
     F: for<'tcx> FnOnce(&'tcx Compiler<'tcx>) -> T
 {
     let mut compiler = Compiler {
+        xxxx: Xxxx { arena: bumpalo::Bump::new() },
         sess, 
         gcx_cell: OnceCell::new(),
         gcx: RefCell::new(None)

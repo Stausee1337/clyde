@@ -1318,22 +1318,22 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 let fields = enm.variants.iter().map(|variant| {
                     let def_id = *variant.def_id.get().unwrap();
                     assert_ne!(def_id, ast::DEF_ID_UNDEF,
-                               "variant {:?} of enum {:?} is undefined", variant.name.symbol, item.ident.symbol);
+                               "variant {:?} of enum {:?} is undefined", variant.name.symbol, enm.ident.symbol);
                     types::FieldDef { def: def_id, symbol: variant.name.symbol }
                 }).collect();
                 let adt_def = tcx.intern(
-                    types::AdtDefInner::new(def_id, item.ident.symbol, fields, types::AdtKind::Enum));
+                    types::AdtDefInner::new(def_id, enm.ident.symbol, fields, types::AdtKind::Enum));
                 Ty::new_adt(tcx, adt_def)
             }
             ast::ItemKind::Struct(stc) => {
                 let fields = stc.fields.iter().map(|fdef| {
                     let def_id = *fdef.def_id.get().unwrap();
                     assert_ne!(def_id, ast::DEF_ID_UNDEF,
-                               "field {:?} of struct {:?} is undefined", fdef.name.symbol, item.ident.symbol);
+                               "field {:?} of struct {:?} is undefined", fdef.name.symbol, stc.ident.symbol);
                     types::FieldDef { def: def_id, symbol: fdef.name.symbol }
                 }).collect();
                 let adt_def = tcx.intern(
-                    types::AdtDefInner::new(def_id, item.ident.symbol, fields, types::AdtKind::Struct));
+                    types::AdtDefInner::new(def_id, stc.ident.symbol, fields, types::AdtKind::Struct));
                 Ty::new_adt(tcx, adt_def)
             },
             ast::ItemKind::GlobalVar(global) => {
@@ -1386,7 +1386,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
     let ctxt = LoweringCtxt::new(tcx);
 
     match node {
-        ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), ident, .. }) => {
+        ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) => {
             let mut returns = ctxt.lower_ty(&func.sig.returns);
             if returns.is_incomplete() {
                 Message::error(
@@ -1418,7 +1418,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
             let params: Box<[types::Param]> = params.into_boxed_slice();
             let params: &'_ [types::Param] = tcx.arena.alloc(params);
 
-            types::Signature { returns, params, name: ident.symbol }
+            types::Signature { returns, params, name: func.ident.symbol }
         }
         _ => {
             panic!("non-function definition in fn_sig")

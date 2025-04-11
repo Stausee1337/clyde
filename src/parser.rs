@@ -1,7 +1,7 @@
 use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 
 use crate::{
-    ast::{self, Constant, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, interface::Session, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol, Token
+    ast::{self, Constant, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, interface::{self, Session}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, Token
 };
 
 enum ParseTry<'src, T> {
@@ -306,6 +306,34 @@ impl<'ast> ASTNode<'ast> for ast::Stmt<'ast> {
     fn from_kind_and_span<'src>(
         p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
         ast::Stmt {
+            kind,
+            span,
+            node_id: p.make_id()
+        }
+    }
+}
+
+impl<'ast> ASTNode<'ast> for ast::GenericParam<'ast> {
+    type Kind = ast::GenericParamKind<'ast>;
+    const ERROR: Self::Kind = ast::GenericParamKind::Err;
+
+    fn from_kind_and_span<'src>(
+        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+        ast::GenericParam {
+            kind,
+            span,
+            node_id: p.make_id()
+        }
+    }
+}
+
+impl<'ast> ASTNode<'ast> for ast::Item<'ast> {
+    type Kind = ast::ItemKind<'ast>;
+    const ERROR: Self::Kind = ast::ItemKind::Err;
+
+    fn from_kind_and_span<'src>(
+        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+        ast::Item {
             kind,
             span,
             node_id: p.make_id()
@@ -1435,9 +1463,159 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             node_id: self.make_id()
         }
     }
+
+    fn parse_struct_item(&mut self) -> &'ast ast::Item<'ast> {
+        todo!()
+    }
+
+    fn parse_enum_item(&mut self) -> &'ast ast::Item<'ast> {
+        todo!()
+    }
+
+    fn parse_generic_param(&mut self) -> &'ast ast::GenericParam<'ast> {
+        let start = self.cursor.span();
+
+        let kind = if self.bump_if(Token![const]).is_some() {
+            // struct Maxtrix<const nuint ROWS, ..
+            //                      ^
+            let ty = self.parse_ty_expr();
+            let ident = TRY!(self.expect_any::<ast::Ident, _>());
+            ast::GenericParamKind::Const(ident, ty)
+        } else {
+            // struct HashMap<Key,
+            //                ^
+            let ident = TRY!(self.expect_any::<ast::Ident, _>());
+            ast::GenericParamKind::Type(ident)
+        };
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        self.make_node(kind, Span::interpolate(start, end))
+    }
+
+    fn parse_function_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident) -> &'ast ast::Item<'ast> {
+        // OwnedPtr<int*>[] get_int(...
+        //                         ^
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let mut generics = vec![];
+        if self.bump_if(Token![<]).is_some() {
+            self.cursor.advance();
+
+            while !self.matches(Token![>]) {
+                generics.push(self.parse_generic_param());
+
+                TRY!(self.expect_either(&[Token![,], Token![>]]));
+                self.bump_if(Token![,]);
+            }
+            self.cursor.advance();
+        }
+
+        let generics = self.alloc_slice(&generics);
+
+        let mut params = vec![];
+
+        while !self.matches(Punctuator::RParen) {
+            let start = self.cursor.span();
+            let ty = self.parse_ty_expr();
+            let ident = TRY!(self.expect_any::<ast::Ident, _>());
+
+            params.push(ast::Param {
+                ident,
+                ty,
+                span: Span::interpolate(start, ident.span),
+                node_id: self.make_id()
+            });
+
+            TRY!(self.expect_either(&[Token![,], Punctuator::RParen]));
+            self.bump_if(Token![,]);
+        }
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        let params = self.alloc_slice(&params);
+
+        let sig = ast::FnSignature {
+            returns: ty,
+            generics,
+            params
+        };
+
+        let body = match self.match_on::<Punctuator>() {
+            Some(Punctuator::LCurly) => {
+                let block = self.parse_block();
+                let span = block.span;
+                Some(self.make_node(ast::ExprKind::Block(block), span))
+            }
+            Some(Token![;]) => None,
+            _ => return self.unexpected("`;` or `{`"), // }
+        };
+
+        let span = Span::interpolate(start, end);
+        self.make_node(
+            ast::ItemKind::Function(ast::Function {
+                ident,
+                sig,
+                body,
+                span,
+                attributes: &[]
+            }),
+            span 
+        )
+    }
+
+    fn parse_global_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident, constant: bool) -> &'ast ast::Item<'ast> {
+        todo!()
+    }
+
+    fn parse_item(&mut self) -> &'ast ast::Item<'ast> {
+        if let Some(keyword) = self.match_on::<Keyword>() {
+            return match keyword {
+                Token![struct] =>
+                    self.parse_struct_item(),
+                Token![enum] =>
+                    self.parse_enum_item(),
+                _ =>
+                    self.unexpected("`struct`, `enum`, <type>")
+            };
+        }
+
+        let constant = self.bump_if(Token![const]).is_some();
+        let ty = self.parse_ty_expr();
+
+        let ident = TRY!(self.expect_any::<ast::Ident, _>());
+        self.cursor.advance();
+
+        if self.matches(Punctuator::LParen) {
+            self.parse_function_item(ty, ident)
+        } else {
+            self.parse_global_item(ty, ident, constant)
+        }
+    }
+
+    fn parse_source_file(&mut self, file_span: Span) -> &'ast ast::SourceFile<'ast> {
+        let mut items = vec![];
+
+        while !self.cursor.is_eos() {
+            items.push(self.parse_item());
+        }
+
+        let items = self.alloc_slice(&items);
+
+        let node_id = self.make_id();
+        self.alloc(ast::SourceFile {
+            items,
+            span: file_span,
+            node_id
+        })
+    }
 }
 
-pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast::SourceFile<'sess>, ()> {
+pub fn parse_file<'a, 'tcx>(
+    session: &'tcx Session,
+    path: &Path,
+    xxx: &'tcx interface::Xxxx) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
     let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
@@ -1454,18 +1632,18 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     }*/
     
     println!("Parsing ...");
-    let tmp = bumpalo::Bump::new();
 
-    if !stream.is_empty() {
-        let mut parser = Parser::new(stream, &tmp, diagnostics);
-        let xxx = parser.parse_stmt();
-        println!("{xxx:#?}");
-    }
+    let source_file = if !stream.is_empty() {
+        let mut parser = Parser::new(stream, &xxx.arena, diagnostics);
+        parser.parse_source_file(source.byte_span)
+    } else {
+        xxx.arena.alloc(ast::SourceFile {
+            items: &[],
+            node_id: ast::NodeId(0),
+            span: Span::new(0, 0)
+        })
+    };
 
-    println!("parsed successfully");
-
-    diagnostics.render();
-
-    todo!()
+    Ok(source_file)
 }
 

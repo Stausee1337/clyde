@@ -115,7 +115,7 @@ impl<'r, 'tcx> TypeResolutionPass<'r, 'tcx> {
         Self { resolution }
     }
 
-    fn resolve(&mut self, tree: &mut ast::SourceFile) {
+    fn resolve(&mut self, tree: &ast::SourceFile) {
         self.visit(tree);
     }
 }
@@ -124,22 +124,22 @@ impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &ast::Item) {
         match &item.kind {
             ast::ItemKind::Struct(stc) => {
-                self.resolution.define(DefinitionKind::Struct, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitionKind::Struct, stc.ident, item.node_id);
                 node_visitor::visit_slice(stc.fields, |field_def| self.visit_field_def(field_def));
                 node_visitor::visit_slice(stc.generics, |generic| self.visit_generic_param(generic));
             }, 
             ast::ItemKind::Enum(en) => {
-                self.resolution.define(DefinitionKind::Enum, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitionKind::Enum, en.ident, item.node_id);
                 node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
-                self.resolution.define(DefinitionKind::Function, item.ident.clone(), item.node_id);
+                self.resolution.define(DefinitionKind::Function, function.ident, item.node_id);
                 node_visitor::visit_fn(function, self);
             },
             ast::ItemKind::GlobalVar(global) => {
                 self.resolution.define(
                     if global.constant {DefinitionKind::Global} else {DefinitionKind::Const},
-                    item.ident.clone(), item.node_id);
+                    global.ident, item.node_id);
                 self.visit_ty_expr(global.ty);
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
             }
@@ -478,15 +478,15 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
 }
 
 pub fn run_resolve<'tcx>(
-    tcx: TyCtxt<'tcx>, mut tree: ast::SourceFile
+    tcx: TyCtxt<'tcx>, tree: &'tcx ast::SourceFile
 ) -> ResolutionResults {
     let mut resolution = ResolutionState::new(tcx.diagnostics());
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.resolve(&mut tree);
+    rpass.resolve(&tree);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.visit(&mut tree);
+    rpass.visit(&tree);
 
     println!("{tree:#?}");
 
