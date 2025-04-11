@@ -306,6 +306,7 @@ impl<'ast> ASTNode<'ast> for ast::Stmt<'ast> {
     }
 }
 
+#[must_use]
 pub enum ExpectError<S, N> {
     Ok(S),
     Fail(N)
@@ -786,7 +787,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                         if let TokenKind::Punctuator(
                             Punctuator::LCurly) = cursor.current().kind {
                             self.cursor.sync(cursor);
-                            self.cursor.advance();
                             ty_expr = Some(expr);
                         }
                     }
@@ -1066,7 +1066,42 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_variable_declaration(&mut self, ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Stmt<'ast> {
-        todo!()
+        let start;
+        if let Some(ty_expr) = ty_expr {
+            start = ty_expr.span;
+        } else {
+            start = self.cursor.span();
+            self.cursor.advance();
+        }
+
+        // TODO: parse Pattern instead of Ident in case of `var`-binding
+        let ident = TRY!(self.expect_any::<ast::Ident, _>());
+        self.cursor.advance();
+
+        let mut end = ident.span;
+
+        let mut init = None;
+        if self.bump_if(Token![=]).is_some() {
+            let restrictions = if let Some(..) = ty_expr {
+                Restrictions::NO_CODE_BLOCKS
+            } else {
+                Restrictions::empty()
+            };
+            let expr = self.parse_expr(restrictions);
+            init = Some(expr);
+            end = expr.span;
+        }
+
+        TRY!(self.expect_one(Token![;]));
+
+        self.make_node(
+            ast::StmtKind::Local(ast::Local {
+                ident,
+                ty: ty_expr,
+                init
+            }),
+            Span::interpolate(start, end)
+        )
     }
 
     fn parse_if_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
