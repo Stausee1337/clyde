@@ -67,6 +67,13 @@ impl<'src> TokenCursor<'src> {
         unsafe { *self.current }
     }
 
+    fn lookahead(&self) -> Token<'src> {
+        if self.end <= self.current {
+            return unsafe { *self.current };
+        }
+        unsafe { *self.current.add(1) }
+    }
+
     fn replace(&mut self, new: Token<'static>) {
         unsafe { *self.current = new }
     }
@@ -751,7 +758,46 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     fn parse_type_init_body(
         &mut self,
         ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Expr<'ast> {
-        todo!()
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let mut initializers = vec![];
+
+        while !self.matches(Punctuator::RCurly) {
+            let mut ident = None;
+            if let Some(ident_) = self.match_on::<ast::Ident>() {
+                if let TokenKind::Punctuator(Token![=]) = self.cursor.lookahead().kind {
+                    self.cursor.advance();
+                    self.cursor.advance();
+                    ident = Some(ident_);
+                }
+            }
+            let expr = self.parse_expr(Restrictions::empty());
+
+            let initializer = if let Some(ident) = ident {
+                ast::TypeInitKind::Field(ident, expr)
+            } else {
+                ast::TypeInitKind::Direct(expr)
+            };
+
+            initializers.push(initializer);
+
+
+            TRY!(self.expect_either(&[Token![,], Punctuator::RCurly]));
+            self.bump_if(Token![,]);    
+        }
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        let initializers = self.alloc_slice(&initializers);
+
+        self.make_node(
+            ast::ExprKind::TypeInit(ast::TypeInit {
+                ty: ty_expr,
+                initializers
+            }),
+            Span::interpolate(start, end)
+        )
     }
 
     fn parse_expr_primary(&mut self, restrictions: Restrictions) -> &'ast ast::Expr<'ast> {
@@ -865,15 +911,14 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let mut args = vec![];
         while !self.matches(Punctuator::RParen) {
-            // TODO: implement lookahead
-            let keyword: Option<ast::Ident> = None;
-            /*if let Some(symbol) = self.match_on::<Symbol>() {
-                if self.lookahead().matches(Token![:]).is_some() {
+            let mut keyword = None;
+            if let Some(ident) = self.match_on::<ast::Ident>() {
+                if let TokenKind::Punctuator(Token![:]) = self.cursor.lookahead().kind {
                     self.cursor.advance();
                     self.cursor.advance();
-                    keyword = Some(symbol);
+                    keyword = Some(ident);
                 }
-            }*/
+            }
 
             let expr = self.parse_expr(Restrictions::empty());
             let argument = if let Some(keyword) = keyword {
@@ -1093,6 +1138,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         TRY!(self.expect_one(Token![;]));
+        self.cursor.advance();
 
         self.make_node(
             ast::StmtKind::Local(ast::Local {

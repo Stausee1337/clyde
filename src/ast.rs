@@ -385,7 +385,7 @@ pub struct TypeInit<'ast> {
     pub initializers: &'ast [TypeInitKind<'ast>]
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeInitKind<'ast> {
     Direct(&'ast Expr<'ast>),
     Field(Ident, &'ast Expr<'ast>)
