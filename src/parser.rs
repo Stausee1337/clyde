@@ -144,12 +144,12 @@ impl Parsable for Punctuator {
     }
 }
 
-impl Parsable for Symbol {
+impl Parsable for ast::Ident {
     const CLASSNAME: Option<&'static str> = Some("<ident>");
 
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
-        if let TokenKind::Symbol(sym) = token.kind {
-            return Some(sym);
+        if let TokenKind::Symbol(symbol) = token.kind {
+            return Some(ast::Ident { symbol, span: token.span });
         }
         return None;
     }
@@ -491,11 +491,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let mut sure = false;
             if this.matches(Punctuator::LParen) {
                 todo!("recursively check if expression is sure or remove tuple types alltogether in favor of `tuple<..>`")
-            } else if let Some(symbol) = this.bump_on::<Symbol>() {
-                let name = ast::Name::from_ident(ast::Ident {
-                    symbol,
-                    span: start
-                });
+            } else if let Some(ident) = this.bump_on::<ast::Ident>() {
+                let name = ast::Name::from_ident(ident);
                 ty_expr = if this.matches(Token![<]) {
                     let generic_args = match this.maybe_parse_generic_args() {
                         ParseTry::Sure(generic_args) => {
@@ -611,11 +608,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let mut ty_expr;
         if self.matches(Punctuator::LParen) {
             ty_expr = self.parse_tuple_ty();
-        } else if let Some(symbol) = self.bump_on::<Symbol>() {
-            let name = ast::Name::from_ident(ast::Ident {
-                symbol,
-                span: start
-            });
+        } else if let Some(ident) = self.bump_on::<ast::Ident>() {
+            let name = ast::Name::from_ident(ident);
             ty_expr = if self.matches(Token![<]) {
                 let generic_args = match self.maybe_parse_generic_args() {
                     ParseTry::Sure(generic_args) =>
@@ -803,7 +797,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             return self.make_node(ast::ExprKind::Constant(literal), token.span);
         } else if let Some(stringlit) = self.bump_on::<String>() {
             return self.make_node(ast::ExprKind::String(stringlit), token.span);
-        } else if let Some(symbol) = self.match_on::<Symbol>() {
+        } else if let Some(ident) = self.match_on::<ast::Ident>() {
             if !restrictions.contains(Restrictions::NO_CURLY_BLOCKS) {
                 // maybe this could be a discrete type init like: 
                 // `Simple { a }`, `Wrapper<int> { inner: 42 }` or `int[_] { 1, 2, 3 }`
@@ -829,10 +823,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
             }
 
-            let name = ast::Name::from_ident(ast::Ident {
-                symbol,
-                span: token.span
-            });
+            let name = ast::Name::from_ident(ident);
             self.cursor.advance(); // advance past the Symbol we matched
             return self.make_node(ast::ExprKind::Name(name), token.span);
         }
@@ -966,14 +957,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let start = self.cursor.current();
         self.cursor.advance();
         
-        let ident; 
-        if let Some(symbol) = self.bump_on::<Symbol>() {
-            ident = ast::FieldIdent::Named(ast::Ident {
-                symbol,
-                span: start.span
-            })
+        let field; 
+        if let Some(ident) = self.bump_on::<ast::Ident>() {
+            field = ast::FieldIdent::Named(ident)
         } else if let Some(index) = self.bump_on::<u64>() {
-            ident = ast::FieldIdent::Tuple {
+            field = ast::FieldIdent::Tuple {
                 value: index,
                 span: start.span
             }
@@ -984,7 +972,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.make_node(
             ast::ExprKind::Field(ast::Field {
                 expr,
-                field: ident
+                field
             }),
             Span::interpolate(expr.span, start.span),
         )
