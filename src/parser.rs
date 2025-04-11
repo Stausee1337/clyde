@@ -1388,9 +1388,11 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
     println!("Parsing ...");
     let tmp = bumpalo::Bump::new();
 
-    let mut parser = Parser::new(stream, &tmp, diagnostics);
-    let xxx = parser.parse_stmt();
-    println!("{xxx:#?}");
+    if !stream.is_empty() {
+        let mut parser = Parser::new(stream, &tmp, diagnostics);
+        let xxx = parser.parse_stmt();
+        println!("{xxx:#?}");
+    }
 
     println!("parsed successfully");
 

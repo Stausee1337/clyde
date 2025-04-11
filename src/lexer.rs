@@ -125,7 +125,7 @@ enum LexState {
     EOS
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexErrorKind {
     UnexpectedEOS,
     InvalidCharacter,
@@ -179,7 +179,7 @@ pub enum StringKind {
     String, Char
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringError {
     UnclosedLiteral,
     EmptyCharLiteral,
@@ -359,6 +359,10 @@ impl<'a> TokenStream<'a> {
         Self { tokens: Vec::new() }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+
     pub fn into_boxed_slice(self) -> Box<[Token<'a>]> {
         self.tokens.into_boxed_slice()
     }
@@ -502,16 +506,22 @@ impl<'a> Tokenizer<'a> {
                     self.bump();
                 }
             }
-        } 
-        tokens.push(Token {
-            kind: TokenKind::EOS,
-            span: self.make_span(self.position(), self.position())
-        });
+        }
+        if !tokens.is_empty() {
+            tokens.push(Token {
+                kind: TokenKind::EOS,
+                span: self.make_span(self.position(), self.position())
+            });
+        }
         let stream = TokenStream { tokens };
         (stream, errors)
     }
 
     fn initial(&mut self) -> Result<LexState, LexErrorKind> {
+        if let None = self.current() {
+            goto!(EOS);
+        }
+
         let mut current = must!(self.current());
         while let ' ' | '\x09'..='\x0d' = current {
             let next = if self.eat_newline() { self.current() } else { self.bump() };
@@ -825,7 +835,9 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn make_span(&self, mut start: usize, mut end: usize) -> Span {
-        start -= 1; end -= 1; // self.position() is always one step in the future
+        // self.position() is always one step in the future
+        start = start.saturating_sub(1);
+        end = end.saturating_sub(1);
         Span::new(
             start as u32 + self.offset,
             end as u32 + self.offset)

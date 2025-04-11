@@ -333,8 +333,13 @@ impl FileCacher {
                 // FIXME: (from above) maybe we should try to detect different
                 // encodings here (utf16, utf16-le-bom (common on windows), utf32, etc)
                 // in that case we couldn't write directly into the cacher to begin with
-                let (buf, pos) = storage.new_buffer(size);
-                f.read_exact(buf)?;
+                let (buf, pos);
+                if size > 0 {
+                    (buf, pos) = storage.new_buffer(size);
+                    f.read_exact(buf)?;
+                } else {
+                    (buf, pos) = (&mut [], 0);
+                }
                 Ok((buf, pos as u32, size as u32))
             })
             .map_err(|err| {
@@ -343,7 +348,9 @@ impl FileCacher {
             })?;
         let mut files = self.files.borrow_mut();
         let source = Rc::new(File::new(path.to_owned(), contents, Span::new(pos, pos + len)));
-        files.push(source.clone());
+        if len > 0 {
+            files.push(source.clone());
+        }
         Ok(source)
     }
 
