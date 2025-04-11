@@ -10,6 +10,14 @@ enum ParseTry<'src, T> {
     Never,
 }
 
+bitflags::bitflags! {
+#[derive(Clone, Copy)]
+struct Restrictions: u32 {
+    const NO_CURLY_BLOCKS = 0x1;
+    const NO_CODE_BLOCKS  = 0x2;
+}
+}
+
 pub struct TokenCursor<'src> {
     current: *mut Token<'src>,
     end: *mut Token<'src>
@@ -581,7 +589,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 ast::ArrayCapacity::Dynamic
             }
             _ => {
-                let expr = self.parse_expr_assoc(0);
+                let expr = self.parse_expr(Restrictions::empty());
                 let expr = ast::NestedConst {
                     span: expr.span,
                     expr,
@@ -716,7 +724,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let arg = if self.matches(Punctuator::LCurly) {
                 self.cursor.advance();
 
-                let expr = self.parse_expr_assoc(0);
+                let expr = self.parse_expr(Restrictions::empty());
 
                 if self.bump_if(Punctuator::RCurly).is_none() {
                     mismatch = true;
@@ -777,44 +785,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         todo!()
     }
 
-    fn try_parse_block(&mut self) -> Option<ast::Block<'ast>> {
-        let (block, cursor) = self.enter_speculative_block(|this| {
-            let Some(start) = this.bump_if(Punctuator::LCurly) else {
-                return None;
-            };
-            let start = start.span;
-
-            let Some(stmt) = this.try_parse_stmt() else {
-                return None;
-            };
-
-            let mut stmts = vec![stmt];
-
-            while !this.matches(Punctuator::RCurly) {
-                stmts.push(this.parse_stmt());
-            }
-
-            let end = this.cursor.current();
-            this.cursor.advance();
-
-            let stmts = this.alloc_slice(&stmts);
-
-            Some(ast::Block {
-                stmts,
-                span: Span::interpolate(start, end.span),
-                node_id: this.make_id()
-            })
-        });
-
-        if let Some(block) = block {
-            self.cursor.sync(cursor);
-            return Some(block);
-        }
-
-        None
-    }
-
-    fn parse_expr_primary(&mut self) -> &'ast ast::Expr<'ast> {
+    fn parse_expr_primary(&mut self, restrictions: Restrictions) -> &'ast ast::Expr<'ast> {
         const UNEXPECTED_NONPRIMARY: &'static str = "null, true, false, <name>, <number>, <string>, <ident>, `(`, `{`"; //})
         let token = self.cursor.current();
         if let Some(keyword) = self.bump_on::<Keyword>() {
@@ -833,37 +804,37 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         } else if let Some(stringlit) = self.bump_on::<String>() {
             return self.make_node(ast::ExprKind::String(stringlit), token.span);
         } else if let Some(symbol) = self.match_on::<Symbol>() {
-            // maybe this could be a discrete type init like: 
-            // `Simple { a }`, `Wrapper<int> { inner: 42 }` or `int[_] { 1, 2, 3 }`
-            let try_ty = self.maybe_parse_ty_expr();
-            let mut ty_expr = None;
-            match try_ty {
-                ParseTry::Sure(expr) => {
-                    ty_expr = Some(expr);
-                    TRY!(self.expect_one(Punctuator::LCurly));
-                }
-                ParseTry::Doubt(expr, cursor) => {
-                    if let TokenKind::Punctuator(
-                        Punctuator::LCurly) = cursor.current().kind {
-                        self.cursor.sync(cursor);
-                        self.cursor.advance();
+            if !restrictions.contains(Restrictions::NO_CURLY_BLOCKS) {
+                // maybe this could be a discrete type init like: 
+                // `Simple { a }`, `Wrapper<int> { inner: 42 }` or `int[_] { 1, 2, 3 }`
+                let try_ty = self.maybe_parse_ty_expr();
+                let mut ty_expr = None;
+                match try_ty {
+                    ParseTry::Sure(expr) => {
                         ty_expr = Some(expr);
+                        TRY!(self.expect_one(Punctuator::LCurly));
                     }
+                    ParseTry::Doubt(expr, cursor) => {
+                        if let TokenKind::Punctuator(
+                            Punctuator::LCurly) = cursor.current().kind {
+                            self.cursor.sync(cursor);
+                            self.cursor.advance();
+                            ty_expr = Some(expr);
+                        }
+                    }
+                    ParseTry::Never => (),
                 }
-                ParseTry::Never => (),
+                if let Some(ty_expr) = ty_expr {
+                    return self.parse_type_init_body(Some(ty_expr));
+                }
             }
 
-            let expr = if let Some(ty_expr) = ty_expr {
-                self.parse_type_init_body(Some(ty_expr))
-            } else {
-                let name = ast::Name::from_ident(ast::Ident {
-                    symbol,
-                    span: token.span
-                });
-                self.cursor.advance(); // advance past the Symbol we matched
-                self.make_node(ast::ExprKind::Name(name), token.span)
-            };
-            return expr;
+            let name = ast::Name::from_ident(ast::Ident {
+                symbol,
+                span: token.span
+            });
+            self.cursor.advance(); // advance past the Symbol we matched
+            return self.make_node(ast::ExprKind::Name(name), token.span);
         }
 
         let punct = TRY!(self.expect_any::<Punctuator, _>());
@@ -878,7 +849,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     return self.make_node(ast::ExprKind::Tuple(&[]), span);
                 }
 
-                let mut expr = self.parse_expr_assoc(0);
+                let mut expr = self.parse_expr(Restrictions::empty());
 
                 let mut tuple_args = vec![];
                 let mut flushed = true;
@@ -890,7 +861,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                         break;
                     }
                     flushed = false;
-                    expr = self.parse_expr_assoc(0);
+                    expr = self.parse_expr(Restrictions::empty());
                 }
                 if !flushed {
                     tuple_args.push(expr);
@@ -908,9 +879,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 ast::ExprKind::Tuple(self.alloc_slice(&tuple_args))
             },
             Punctuator::LCurly => {
-                let Some(block) = self.try_parse_block() else {
+                if restrictions.contains(Restrictions::NO_CODE_BLOCKS) {
                     return self.parse_type_init_body(None);
-                };
+                }
+                let block = self.parse_block();
                 end = block.span;
                 ast::ExprKind::Block(block)
             }
@@ -938,7 +910,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
             }*/
 
-            let expr = self.parse_expr_assoc(0);
+            let expr = self.parse_expr(Restrictions::empty());
             let argument = if let Some(keyword) = keyword {
                 ast::FunctionArgument::Keyword(keyword, expr)
             } else {
@@ -970,7 +942,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let mut args = vec![];
         while !self.matches(Punctuator::RBracket) {
-            args.push(self.parse_expr_assoc(0));
+            args.push(self.parse_expr(Restrictions::empty()));
             
             TRY!(self.expect_either(&[Token![,], Punctuator::RBracket]));
             self.bump_if(Token![,]);
@@ -1018,10 +990,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         )
     }
 
-    fn parse_expr_prefix(&mut self) -> &'ast ast::Expr<'ast> {
+    fn parse_expr_prefix(&mut self, restrictions: Restrictions) -> &'ast ast::Expr<'ast> {
         let start = self.cursor.span();
         if let Some(op) = self.bump_on::<lexer::UnaryOp>() {
-            let expr = self.parse_expr_prefix();
+            let expr = self.parse_expr_prefix(restrictions);
             return self.make_node(
                 ast::ExprKind::UnaryOp(ast::UnaryOp {
                     expr,
@@ -1030,7 +1002,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 Span::interpolate(start, expr.span)
             );
         } else if let Some(..) = self.bump_if(Token![*]) {
-            let expr = self.parse_expr_prefix();
+            let expr = self.parse_expr_prefix(restrictions);
             return self.make_node(
                 ast::ExprKind::Deref(expr),
                 Span::interpolate(start, expr.span),
@@ -1045,7 +1017,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     end: tok.span.end
                 }
             });
-            let expr = self.parse_expr_prefix();
+            let expr = self.parse_expr_prefix(restrictions);
 
             return self.make_node(
                 ast::ExprKind::UnaryOp(ast::UnaryOp {
@@ -1059,7 +1031,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             self.cursor.advance();
             todo!("self.parse_ty_expr()")
         }
-        let mut expr = self.parse_expr_primary();
+        let mut expr = self.parse_expr_primary(restrictions);
         while let Some(punct) = self.match_on::<Punctuator>() {
             expr = match punct {
                 Punctuator::LParen =>
@@ -1089,8 +1061,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         expr
     }
 
-    fn parse_expr_assoc(&mut self, min_precendence: u32) -> &'ast ast::Expr<'ast> {
-        let mut lhs = self.parse_expr_prefix();
+    fn parse_expr_assoc(&mut self, min_precendence: u32, restrictions: Restrictions) -> &'ast ast::Expr<'ast> {
+        let mut lhs = self.parse_expr_prefix(restrictions);
 
         while let Some(op) = self.match_on::<AssociotiveOp>() {
             let prec = op.precedence();
@@ -1099,7 +1071,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
             self.bump();
 
-            let rhs = self.parse_expr_assoc(prec + op.associotivity() as u32);
+            let rhs = self.parse_expr_assoc(prec + op.associotivity() as u32, restrictions);
 
             let span = Span::interpolate(lhs.span, rhs.span);
 
@@ -1121,6 +1093,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             lhs = self.make_node(kind, span);
         }
         lhs
+    }
+
+    fn parse_expr(&mut self, restrictions: Restrictions) -> &'ast ast::Expr<'ast> {
+        self.parse_expr_assoc(0, restrictions)
     }
 
     fn try_parse_variable_declaration(&mut self, ty_expr: &'ast ast::TypeExpr<'ast>, cursor: TokenCursor<'src>) -> Option<&'ast ast::Stmt<'ast>> {
@@ -1149,41 +1125,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn parse_control_flow(&mut self, keyword: Keyword) -> &'ast ast::Stmt<'ast> {
         todo!()
-    }
-
-    fn try_parse_stmt(&mut self) -> Option<&'ast ast::Stmt<'ast>> {
-        if let Some(Token![var] | Token![if] | Token![return] | Token![for] | Token![while] | Token![break] | Token![continue]) = self.match_on::<Keyword>() {
-            return Some(self.parse_stmt());
-        }
-
-        let ty_try = self.maybe_parse_ty_expr();
-        match ty_try {
-            ParseTry::Sure(ty_expr) =>
-                return Some(self.parse_variable_declaration(Some(ty_expr))),
-            ParseTry::Doubt(ty_expr, cursor) => {
-                if let Some(stmt) = self.try_parse_variable_declaration(ty_expr, cursor) {
-                    return Some(stmt);
-                }
-            }
-            ParseTry::Never => ()
-        }
-
-        let (stmt, cursor) = self.enter_speculative_block(|this| {
-            let expr = this.parse_expr_assoc(0);
-            let Some(tok) = this.bump_if(Token![;]) else {
-                return None;
-            };
-
-            let span = Span::interpolate(expr.span, tok.span);
-            Some(this.make_node(ast::StmtKind::Expr(expr), span))
-        });
-
-        if let Some(stmt) = stmt {
-            self.cursor.sync(cursor);
-            return Some(stmt);
-        }
-
-        None
     }
 
     fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
@@ -1220,7 +1161,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
             ParseTry::Never => ()
         }
-        let expr = self.parse_expr_assoc(0);
+        let expr = self.parse_expr(Restrictions::empty());
 
         let end;
         if !matches!(expr.kind, ast::ExprKind::Block(..)) {
@@ -1247,6 +1188,26 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         self.make_node(ast::StmtKind::Expr(expr), Span::interpolate(expr.span, end))
+    }
+
+    fn parse_block(&mut self) -> ast::Block<'ast> {
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let mut stmts = vec![];
+        while !self.matches(Punctuator::RCurly) {
+            stmts.push(self.parse_stmt());
+        }
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        let stmts = self.alloc(stmts);
+
+        ast::Block {
+            stmts,
+            span: Span::interpolate(start, end),
+            node_id: self.make_id()
+        }
     }
 }
 
