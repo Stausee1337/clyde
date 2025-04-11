@@ -929,7 +929,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             args.push(argument);
             TRY!(self.expect_either(&[Token![,], Punctuator::RParen]));
-            self.bump_if(Token![,]);    
+            self.bump_if(Token![,]);
         }
         let end = self.cursor.span();
         self.cursor.advance();
@@ -1151,27 +1151,137 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_if_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
-        todo!()
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let condition = self.parse_expr(Restrictions::NO_CURLY_BLOCKS);
+
+        TRY!(self.expect_one(Punctuator::LCurly));
+        let body = self.parse_block();
+
+        let mut else_branch = None;
+        if self.bump_if(Token![else]).is_some() {
+            else_branch = Some(if self.matches(Token![if]) {
+                self.parse_if_stmt()
+            } else {
+                TRY!(self.expect_one(Punctuator::LCurly));
+                let body = self.parse_block();
+                let span = body.span;
+                self.make_node(ast::StmtKind::Block(body), span)
+            });
+        }
+
+        let end = if let Some(else_branch) = else_branch {
+            else_branch.span
+        } else {
+            body.span
+        };
+
+        let span = Span::interpolate(start, end);
+        self.make_node(
+            ast::StmtKind::If(ast::If {
+                condition,
+                body,
+                else_branch
+            }),
+            span
+        )
     }
 
     fn parse_return_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
-        todo!()
+        let start = self.cursor.span();
+        self.cursor.advance();
+        
+        let expr;
+        let end;
+        if self.bump_if(Token![;]).is_some() {
+            expr = None;
+            end = start;
+        } else {
+            let expr_ = self.parse_expr(Restrictions::empty());
+            end = expr_.span;
+            expr = Some(expr_);
+            TRY!(self.expect_one(Token![;]));
+            self.cursor.advance();
+        }
+        
+        self.make_node(
+            ast::StmtKind::Return(expr),
+            Span::interpolate(start, end)
+        )
     }
 
     fn parse_for_loop(&mut self) -> &'ast ast::Stmt<'ast> {
-        todo!()
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let bound_var = TRY!(self.expect_any::<ast::Ident, _>());
+        self.cursor.advance();
+        TRY!(self.expect_one(Token![in]));
+        self.cursor.advance();
+
+        let iterator = self.parse_expr(Restrictions::NO_CURLY_BLOCKS);
+
+        TRY!(self.expect_one(Punctuator::LCurly));
+        let body = self.parse_block();
+
+        let span = Span::interpolate(start, body.span);
+        self.make_node(
+            ast::StmtKind::For(ast::For {
+                bound_var,
+                body,
+                iterator,
+            }),
+            span
+        )
     }
 
     fn parse_while_loop(&mut self) -> &'ast ast::Stmt<'ast> {
-        todo!()
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let condition = self.parse_expr(Restrictions::NO_CURLY_BLOCKS);
+
+        TRY!(self.expect_one(Punctuator::LCurly));
+        let body = self.parse_block();
+
+        let span = Span::interpolate(start, body.span);
+        self.make_node(
+            ast::StmtKind::While(ast::While {
+                condition, body
+            }),
+            span
+        )
     }
 
     fn parse_control_flow(&mut self, keyword: Keyword) -> &'ast ast::Stmt<'ast> {
-        todo!()
+        let control_flow = match keyword {
+            Token![break] =>
+                ast::ControlFlowKind::Break,
+            Token![continue] =>
+                ast::ControlFlowKind::Continue,
+            _ => unreachable!()
+        };
+        let span = self.cursor.span();
+        self.cursor.advance();
+        TRY!(self.expect_one(Token![;]));
+        self.cursor.advance();
+        self.make_node(
+            ast::StmtKind::ControlFlow(ast::ControlFlow {
+                kind: control_flow,
+                destination: OnceCell::new(),
+                span
+            }),
+            span
+        )
     }
 
     fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
         const UNEXPECTED_STMT: &'static str = "var, if, return, for, while, break, continue, <ident>, <expr>";
+
+        // if we've got semicolons in the stream at this point, its because the last statement
+        // likely errored, so don't warn here as they probably aren't actually redundant
+        self.remove_redundant_semis(false);
 
         if let Some(keyword) = self.match_on::<Keyword>() {
             return match keyword {
@@ -1215,22 +1325,27 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             end = self.cursor.span();
         }
 
-        {
-            let start = self.cursor.span();
-            let mut end = None;
-            while let Some(tok) = self.bump_if(Token![;]) {
-                end = Some(tok.span);
-            }
-
-            if let Some(end) = end {
-                Message::warning("redundant extra semicolons")
-                    .at(Span::interpolate(start, end))
-                    .note("remove those semicolons")
-                    .push(self.diagnostics);
-            }
-        }
+        self.remove_redundant_semis(true);
 
         self.make_node(ast::StmtKind::Expr(expr), Span::interpolate(expr.span, end))
+    }
+
+    fn remove_redundant_semis(&mut self, warn: bool) {
+        let start = self.cursor.span();
+        let mut end = None;
+        while let Some(tok) = self.bump_if(Token![;]) {
+            end = Some(tok.span);
+        }
+
+        if !warn {
+            return;
+        }
+        if let Some(end) = end {
+            Message::warning("redundant extra semicolons")
+                .at(Span::interpolate(start, end))
+                .note("remove those semicolons")
+                .push(self.diagnostics);
+        }
     }
 
     fn parse_block(&mut self) -> ast::Block<'ast> {
