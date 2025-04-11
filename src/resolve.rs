@@ -414,7 +414,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                             .at(ty.span)
                             .push(self.resolution.diagnostics);
                     }
-                    ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Tuple(..) =>
+                    ast::TypeExprKind::Ref(..) =>
                         panic!("invalid state after parsing type init"),
                     ast::TypeExprKind::Err => ()
                 }

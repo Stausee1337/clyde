@@ -476,7 +476,6 @@ pub enum TypeExprKind<'ast> {
     Generic(Generic<'ast>),
     Array(Array<'ast>),
     Slice(&'ast TypeExpr<'ast>),
-    Tuple(&'ast  [&'ast TypeExpr<'ast>]),
     Err,
 }
 #[derive(Debug)]

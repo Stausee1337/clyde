@@ -1301,17 +1301,6 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 }
                 Ty::new_slice(self.tcx, ty)
             }
-            ast::TypeExprKind::Tuple(exprs) => {
-                let mut tys = Vec::new();
-                for expr in *exprs {
-                    let ty = self.lower_ty(expr);
-                    if let Ty(types::TyKind::Err) = ty {
-                        return ty;
-                    }
-                    tys.push(ty);
-                }
-                Ty::new_tuple(self.tcx, tys)
-            }
             ast::TypeExprKind::Generic(..) => panic!("lowering generic types is not supported yet"),
             ast::TypeExprKind::Err => Ty::new_error(self.tcx)
         }

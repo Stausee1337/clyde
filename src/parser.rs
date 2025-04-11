@@ -486,12 +486,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn maybe_parse_ty_expr(&mut self) -> ParseTry<'src, &'ast ast::TypeExpr<'ast>> {
         let (result, cursor) = self.enter_speculative_block(|this| {
-            let start = this.cursor.span();
             let mut ty_expr;
             let mut sure = false;
-            if this.matches(Punctuator::LParen) {
-                todo!("recursively check if expression is sure or remove tuple types alltogether in favor of `tuple<..>`")
-            } else if let Some(ident) = this.bump_on::<ast::Ident>() {
+            if let Some(ident) = this.bump_on::<ast::Ident>() {
                 let name = ast::Name::from_ident(ident);
                 ty_expr = if this.matches(Token![<]) {
                     let generic_args = match this.maybe_parse_generic_args() {
@@ -549,24 +546,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         ParseTry::Doubt(ty_expr, cursor)
     }
-    
-    fn parse_tuple_ty(&mut self) -> &'ast ast::TypeExpr<'ast> {
-        let start = self.cursor.span();
-        self.cursor.advance();
-
-        let mut args = vec![];
-        while !self.matches(Punctuator::RParen) {
-            args.push(self.parse_ty_expr());
-            
-            TRY!(self.expect_either(&[Token![,], Punctuator::RParen]));
-            self.bump_if(Token![,]);
-        }
-        let end = self.cursor.span();
-        self.cursor.advance();
-
-        let args = self.alloc_slice(&args);
-        self.make_node(ast::TypeExprKind::Tuple(args), Span::interpolate(start, end))
-    }
 
     fn parse_array_or_slice(&mut self, ty: &'ast ast::TypeExpr<'ast>) -> &'ast ast::TypeExpr<'ast> {
         self.cursor.advance();
@@ -604,39 +583,34 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_ty_expr(&mut self) -> &'ast ast::TypeExpr<'ast> {
-        let start = self.cursor.span();
-        let mut ty_expr;
-        if self.matches(Punctuator::LParen) {
-            ty_expr = self.parse_tuple_ty();
-        } else if let Some(ident) = self.bump_on::<ast::Ident>() {
-            let name = ast::Name::from_ident(ident);
-            ty_expr = if self.matches(Token![<]) {
-                let generic_args = match self.maybe_parse_generic_args() {
-                    ParseTry::Sure(generic_args) =>
-                        generic_args,
-                    ParseTry::Doubt(generic_args, cursor) => {
-                        self.cursor.sync(cursor); // there is no doubt in forced type expression
-                        generic_args
-                    }
-                    ParseTry::Never => {
-                        return self.unexpected("generic arguments");
-                    }
-                };
+        let ident = TRY!(self.expect_any::<ast::Ident, _>());
+        self.cursor.advance();
 
-                self.make_node(
-                    ast::TypeExprKind::Generic(ast::Generic {
-                        name,
-                        args: generic_args
-                    }),
-                    self.cursor.span()
-                )
-            } else {
-                let span = name.ident.span;
-                self.make_node(ast::TypeExprKind::Name(name), span)
+        let name = ast::Name::from_ident(ident);
+        let mut ty_expr = if self.matches(Token![<]) {
+            let generic_args = match self.maybe_parse_generic_args() {
+                ParseTry::Sure(generic_args) =>
+                    generic_args,
+                ParseTry::Doubt(generic_args, cursor) => {
+                    self.cursor.sync(cursor); // there is no doubt in forced type expression
+                    generic_args
+                }
+                ParseTry::Never => {
+                    return self.unexpected("generic arguments");
+                }
             };
+
+            self.make_node(
+                ast::TypeExprKind::Generic(ast::Generic {
+                    name,
+                    args: generic_args
+                }),
+                self.cursor.span()
+            )
         } else {
-            return self.unexpected("type");
-        }
+            let span = name.ident.span;
+            self.make_node(ast::TypeExprKind::Name(name), span)
+        };
 
         while let Some(punct) = self.match_on::<Punctuator>() {
             match punct {

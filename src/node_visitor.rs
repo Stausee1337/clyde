@@ -1,5 +1,5 @@
 
-use crate::ast::{self, Block, Constant, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Ident, Item, ItemKind, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
+use crate::ast::{self, Block, Constant, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Item, ItemKind, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
 
 
 pub trait Visitor: Sized {
@@ -222,8 +222,6 @@ pub fn noop_visit_ty_expr_kind<T: Visitor>(ty_kind: &TypeExprKind, vis: &mut T) 
         }
         TypeExprKind::Slice(base) =>
             vis.visit_ty_expr(base),
-        TypeExprKind::Tuple(tys) =>
-            visit_slice(tys, |ty| vis.visit_ty_expr(ty)),
         TypeExprKind::Err => ()
     }
 }
