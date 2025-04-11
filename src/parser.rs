@@ -1036,9 +1036,35 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 Span::interpolate(start, expr.span),
             );
         } else if self.matches(Token![cast]) || self.matches(Token![transmute]) {
-            let _token = self.cursor.current();
+            let token = self.bump_on::<Keyword>();
+            let kind = match token {
+                Some(Token![cast]) => ast::TypeConversion::Cast,
+                Some(Token![transmute]) => ast::TypeConversion::Transmute,
+                _ => unreachable!()
+            };
+
+            TRY!(self.expect_one(Punctuator::LParen));
             self.cursor.advance();
-            todo!("self.parse_ty_expr()")
+
+            let ty = if self.bump_if(Token![_]).is_none() {
+                Some(self.parse_ty_expr())
+            } else {
+                None
+            };
+
+            TRY!(self.expect_one(Punctuator::RParen));
+            self.cursor.advance();
+
+            let expr = self.parse_expr_prefix(restrictions);
+
+            return self.make_node(
+                ast::ExprKind::Cast(ast::Cast {
+                    expr,
+                    ty,
+                    kind
+                }),
+                Span::interpolate(start, expr.span),
+            );
         }
         let mut expr = self.parse_expr_primary(restrictions);
         while let Some(punct) = self.match_on::<Punctuator>() {
