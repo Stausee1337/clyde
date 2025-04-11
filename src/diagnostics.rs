@@ -86,8 +86,8 @@ fn render_code(file: &File, span: (RelativePosition, RelativePosition), decorati
         let line_start = file.pos_to_charpos(file.lines()[row]);
         let char_start = file.pos_to_charpos(span.0);
         let char_end = file.pos_to_charpos(span.1);
-        eprintln!(" {}|{line}", row + 1, line = file.get_line(row).unwrap());
-        eprintln!(" {npad}|{lpad}{span} {annotation}",
+        eprintln!(" {}| {line}", row + 1, line = file.get_line(row).unwrap_or(""));
+        eprintln!(" {npad}| {lpad}{span} {annotation}",
                   npad = " ".repeat(num_digits(row + 1)), lpad = " ".repeat(char_start - line_start),
                   span = decoration.repeat(char_end - char_start),
                   annotation = annotation.unwrap_or(""));

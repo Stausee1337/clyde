@@ -860,9 +860,6 @@ pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
     };
     let cursor = SourceCursor::new(contents);
     let (stream, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
-    for tok in &stream.tokens {
-        println!("{tok:?}");
-    }
     (stream, errors)
 }
 

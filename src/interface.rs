@@ -243,7 +243,6 @@ impl File {
         let Some(lineno) = self.decode_to_lineno(pos) else {
             return (0, char_pos);
         };
-        println!("decode_to_file_pos: {pos:?}, {lineno}");
         let linebbegin = self.lines[lineno];
         let linecbegin = self.pos_to_charpos(linebbegin);
 
@@ -305,9 +304,6 @@ unsafe fn analyze_unicode(unicode: &[u8]) -> (Vec<RelativePosition>, Vec<Multiby
 
         offset = bytes.as_slice().as_ptr().offset_from(start) as u32;
     }
-
-    println!("{:?}", unicode);
-    println!("{:?}", lines);
 
     (lines, multibyte_chars)
 }

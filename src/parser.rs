@@ -1188,7 +1188,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
         const UNEXPECTED_STMT: &'static str = "var, if, return, for, while, break, continue, <ident>, <expr>";
-        let start = self.cursor.span();
 
         if let Some(keyword) = self.match_on::<Keyword>() {
             return match keyword {
@@ -1223,9 +1222,29 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
         let expr = self.parse_expr_assoc(0);
 
-        TRY!(self.expect_one(Token![;]));
-        let end = self.cursor.span();
-        self.cursor.advance();
+        let end;
+        if !matches!(expr.kind, ast::ExprKind::Block(..)) {
+            TRY!(self.expect_one(Token![;]));
+            end = self.cursor.span();
+            self.cursor.advance();
+        } else {
+            end = self.cursor.span();
+        }
+
+        {
+            let start = self.cursor.span();
+            let mut end = None;
+            while let Some(tok) = self.bump_if(Token![;]) {
+                end = Some(tok.span);
+            }
+
+            if let Some(end) = end {
+                Message::warning("redundant extra semicolons")
+                    .at(Span::interpolate(start, end))
+                    .note("remove those semicolons")
+                    .push(self.diagnostics);
+            }
+        }
 
         self.make_node(ast::StmtKind::Expr(expr), Span::interpolate(expr.span, end))
     }
@@ -1247,6 +1266,7 @@ pub fn parse_file<'a, 'sess>(session: &'sess Session, path: &Path) -> Result<ast
         println!("{:?}", x);
     }*/
     
+    println!("Parsing ...");
     let tmp = bumpalo::Bump::new();
 
     let mut parser = Parser::new(stream, &tmp, diagnostics);
