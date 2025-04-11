@@ -530,12 +530,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     Punctuator::LBracket =>
                         ty_expr = this.parse_array_or_slice(ty_expr),
                     Token![*] => {
+                        this.cursor.advance();
                         ty_expr = this.make_node(ast::TypeExprKind::Ref(ty_expr), this.cursor.span());
                     }
                     _ => break
                 }
-                if let ast::TypeExprKind::Ref(..) | ast::TypeExprKind::Slice(..) = ty_expr.kind {
-                    // slices are unmistakeably slices and refs are declared to be sure by the grammar
+                if let ast::TypeExprKind::Slice(..) = ty_expr.kind {
+                    // slices are unmistakeably slices
                     sure = true;
                 }
             }
@@ -625,6 +626,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 Punctuator::LBracket =>
                     ty_expr = self.parse_array_or_slice(ty_expr),
                 Token![*] => {
+                    self.cursor.advance();
                     ty_expr = self.make_node(ast::TypeExprKind::Ref(ty_expr), self.cursor.span());
                 }
                 _ => break
@@ -1107,7 +1109,47 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn try_parse_variable_declaration(&mut self, ty_expr: &'ast ast::TypeExpr<'ast>, cursor: TokenCursor<'src>) -> Option<&'ast ast::Stmt<'ast>> {
-        None
+        let (node, cursor) = self.enter_speculative_block(|this| {
+            this.cursor.sync(cursor);
+            let start = ty_expr.span;
+
+            let Some(ident) = this.bump_on::<ast::Ident>() else {
+                return None;
+            };
+
+            let mut end = ident.span;
+
+            let mut init = None;
+            if this.bump_if(Token![=]).is_some() {
+                let expr = this.parse_expr(Restrictions::NO_CODE_BLOCKS);
+                init = Some(expr);
+                end = expr.span;
+            }
+
+            Some(this.make_node(
+                ast::StmtKind::Local(ast::Local {
+                    ident,
+                    ty: Some(ty_expr),
+                    init
+                }),
+                Span::interpolate(start, end)
+            ))
+        });
+
+        let Some(node) = node else {
+            return None;
+        };
+
+        self.cursor.sync(cursor);
+
+        match self.expect_one(Token![;]) {
+            ExpectError::Ok(..) => (),
+            ExpectError::Fail(node) =>
+                return Some(node),
+        }
+        self.cursor.advance();
+
+        Some(node)
     }
 
     fn parse_variable_declaration(&mut self, ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Stmt<'ast> {
