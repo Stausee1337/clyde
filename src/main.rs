@@ -25,10 +25,8 @@ fn main() -> ExitCode {
     let sess = options.create_compile_session();
     
     build_compiler(sess, |compiler| {
-        let gcx = compiler.global_ctxt();
 
-        let ast = compiler.parse_entry()?; 
-        let resolutions = gcx.enter(|tcx| resolve::run_resolve(tcx, ast));
+        let gcx = compiler.global_ctxt()?; 
 
         if gcx.diagnostics().has_fatal() {
             gcx.diagnostics().render();
@@ -36,7 +34,7 @@ fn main() -> ExitCode {
         }
 
         gcx.enter(|tcx| {
-            resolutions.items.iter().for_each(|&def_id| {
+            tcx.resolutions.items.iter().for_each(|&def_id| {
                 if let Some(..) = tcx.node_by_def_id(def_id).body() {
                     tcx.typecheck(def_id);
                 }

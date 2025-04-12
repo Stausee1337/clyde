@@ -79,19 +79,37 @@ impl DiagnosticsCtxtInner {
 }
 
 fn render_code(file: &File, span: (RelativePosition, RelativePosition), decoration: &'static str, annotation: Option<&str>) {
-    let mut row = file.decode_to_lineno(span.0).unwrap();
+    let start_row = file.decode_to_lineno(span.0).unwrap();
     let end_row = file.decode_to_lineno(span.1).unwrap();
 
-    while row <= end_row {
+    let span_start = file.pos_to_charpos(span.0);
+    let span_end = file.pos_to_charpos(span.1);
+
+    for row in start_row..=end_row {
         let line_start = file.pos_to_charpos(file.lines()[row]);
-        let char_start = file.pos_to_charpos(span.0);
-        let char_end = file.pos_to_charpos(span.1);
-        eprintln!(" {}| {line}", row + 1, line = file.get_line(row).unwrap_or(""));
-        eprintln!(" {npad}| {lpad}{span} {annotation}",
-                  npad = " ".repeat(num_digits(row + 1)), lpad = " ".repeat(char_start - line_start),
-                  span = decoration.repeat(char_end - char_start),
-                  annotation = annotation.unwrap_or(""));
-        row += 1;
+        let line = file.get_line(row).unwrap_or("");
+
+        let char_start;
+        if row == start_row {
+            char_start = span_start;
+        } else {
+            char_start = line_start;
+        }
+
+        let char_end;
+        if row == end_row {
+            char_end = span_end;
+        } else {
+            char_end = line_start + line.chars().count();
+        }
+
+        eprintln!(" {}| {line}", row + 1);
+        if line.len() > 0 {
+            eprintln!(" {npad}| {lpad}{span} {annotation}",
+                      npad = " ".repeat(num_digits(row + 1)), lpad = " ".repeat(char_start - line_start),
+                      span = decoration.repeat(char_end - char_start),
+                      annotation = annotation.unwrap_or(""));
+        }
     }
 }
 

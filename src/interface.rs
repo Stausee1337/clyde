@@ -8,7 +8,7 @@ use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 #[cfg(target_family = "windows")]
 use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE};
 
-use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, lexer::Span, parser, string_internals::{run_utf8_validation, next_code_point}, typecheck};
+use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -500,20 +500,26 @@ pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
 
 pub struct Compiler<'tcx> {
     pub sess: Session,
-    pub xxxx: Xxxx<'tcx>,
+    ast_info: AstInfo<'tcx>,
     gcx_cell: OnceCell<GlobalCtxt<'tcx>>,
     gcx: RefCell<Option<&'tcx GlobalCtxt<'tcx>>>
 }
 
 impl<'tcx> Compiler<'tcx> {
-    pub fn parse_entry(&'tcx self) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
-        parser::parse_file(&self.sess, &self.sess.input, &self.xxxx)
+    fn parse_entry(&'tcx self) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
+        parser::parse_file(&self.sess, &self.sess.input, &self.ast_info)
     }
 
-    pub fn global_ctxt(&'tcx self) -> &'tcx GlobalCtxt<'tcx> {
-        self.gcx
+    pub fn global_ctxt(&'tcx self) -> Result<&'tcx GlobalCtxt<'tcx>, ()> {
+        let entry = self.parse_entry()?;
+        let resolutions = resolve::resolve_from_entry(
+            &self.sess.diagnostics,
+            entry, &self.ast_info
+        );
+        Ok(self.gcx
             .borrow_mut()
             .get_or_insert_with(|| {
+
             let providers = Providers {
                 type_of: typecheck::type_of,
                 typecheck: typecheck::typecheck,
@@ -521,13 +527,13 @@ impl<'tcx> Compiler<'tcx> {
             };
 
             let gcx = self.gcx_cell
-                .get_or_init(|| GlobalCtxt::new(&self.sess, providers));
+                .get_or_init(|| GlobalCtxt::new(&self.sess, providers, resolutions));
             gcx
-        })
+        }))
     }
 }
 
-pub struct Xxxx<'tcx> {
+pub struct AstInfo<'tcx> {
     pub arena: bumpalo::Bump,
     pub global_owners: RefCell<IndexVec<ast::OwnerId, ast::Owner<'tcx>>>
 }
@@ -537,7 +543,7 @@ where
     F: for<'tcx> FnOnce(&'tcx Compiler<'tcx>) -> T
 {
     let mut compiler = Compiler {
-        xxxx: Xxxx {
+        ast_info: AstInfo {
             arena: bumpalo::Bump::new(),
             global_owners: RefCell::new(IndexVec::new())
         },

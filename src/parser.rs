@@ -1592,6 +1592,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let start = self.cursor.span();
             let ty = self.parse_ty_expr();
             let ident = TRY!(self.expect_any::<ast::Ident, _>());
+            self.cursor.advance();
 
             params.push(make_owned_node!(self, ast::Param {
                 ident,
@@ -1619,7 +1620,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 let span = block.span;
                 Some(self.make_node(ast::ExprKind::Block(block), span))
             }
-            Some(Token![;]) => None,
+            Some(Token![;]) => {
+                self.cursor.advance();
+                None
+            },
             _ => return self.unexpected("`;` or `{`"), // }
         };
 
@@ -1689,7 +1693,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 pub fn parse_file<'a, 'tcx>(
     session: &'tcx Session,
     path: &Path,
-    xxx: &'tcx interface::Xxxx<'tcx>) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
+    ast_info: &'tcx interface::AstInfo<'tcx>) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
     let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
@@ -1708,12 +1712,12 @@ pub fn parse_file<'a, 'tcx>(
     println!("Parsing ...");
 
     let source_file = if !stream.is_empty() {
-        let arena = &xxx.arena;
-        let mut owners = xxx.global_owners.borrow_mut();
+        let arena = &ast_info.arena;
+        let mut owners = ast_info.global_owners.borrow_mut();
         let mut parser = Parser::new(stream, arena, &mut owners, diagnostics);
         parser.parse_source_file(source.byte_span)
     } else {
-        xxx.arena.alloc(ast::SourceFile {
+        ast_info.arena.alloc(ast::SourceFile {
             items: &[],
             node_id: todo!(),
             span: Span::new(0, 0)

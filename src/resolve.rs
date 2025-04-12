@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::{ast::{self, DefinitionKind, NodeId, OutsideLoopScope, Resolution}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
+use crate::{ast::{self, DefinitionKind, NodeId, OutsideLoopScope, Resolution}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, interface, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -59,8 +59,8 @@ struct ResolutionState<'tcx> {
     declarations: index_vec::IndexVec<ast::DefId, ast::NodeId>
 }
 
-#[derive(Debug)]
-pub struct ResolutionResults {
+pub struct ResolutionResults<'tcx> {
+    pub ast_info: &'tcx interface::AstInfo<'tcx>,
     pub items: Vec<ast::DefId>,
     pub entry: Option<ast::DefId>,
     pub declarations: index_vec::IndexVec<ast::DefId, ast::NodeId>
@@ -97,9 +97,10 @@ impl<'tcx> ResolutionState<'tcx> {
         }
     }
 
-    fn results(self) -> ResolutionResults {
+    fn results(self, ast_info: &'tcx interface::AstInfo<'tcx>) -> ResolutionResults<'tcx> {
         let entry = self.functions.get(&Symbol::intern("main")).map(|decl| decl.site);
         ResolutionResults {
+            ast_info,
             items: self.items, entry,
             declarations: self.declarations
         }
@@ -477,19 +478,19 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
     }
 }
 
-pub fn run_resolve<'tcx>(
-    tcx: TyCtxt<'tcx>, tree: &'tcx ast::SourceFile
-) -> ResolutionResults {
-    let mut resolution = ResolutionState::new(tcx.diagnostics());
+pub fn resolve_from_entry<'tcx>(
+    diagnostics: &'tcx DiagnosticsCtxt,
+    entry: &'tcx ast::SourceFile<'tcx>,
+    ast_info: &'tcx interface::AstInfo<'tcx>
+) -> ResolutionResults<'tcx> {
+    let mut resolution = ResolutionState::new(diagnostics);
 
     let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.resolve(&tree);
+    rpass.resolve(&entry);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.visit(&tree);
+    rpass.visit(&entry);
 
-    println!("{tree:#?}");
-
-    resolution.results()
+    resolution.results(ast_info)
 }
 

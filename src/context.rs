@@ -3,7 +3,7 @@ use hashbrown::hash_table::{HashTable, Entry};
 
 use ahash::AHasher;
 
-use crate::{interface::Session, ast::{self, DefId}, diagnostics::DiagnosticsCtxt, types, typecheck};
+use crate::{ast::{self, DefId, NodeId, OwnerId}, diagnostics::DiagnosticsCtxt, interface::Session, resolve::ResolutionResults, typecheck, types};
 
 macro_rules! define_queries {
     ($(fn $name:ident($pat:ty) -> $rty:ty;)*) => {
@@ -50,6 +50,7 @@ macro_rules! define_queries {
 }
 
 pub struct GlobalCtxt<'tcx> {
+    pub resolutions: ResolutionResults<'tcx>,
     pub arena: bumpalo::Bump,
     pub session: &'tcx Session,
     pub interner: Interner<'tcx>,
@@ -58,8 +59,13 @@ pub struct GlobalCtxt<'tcx> {
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
-    pub fn new(session: &'tcx Session, providers: Providers) -> GlobalCtxt<'tcx> {
+    pub fn new(
+        session: &'tcx Session,
+        providers: Providers,
+        resolutions: ResolutionResults<'tcx>,
+    ) -> GlobalCtxt<'tcx> {
         Self {
+            resolutions,
             session,
             arena: bumpalo::Bump::new(),
             interner: Interner::new(),
@@ -92,8 +98,15 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
 }
 
 impl<'tcx> TyCtxt<'tcx> {
-    pub fn node_by_def_id(self, _id: DefId) -> ast::Node<'tcx> {
-        todo!()
+    pub fn get_node_by_id(self, node_id: NodeId) -> ast::Node<'tcx> {
+        let global_owners = self.resolutions.ast_info.global_owners.borrow();
+        let owner = &global_owners[node_id.owner];
+        owner.children[node_id.local]
+    }
+
+    pub fn node_by_def_id(self, id: DefId) -> ast::Node<'tcx> {
+        let node_id = self.resolutions.declarations[id];
+        self.get_node_by_id(node_id)
     }
 
     #[inline]
