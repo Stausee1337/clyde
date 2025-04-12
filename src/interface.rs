@@ -1,6 +1,7 @@
 
 use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::FromStr, ffi::OsStr, io::Read, fs, cell::{OnceCell, RefCell}, rc::Rc};
 
+use index_vec::IndexVec;
 #[cfg(target_family = "unix")]
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 
@@ -499,7 +500,7 @@ pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
 
 pub struct Compiler<'tcx> {
     pub sess: Session,
-    pub xxxx: Xxxx,
+    pub xxxx: Xxxx<'tcx>,
     gcx_cell: OnceCell<GlobalCtxt<'tcx>>,
     gcx: RefCell<Option<&'tcx GlobalCtxt<'tcx>>>
 }
@@ -526,8 +527,9 @@ impl<'tcx> Compiler<'tcx> {
     }
 }
 
-pub struct Xxxx {
-    pub arena: bumpalo::Bump
+pub struct Xxxx<'tcx> {
+    pub arena: bumpalo::Bump,
+    pub global_owners: RefCell<IndexVec<ast::OwnerId, ast::Owner<'tcx>>>
 }
 
 pub fn build_compiler<T, F>(sess: Session, f: F) -> T
@@ -535,7 +537,10 @@ where
     F: for<'tcx> FnOnce(&'tcx Compiler<'tcx>) -> T
 {
     let mut compiler = Compiler {
-        xxxx: Xxxx { arena: bumpalo::Bump::new() },
+        xxxx: Xxxx {
+            arena: bumpalo::Bump::new(),
+            global_owners: RefCell::new(IndexVec::new())
+        },
         sess, 
         gcx_cell: OnceCell::new(),
         gcx: RefCell::new(None)

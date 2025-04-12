@@ -1,7 +1,9 @@
 use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 
+use index_vec::IndexVec;
+
 use crate::{
-    ast::{self, Constant, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, interface::{self, Session}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, Token
+    ast::{self, Constant, LocalId, NodeId, Owner, OwnerId}, diagnostics::{DiagnosticsCtxt, Message}, interface::{self, Session}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, Token
 };
 
 enum ParseTry<'src, T> {
@@ -264,23 +266,29 @@ impl Parsable for AssociotiveOp {
     }
 }
 
-trait ASTNode<'ast> {
+trait ASTNode<'ast>: ast::IntoNode<'ast> {
     type Kind;
     const ERROR: Self::Kind;
 
-    fn from_kind_and_span<'src>(p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self;
+    fn create<'src>(
+        kind: Self::Kind,
+        span: Span,
+        node_id: NodeId,
+    ) -> Self;
 }
 
 impl<'ast> ASTNode<'ast> for ast::Expr<'ast> {
     type Kind = ast::ExprKind<'ast>;
     const ERROR: Self::Kind = ast::ExprKind::Err;
 
-    fn from_kind_and_span<'src>(
-        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+    fn create<'src>(
+        kind: Self::Kind,
+        span: Span,
+        node_id: NodeId) -> Self {
         ast::Expr {
             kind,
             span,
-            node_id: p.make_id()
+            node_id
         }
     }
 }
@@ -289,12 +297,14 @@ impl<'ast> ASTNode<'ast> for ast::TypeExpr<'ast> {
     type Kind = ast::TypeExprKind<'ast>;
     const ERROR: Self::Kind = ast::TypeExprKind::Err;
 
-    fn from_kind_and_span<'src>(
-        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+    fn create<'src>(
+        kind: Self::Kind,
+        span: Span,
+        node_id: NodeId) -> Self {
         ast::TypeExpr {
             kind,
             span,
-            node_id: p.make_id()
+            node_id
         }
     }
 }
@@ -303,12 +313,14 @@ impl<'ast> ASTNode<'ast> for ast::Stmt<'ast> {
     type Kind = ast::StmtKind<'ast>;
     const ERROR: Self::Kind = ast::StmtKind::Err;
 
-    fn from_kind_and_span<'src>(
-        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+    fn create<'src>(
+        kind: Self::Kind,
+        span: Span,
+        node_id: NodeId) -> Self {
         ast::Stmt {
             kind,
             span,
-            node_id: p.make_id()
+            node_id
         }
     }
 }
@@ -317,12 +329,14 @@ impl<'ast> ASTNode<'ast> for ast::GenericParam<'ast> {
     type Kind = ast::GenericParamKind<'ast>;
     const ERROR: Self::Kind = ast::GenericParamKind::Err;
 
-    fn from_kind_and_span<'src>(
-        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+    fn create<'src>(
+        kind: Self::Kind,
+        span: Span,
+        node_id: NodeId) -> Self {
         ast::GenericParam {
             kind,
             span,
-            node_id: p.make_id()
+            node_id
         }
     }
 }
@@ -331,12 +345,14 @@ impl<'ast> ASTNode<'ast> for ast::Item<'ast> {
     type Kind = ast::ItemKind<'ast>;
     const ERROR: Self::Kind = ast::ItemKind::Err;
 
-    fn from_kind_and_span<'src>(
-        p: &mut Parser<'src, 'ast>, kind: Self::Kind, span: Span) -> Self {
+    fn create<'src>(
+        kind: Self::Kind,
+        span: Span,
+        node_id: NodeId) -> Self {
         ast::Item {
             kind,
             span,
-            node_id: p.make_id()
+            node_id
         }
     }
 }
@@ -351,6 +367,9 @@ pub struct Parser<'src, 'ast> {
     _tokens: Box<[Token<'src>]>,
     cursor: TokenCursor<'src>,
     arena: &'ast bumpalo::Bump,
+    owners: &'src mut IndexVec<OwnerId, ast::Owner<'ast>>,
+    owner_stack: Vec<OwnerId>,
+    local_ids: IndexVec<LocalId, ast::Node<'ast>>,
     diagnostics: &'ast DiagnosticsCtxt
 }
 
@@ -393,10 +412,34 @@ impl<'a, T: Tokenish> std::fmt::Display for TokenJoiner<'a, T> {
     }
 }
 
+macro_rules! make_owned_node {
+    ($parser:ident, ast::$node:ident { $($init:tt)* }) => {{
+        let node_id = if let Some(owner_id) = $parser.owner_stack.last() {
+            NodeId {
+                owner: *owner_id,
+                local: $parser.local_ids.len_idx(),
+            }
+        } else {
+            // assert_eq!(std::any::type_name::<ast::$node>());
+            NodeId {
+                owner: OwnerId::from_raw(u32::MAX),
+                local: LocalId::from_raw(u32::MAX),
+            }
+        };
+        let tnode = $parser.alloc(ast::$node { node_id, $($init)* });
+        $parser.local_ids.insert(
+            node_id.local,
+            ast::Node::$node(tnode)
+        );
+        tnode
+    }}
+}
+
 impl<'src, 'ast> Parser<'src, 'ast> {
     fn new(
         stream: TokenStream<'src>,
         arena: &'ast bumpalo::Bump,
+        owners: &'src mut IndexVec<OwnerId, ast::Owner<'ast>>,
         diagnostics: &'ast DiagnosticsCtxt) -> Self {
         let mut tokens = stream.into_boxed_slice();
         let start = tokens.as_mut_ptr();
@@ -408,7 +451,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             _tokens: tokens,
             cursor,
             arena,
-            diagnostics
+            diagnostics,
+            owners,
+            owner_stack: vec![],
+            local_ids: IndexVec::new(),
         }
     }
 
@@ -454,14 +500,40 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.arena.alloc_slice_clone(slice)
     }
     
-    fn make_id(&mut self) -> NodeId {
-        // FIXME: actually advance ids
-        NodeId(0)
+    fn make_node<N: ASTNode<'ast>>(&mut self, kind: N::Kind, span: Span) -> &'ast N {
+        let owner_id = *self.owner_stack.last().unwrap();
+        let node_id = NodeId {
+            owner: owner_id,
+            local: self.local_ids.len_idx(),
+        };
+        let tnode = N::create(kind, span, node_id);
+        let tnode = self.alloc(tnode);
+        let gnode = tnode.into_node();
+        self.local_ids.insert(
+            node_id.local,
+            gnode
+        );
+        tnode
     }
 
-    fn make_node<N: ASTNode<'ast>>(&mut self, kind: N::Kind, span: Span) -> &'ast N {
-        let node = N::from_kind_and_span(self, kind, span);
-        self.alloc(node)
+    fn with_owner<N: ast::IntoNode<'ast>, F: FnOnce(&mut Self) -> &'ast N>(&mut self, do_work: F) -> &'ast N {
+        let children = IndexVec::new();
+        let prev_children = std::mem::replace(&mut self.local_ids, children);
+
+        let owner_id = self.owners.len_idx();
+        self.owners.push(Owner::new(owner_id));
+        self.owner_stack.push(owner_id);
+
+
+        let tnode = do_work(self);
+
+        let gnode = tnode.into_node();
+        let children = std::mem::replace(&mut self.local_ids, prev_children);
+
+        self.owners[owner_id].initialize(gnode, children);
+        assert_eq!(self.owner_stack.pop().unwrap_or(OwnerId::from_raw(0)), owner_id);
+
+        tnode
     }
 
     fn expect_either<N: ASTNode<'ast>>(&mut self, slice: &[impl Tokenish]) -> ExpectError<(), &'ast N> {
@@ -512,7 +584,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.make_node(N::ERROR, span)
     }
 
-    fn enter_speculative_block<'a, R, F: FnOnce(&mut Self) -> R>(
+    fn enter_speculative_block<R, F: FnOnce(&mut Self) -> R>(
         &mut self, do_work: F) -> (R, TokenCursor<'src>) {
         let cursor = self.cursor.fork();
         let result = do_work(self);
@@ -603,12 +675,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
             _ => {
                 let expr = self.parse_expr(Restrictions::empty());
-                let expr = ast::NestedConst {
+                let expr = make_owned_node!(self, ast::NestedConst {
                     span: expr.span,
                     expr,
-                    node_id: self.make_id(),
                     def_id: OnceCell::new() 
-                };
+                });
                 ast::ArrayCapacity::Discrete(expr)
             }
         };
@@ -738,12 +809,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
                 sure = true;
 
-                ast::GenericArgument::Expr(ast::NestedConst {
+                ast::GenericArgument::Expr(make_owned_node!(self, ast::NestedConst {
                     expr,
                     span: expr.span,
-                    node_id: self.make_id(),
                     def_id: OnceCell::new()
-                })
+                }))
             } else {
                 let ty_expr = match self.maybe_parse_ty_expr() {
                     ParseTry::Sure(ty_expr) => {
@@ -1444,7 +1514,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
     }
 
-    fn parse_block(&mut self) -> ast::Block<'ast> {
+    fn parse_block(&mut self) -> &'ast ast::Block<'ast> {
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -1457,11 +1527,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let stmts = self.alloc(stmts);
 
-        ast::Block {
+        make_owned_node!(self, ast::Block {
             stmts,
             span: Span::interpolate(start, end),
-            node_id: self.make_id()
-        }
+        })
     }
 
     fn parse_struct_item(&mut self) -> &'ast ast::Item<'ast> {
@@ -1496,6 +1565,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     fn parse_function_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident) -> &'ast ast::Item<'ast> {
         // OwnedPtr<int*>[] get_int(...
         //                         ^
+        //          OR
+        // OwnedPtr<T*>[] get_obj<T>(...
+        //                       ^
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -1521,12 +1593,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let ty = self.parse_ty_expr();
             let ident = TRY!(self.expect_any::<ast::Ident, _>());
 
-            params.push(ast::Param {
+            params.push(make_owned_node!(self, ast::Param {
                 ident,
                 ty,
                 span: Span::interpolate(start, ident.span),
-                node_id: self.make_id()
-            });
+            }));
 
             TRY!(self.expect_either(&[Token![,], Punctuator::RParen]));
             self.bump_if(Token![,]);
@@ -1581,33 +1652,36 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             };
         }
 
-        let constant = self.bump_if(Token![const]).is_some();
-        let ty = self.parse_ty_expr();
+        self.with_owner(|this| {
+            let constant = this.bump_if(Token![const]).is_some();
+            let ty = this.parse_ty_expr();
 
-        let ident = TRY!(self.expect_any::<ast::Ident, _>());
-        self.cursor.advance();
+            let ident = TRY!(this.expect_any::<ast::Ident, _>());
+            this.cursor.advance();
 
-        if self.matches(Punctuator::LParen) {
-            self.parse_function_item(ty, ident)
-        } else {
-            self.parse_global_item(ty, ident, constant)
-        }
+            if this.matches(Punctuator::LParen) {
+                this.parse_function_item(ty, ident)
+            } else {
+                this.parse_global_item(ty, ident, constant)
+            }
+        })
     }
 
     fn parse_source_file(&mut self, file_span: Span) -> &'ast ast::SourceFile<'ast> {
-        let mut items = vec![];
 
-        while !self.cursor.is_eos() {
-            items.push(self.parse_item());
-        }
+        self.with_owner(|this| {
+            let mut items = vec![];
 
-        let items = self.alloc_slice(&items);
+            while !this.cursor.is_eos() {
+                items.push(this.parse_item());
+            }
 
-        let node_id = self.make_id();
-        self.alloc(ast::SourceFile {
-            items,
-            span: file_span,
-            node_id
+            let items = this.alloc_slice(&items);
+
+            make_owned_node!(this, ast::SourceFile {
+                items,
+                span: file_span,
+            }) 
         })
     }
 }
@@ -1615,7 +1689,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 pub fn parse_file<'a, 'tcx>(
     session: &'tcx Session,
     path: &Path,
-    xxx: &'tcx interface::Xxxx) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
+    xxx: &'tcx interface::Xxxx<'tcx>) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
     let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
@@ -1634,12 +1708,14 @@ pub fn parse_file<'a, 'tcx>(
     println!("Parsing ...");
 
     let source_file = if !stream.is_empty() {
-        let mut parser = Parser::new(stream, &xxx.arena, diagnostics);
+        let arena = &xxx.arena;
+        let mut owners = xxx.global_owners.borrow_mut();
+        let mut parser = Parser::new(stream, arena, &mut owners, diagnostics);
         parser.parse_source_file(source.byte_span)
     } else {
         xxx.arena.alloc(ast::SourceFile {
             items: &[],
-            node_id: ast::NodeId(0),
+            node_id: todo!(),
             span: Span::new(0, 0)
         })
     };

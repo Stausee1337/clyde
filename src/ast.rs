@@ -1,12 +1,13 @@
 use std::cell::OnceCell;
 use std::hash::Hash;
 
+use index_vec::IndexVec;
+
 use crate::lexer::{self, Span};
 use crate::symbol::Symbol;
 
-// pub const DUMMY_SPAN: Range<usize> = 0..0;
-
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum Node<'ast> {
     Expr(&'ast Expr<'ast>),
     NestedConst(&'ast NestedConst<'ast>),
@@ -16,6 +17,9 @@ pub enum Node<'ast> {
     TypeExpr(&'ast TypeExpr<'ast>),
     Field(&'ast FieldDef<'ast>),
     Variant(&'ast VariantDef<'ast>),
+    Block(&'ast Block<'ast>),
+    Param(&'ast Param<'ast>),
+    GenericParam(&'ast GenericParam<'ast>),
 }
 
 impl<'ast> Node<'ast> {
@@ -60,8 +64,42 @@ impl<'ast> Node<'ast> {
 
 #[derive(Debug)]
 pub struct Body<'ast> {
-    pub params: &'ast [Param<'ast>],
+    pub params: &'ast [&'ast Param<'ast>],
     pub body: &'ast Expr<'ast>
+}
+
+pub struct Owner<'ast> {
+    pub id: OwnerId,
+    data: OnceCell<OwnerData<'ast>>,
+}
+
+pub struct OwnerData<'ast> {
+    pub node: Node<'ast>,
+    pub children: IndexVec<LocalId, Node<'ast>>
+}
+
+impl<'ast> Owner<'ast> {
+    pub fn new(id: OwnerId) -> Self {
+        Self {
+            id,
+            data: OnceCell::new()
+        }
+    }
+
+    pub fn initialize(&self, node: Node<'ast>, children: IndexVec<LocalId, Node<'ast>>) {
+        let data = OwnerData { node, children };
+        if let Err(..) = self.data.set(data) {
+            panic!("owner already initialized");
+        }
+    }
+}
+
+impl<'ast> std::ops::Deref for Owner<'ast> {
+    type Target = OwnerData<'ast>;
+
+    fn deref(&self) -> &Self::Target {
+        self.data.get().expect("fully initialized owner")
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq)]
@@ -146,11 +184,23 @@ pub struct SourceFile<'ast> {
     pub node_id: NodeId,
 }
 
+impl<'ast> IntoNode<'ast> for SourceFile<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::SourceFile(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Item<'ast> {
     pub kind: ItemKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
+}
+
+impl<'ast> IntoNode<'ast> for Item<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Item(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +238,12 @@ pub struct FieldDef<'ast> {
     pub def_id: OnceCell<DefId>
 }
 
+impl<'ast> IntoNode<'ast> for FieldDef<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Field(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Enum<'ast> {
     pub ident: Ident,
@@ -205,6 +261,12 @@ pub struct VariantDef<'ast> {
     pub def_id: OnceCell<DefId>
 }
 
+impl<'ast> IntoNode<'ast> for VariantDef<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Variant(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Function<'ast> {
     pub ident: Ident,
@@ -217,7 +279,7 @@ pub struct Function<'ast> {
 #[derive(Debug, Clone, Copy)]
 pub struct FnSignature<'ast> {
     pub returns: &'ast TypeExpr<'ast>,
-    pub params: &'ast [Param<'ast>],
+    pub params: &'ast [&'ast Param<'ast>],
     pub generics: &'ast [&'ast GenericParam<'ast>],
 }
 
@@ -234,11 +296,23 @@ pub struct Param<'ast> {
     pub node_id: NodeId
 }
 
+impl<'ast> IntoNode<'ast> for Param<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Param(self)
+    }
+}
+
 #[derive(Debug)]
 pub struct Block<'ast> {
     pub stmts: &'ast [&'ast Stmt<'ast>],
     pub span: Span,
     pub node_id: NodeId,
+}
+
+impl<'ast> IntoNode<'ast> for Block<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Block(self)
+    }
 }
 
 #[derive(Debug)]
@@ -248,10 +322,16 @@ pub struct Stmt<'ast> {
     pub node_id: NodeId
 }
 
+impl<'ast> IntoNode<'ast> for Stmt<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Stmt(self)
+    }
+}
+
 #[derive(Debug)]
 pub enum StmtKind<'ast> {
     Expr(&'ast Expr<'ast>),
-    Block(Block<'ast>),
+    Block(&'ast Block<'ast>),
     If(If<'ast>),
     While(While<'ast>),
     For(For<'ast>),
@@ -272,19 +352,19 @@ pub struct Local<'ast> {
 pub struct For<'ast> {
     pub bound_var: Ident,
     pub iterator: &'ast Expr<'ast>,
-    pub body: Block<'ast>
+    pub body: &'ast Block<'ast>
 }
 
 #[derive(Debug)]
 pub struct While<'ast> {
     pub condition: &'ast Expr<'ast>,
-    pub body: Block<'ast>,
+    pub body: &'ast Block<'ast>,
 }
 
 #[derive(Debug)]
 pub struct If<'ast> {
     pub condition: &'ast Expr<'ast>,
-    pub body: Block<'ast>,
+    pub body: &'ast Block<'ast>,
     pub else_branch: Option<&'ast Stmt<'ast>>
 }
 
@@ -328,6 +408,12 @@ pub struct Expr<'ast> {
     pub node_id: NodeId
 }
 
+impl<'ast> IntoNode<'ast> for Expr<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Expr(self)
+    }
+}
+
 #[derive(Debug)]
 pub enum ExprKind<'ast> {
     BinaryOp(BinaryOp<'ast>),
@@ -351,7 +437,7 @@ pub enum ExprKind<'ast> {
     /*ShorthandEnum(Ident),*/
     Range(Range<'ast>),
     Deref(&'ast Expr<'ast>),
-    Block(Block<'ast>),
+    Block(&'ast Block<'ast>),
     Err
 }
 
@@ -445,7 +531,7 @@ pub enum FunctionArgument<'ast> {
 pub enum ArrayCapacity<'ast> {
     Infer,
     Dynamic,
-    Discrete(NestedConst<'ast>)
+    Discrete(&'ast NestedConst<'ast>)
 }
 
 #[derive(Debug, Clone)]
@@ -465,11 +551,23 @@ pub struct NestedConst<'ast> {
     pub def_id: OnceCell<DefId>,
 }
 
+impl<'ast> IntoNode<'ast> for NestedConst<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::NestedConst(self)
+    }
+}
+
 #[derive(Debug)]
 pub struct TypeExpr<'ast> {
     pub kind: TypeExprKind<'ast>,
     pub span: Span,
     pub node_id: NodeId
+}
+
+impl<'ast> IntoNode<'ast> for TypeExpr<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::TypeExpr(self)
+    }
 }
 
 #[derive(Debug)]
@@ -496,7 +594,7 @@ pub struct Generic<'ast> {
 #[derive(Debug, Clone)]
 pub enum GenericArgument<'ast> {
     Ty(&'ast TypeExpr<'ast>),
-    Expr(NestedConst<'ast>),
+    Expr(&'ast NestedConst<'ast>),
     Constant(Constant),
 }
 
@@ -507,6 +605,12 @@ pub struct GenericParam<'ast> {
     pub node_id: NodeId
 }
 
+impl<'ast> IntoNode<'ast> for GenericParam<'ast>  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::GenericParam(self)
+    }
+}
+
 #[derive(Debug)]
 pub enum GenericParamKind<'ast> {
     Type(Ident),
@@ -514,18 +618,23 @@ pub enum GenericParamKind<'ast> {
     Err
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(pub u32);
-pub const NODE_ID_UNDEF: NodeId = NodeId(u32::MAX);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId {
+    pub owner: OwnerId,
+    pub local: LocalId
+}
 
-impl std::fmt::Debug for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if *self != NODE_ID_UNDEF {
-            write!(f, "NodeId({})", self.0)?;
-        } else {
-            write!(f, "NodeId(UNDEF)").unwrap();
-        }
-        Ok(())
-    }
+pub trait IntoNode<'ast> {
+    fn into_node(&'ast self) -> Node<'ast>;
+}
+
+index_vec::define_index_type! {
+    pub struct OwnerId = u32;
+    IMPL_RAW_CONVERSIONS = true;
+}
+
+index_vec::define_index_type! {
+    pub struct LocalId = u32;
+    IMPL_RAW_CONVERSIONS = true;
 }
 
