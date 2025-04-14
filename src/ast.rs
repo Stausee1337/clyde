@@ -419,8 +419,7 @@ pub enum ExprKind<'ast> {
     TypeInit(TypeInit<'ast>),
     Subscript(Subscript<'ast>),
     Field(Field<'ast>),
-    Constant(Constant),
-    String(String),
+    Literal(Literal),
     Tuple(&'ast [&'ast Expr<'ast>]),
     // FIXME: EnumVariant (and ShorthandEnum) need to be handled using `Path`
     // (which will replace Name) since those will be resolvable using the OnceCell<Resolution>
@@ -530,12 +529,13 @@ pub enum ArrayCapacity<'ast> {
 }
 
 #[derive(Debug, Clone)]
-pub enum Constant {
+pub enum Literal {
     Null,
-    Integer(u64),
+    Integer(i64),
     Floating(f64),
     Boolean(bool),
-    Char(char)
+    Char(char),
+    String(String)
 }
 
 #[derive(Debug, Clone)]
@@ -590,7 +590,7 @@ pub struct Generic<'ast> {
 pub enum GenericArgument<'ast> {
     Ty(&'ast TypeExpr<'ast>),
     Expr(&'ast NestedConst<'ast>),
-    Constant(Constant),
+    Literal(Literal),
 }
 
 #[derive(Debug)]

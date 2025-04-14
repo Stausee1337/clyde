@@ -1,7 +1,7 @@
 use core::panic;
 use std::{collections::HashMap, cell::Cell};
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, NumberSign, self}, ast::{DefId, self, DefinitionKind, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}};
+use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, self}, ast::{DefId, self, DefinitionKind, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -162,7 +162,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         let mut endless = false;
         // TODO: replace with propper compile time constant evaluation
-        if res == bool && matches!(while_loop.condition.kind, ast::ExprKind::Constant(ast::Constant::Boolean(true))) {
+        if res == bool && matches!(while_loop.condition.kind, ast::ExprKind::Literal(ast::Literal::Boolean(true))) {
             endless = true;
         }
 
@@ -319,14 +319,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         Ty::new_primitive(self.tcx, types::Primitive::Void)
     }
 
-    fn check_expr_integer(&mut self, int: u64, sign: NumberSign, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
+    fn check_expr_integer(&mut self, int: i64, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         if let Some(expected @ Ty(types::TyKind::Primitive(primitive))) = expected {
-            if primitive.integer_fit(int, sign) {
+            if primitive.integer_fit(int) {
                 return expected;
             }
         }
         for primitive in [Primitive::Int, Primitive::Long, Primitive::ULong] {
-            if primitive.integer_fit(int, sign) {
+            if primitive.integer_fit(int) {
                 return Ty::new_primitive(self.tcx, primitive);
             }
         }
@@ -364,7 +364,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     /// Recurses the depth of expression Expr until the type either needs to be definite,
     /// or an integer was found
     fn check_expr_ty_definite(&self, kind: &'tcx ast::ExprKind) -> bool {
-        use ast::Constant as Cnst;
+        use ast::Literal as Cnst;
         match kind {
             ast::ExprKind::BinaryOp(binop) =>
                 self.check_expr_ty_definite(&binop.lhs.kind) && self.check_expr_ty_definite(&binop.rhs.kind),
@@ -374,7 +374,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::UnaryOp(unary) => self.check_expr_ty_definite(&unary.expr.kind),
             ast::ExprKind::Range(range) =>
                 self.check_expr_ty_definite(&range.start.kind) && self.check_expr_ty_definite(&range.end.kind),
-            ast::ExprKind::Constant(Cnst::Null | Cnst::Integer(..)) => false,
+            ast::ExprKind::Literal(Cnst::Null | Cnst::Integer(..)) => false,
             ast::ExprKind::Tuple(exprs) => {
                 for expr in *exprs {
                     if !self.check_expr_ty_definite(&expr.kind) {
@@ -387,9 +387,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Block(_) => true, // block is to complicated, so it's going to be matched
             ast::ExprKind::FunctionCall(..) | ast::ExprKind::TypeInit(..) |
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
-            ast::ExprKind::String(..) | ast::ExprKind::Name(..) |
-            /*ast::ExprKind::EnumVariant(..) | */ast::ExprKind::Deref(..) |
-            ast::ExprKind::Constant(..) | ast::ExprKind::Err => true,
+            ast::ExprKind::Name(..) | ast::ExprKind::Deref(..) |
+            ast::ExprKind::Literal(..) | ast::ExprKind::Err => true,
         }
     }
 
@@ -1020,18 +1019,17 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
-        use NumberSign::*;
         match &expr.kind {
-            ast::ExprKind::String(..) => 
+            ast::ExprKind::Literal(ast::Literal::String(..)) => 
                 Ty::new_primitive(self.tcx, Primitive::String),
-            ast::ExprKind::Constant(ast::Constant::Boolean(..)) =>
+            ast::ExprKind::Literal(ast::Literal::Boolean(..)) =>
                 Ty::new_primitive(self.tcx, Primitive::Bool),
-            ast::ExprKind::Constant(ast::Constant::Char(..)) =>
+            ast::ExprKind::Literal(ast::Literal::Char(..)) =>
                 Ty::new_primitive(self.tcx, Primitive::Char),
-            ast::ExprKind::Constant(ast::Constant::Integer(int)) =>
-                self.check_expr_integer(*int, Positive, expected),
-            ast::ExprKind::Constant(ast::Constant::Floating(..)) => todo!(),
-            ast::ExprKind::Constant(ast::Constant::Null) => {
+            ast::ExprKind::Literal(ast::Literal::Integer(int)) =>
+                self.check_expr_integer(*int, expected),
+            ast::ExprKind::Literal(ast::Literal::Floating(..)) => todo!(),
+            ast::ExprKind::Literal(ast::Literal::Null) => {
                 let Some(expected) = expected else {
                     Message::error("can't infer type of anonymous null")
                         .at(expr.span)
@@ -1045,13 +1043,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     return expected
                 };
                 expected
-            }
-            ast::ExprKind::UnaryOp(unary @ ast::UnaryOp { operator: lexer::UnaryOp::Minus, .. })
-                if matches!(unary.expr.kind, ast::ExprKind::Constant(ast::Constant::Integer(..))) => {
-                let ast::ExprKind::Constant(ast::Constant::Integer(int)) = unary.expr.kind else {
-                    unreachable!()
-                };
-                self.check_expr_integer(int, Negative, expected)
             }
             ast::ExprKind::BinaryOp(binop) =>
                 self.check_expr_binop(binop, expr.span, expected),

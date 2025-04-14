@@ -3,7 +3,7 @@ use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 use index_vec::IndexVec;
 
 use crate::{
-    ast::{self, Constant, LocalId, NodeId, Owner, OwnerId}, diagnostics::{DiagnosticsCtxt, Message}, interface::{self, Session}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, Token
+    ast::{self, Literal, LocalId, NodeId, Owner, OwnerId}, diagnostics::{DiagnosticsCtxt, Message}, interface::{self, Session}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol, Token
 };
 
 enum ParseTry<'src, T> {
@@ -160,39 +160,14 @@ impl Parsable for ast::Ident {
         if let TokenKind::Symbol(symbol) = token.kind {
             return Some(ast::Ident { symbol, span: token.span });
         }
+        if let TokenKind::Punctuator(Token![_]) = token.kind {
+            return Some(ast::Ident { symbol: Symbol::intern("_"), span: token.span });
+        }
         return None;
     }
 }
 
-// query_value<int>(?) == 3;
-impl Parsable for String {
-    const CLASSNAME: Option<&'static str> = Some("<string>");
-
-    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
-        if let TokenKind::Literal(repr, LiteralKind::String) = token.kind {
-            let mut parser = StringParser::new(StringKind::String);
-            let mut buffer = String::new();
-            for char in repr[1..].chars() {
-                match parser.feed(char) {
-                    Ok(out) => {
-                        if let Some(out) = out {
-                            buffer.push(out);
-                        }
-                        if parser.ended() {
-                            break;
-                        }
-                    }
-                    Err(string_error) => 
-                        unreachable!("unreachable string error in parser: {string_error:?} (should have been handled at lexing stage)"),
-                }
-            }
-            return Some(buffer);
-        }
-        None
-    }
-}
-
-impl Parsable for Constant {
+impl Parsable for Literal {
     const CLASSNAME: Option<&'static str> = Some("<lit>");
 
     fn from_token<'a>(token: Token<'a>) -> Option<Self> {
@@ -211,10 +186,10 @@ impl Parsable for Constant {
                     }
                 }
 
-                Some(Constant::Char(res.unwrap()))
+                Some(Literal::Char(res.unwrap()))
             }
             TokenKind::Literal(repr, LiteralKind::FloatingPoint) =>
-                Some(Constant::Floating(repr.parse().expect("unexpected invalid float at parsing stage"))),
+                Some(Literal::Floating(repr.parse().expect("unexpected invalid float at parsing stage"))),
             TokenKind::Literal(repr, LiteralKind::IntNumber(mode)) => {
                 let radix = match mode {
                     NumberMode::Binary => 2,
@@ -224,7 +199,26 @@ impl Parsable for Constant {
                 };
 
                 let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
-                Some(Constant::Integer(int))
+                Some(Literal::Integer(int as i64))
+            }
+            TokenKind::Literal(repr, LiteralKind::String) => {
+                let mut parser = StringParser::new(StringKind::String);
+                let mut buffer = String::new();
+                for char in repr[1..].chars() {
+                    match parser.feed(char) {
+                        Ok(out) => {
+                            if let Some(out) = out {
+                                buffer.push(out);
+                            }
+                            if parser.ended() {
+                                break;
+                            }
+                        }
+                        Err(string_error) => 
+                            unreachable!("unreachable string error in parser: {string_error:?} (should have been handled at lexing stage)"),
+                    }
+                }
+                return Some(Literal::String(buffer));
             }
             _ => None
         }
@@ -263,6 +257,54 @@ impl Parsable for AssociotiveOp {
             }
         }
         None
+    }
+}
+
+enum NumberLiteral {
+    Integer(i64),
+    Floating(f64),
+}
+
+impl NumberLiteral {
+    fn neg(self) -> NumberLiteral {
+        match self {
+            NumberLiteral::Integer(i) =>
+                NumberLiteral::Integer(-i),
+            NumberLiteral::Floating(f) =>
+                NumberLiteral::Floating(-f)
+        }
+    }
+
+    fn as_literal(self) -> Literal {
+        match self {
+            NumberLiteral::Integer(i) =>
+                Literal::Integer(i),
+            NumberLiteral::Floating(f) =>
+                Literal::Floating(-f)
+        }
+    }
+}
+
+impl Parsable for NumberLiteral {
+    const CLASSNAME: Option<&'static str> = None;
+
+    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
+        match token.kind {
+            TokenKind::Literal(repr, LiteralKind::FloatingPoint) =>
+                Some(NumberLiteral::Floating(repr.parse().expect("unexpected invalid float at parsing stage"))),
+            TokenKind::Literal(repr, LiteralKind::IntNumber(mode)) => {
+                let radix = match mode {
+                    NumberMode::Binary => 2,
+                    NumberMode::Octal => 8,
+                    NumberMode::Decimal => 10,
+                    NumberMode::Hex => 16
+                };
+
+                let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
+                Some(NumberLiteral::Integer(int as i64))
+            }
+            _ => None
+        }
     }
 }
 
@@ -906,18 +948,16 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         if let Some(keyword) = self.bump_on::<Keyword>() {
             let kind = match keyword {
                 Token![null] =>
-                    ast::ExprKind::Constant(ast::Constant::Null),
+                    ast::ExprKind::Literal(ast::Literal::Null),
                 Token![true] =>
-                    ast::ExprKind::Constant(ast::Constant::Boolean(true)),
+                    ast::ExprKind::Literal(ast::Literal::Boolean(true)),
                 Token![false] =>
-                    ast::ExprKind::Constant(ast::Constant::Boolean(false)),
+                    ast::ExprKind::Literal(ast::Literal::Boolean(false)),
                 _ => return self.unexpected(UNEXPECTED_NONPRIMARY)
             };
             return self.make_node(kind, token.span);
-        } else if let Some(literal) = self.bump_on::<Constant>() {
-            return self.make_node(ast::ExprKind::Constant(literal), token.span);
-        } else if let Some(stringlit) = self.bump_on::<String>() {
-            return self.make_node(ast::ExprKind::String(stringlit), token.span);
+        } else if let Some(literal) = self.bump_on::<Literal>() {
+            return self.make_node(ast::ExprKind::Literal(literal), token.span);
         } else if let Some(ident) = self.match_on::<ast::Ident>() {
             if !restrictions.contains(Restrictions::NO_CURLY_BLOCKS) {
                 // maybe this could be a discrete type init like: 
@@ -1100,7 +1140,17 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     fn parse_expr_prefix(&mut self, restrictions: Restrictions) -> &'ast ast::Expr<'ast> {
         let start = self.cursor.span();
         if let Some(op) = self.bump_on::<lexer::UnaryOp>() {
-            let expr = self.parse_expr_prefix(restrictions);
+            let mut expr = None;
+            if op == lexer::UnaryOp::Minus {
+                if let Some(lit) = self.match_on::<NumberLiteral>() {
+                    expr = Some(self.make_node(
+                        ast::ExprKind::Literal(lit.neg().as_literal()),
+                        Span::interpolate(start, self.cursor.span())
+                    ));
+                    self.cursor.advance();
+                }
+            }
+            let expr = expr.unwrap_or_else(|| self.parse_expr_prefix(restrictions));
             return self.make_node(
                 ast::ExprKind::UnaryOp(ast::UnaryOp {
                     expr,
@@ -1163,6 +1213,30 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }),
                 Span::interpolate(start, expr.span),
             );
+        } else {
+            match self.match_on::<Punctuator>() {
+                Some(Token![+]) => {
+                    Message::error("`+` is not a valid unary operator")
+                        .at(self.cursor.span())
+                        .push(self.diagnostics);
+                    self.cursor.advance();
+                },
+                Some(Token![++]) => {
+                    Message::error("there is no prefix increment operator in this language")
+                        .at(self.cursor.span())
+                        .note("use `+= 1` instead")
+                        .push(self.diagnostics);
+                    self.cursor.advance();
+                },
+                Some(Token![--]) => {
+                    Message::error("there is no prefix decrement operator in this language")
+                        .at(self.cursor.span())
+                        .note("use `-= 1` instead")
+                        .push(self.diagnostics);
+                    self.cursor.advance();
+                },
+                _ => ()
+            }
         }
         let mut expr = self.parse_expr_primary(restrictions);
         while let Some(punct) = self.match_on::<Punctuator>() {
@@ -1188,6 +1262,22 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                         ParseTry::Never => break
                     }
                 }
+                Token![++] => {
+                    Message::error("there is no postfix increment operator in this language")
+                        .at(self.cursor.span())
+                        .note("use `+= 1` instead")
+                        .push(self.diagnostics);
+                    self.cursor.advance();
+                    continue;
+                },
+                Token![--] => {
+                    Message::error("there is no postfix decrement operator in this language")
+                        .at(self.cursor.span())
+                        .note("use `-= 1` instead")
+                        .push(self.diagnostics);
+                    self.cursor.advance();
+                    continue;
+                },
                 _ => break,
             };
         }

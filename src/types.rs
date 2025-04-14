@@ -2,7 +2,7 @@ use std::{mem::transmute, ops::Deref};
 
 use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{self, DefId, NodeId}, context::TyCtxt, lexer::{self, Span}, symbol::Symbol};
+use crate::{ast::{self, DefId, NodeId}, context::TyCtxt, lexer::Span, symbol::Symbol};
 use clyde_macros::Internable;
 
 #[derive(Debug, Hash)]
@@ -142,9 +142,9 @@ impl<'tcx> Const<'tcx> {
     }
 
     fn int_to_val(
-        tcx: TyCtxt<'tcx>, val: u64, ty: Ty<'tcx>, sign: NumberSign, span: Span) -> ConstInner<'tcx> {
+        tcx: TyCtxt<'tcx>, val: i64, ty: Ty<'tcx>, span: Span) -> ConstInner<'tcx> {
         if let Ty(TyKind::Primitive(primitive)) = ty {
-            if primitive.integer_fit(val, sign) {
+            if primitive.integer_fit(val) {
                 let scalar = Scalar {
                     size: primitive.size() / 8,
                     data: val as u128
@@ -153,7 +153,7 @@ impl<'tcx> Const<'tcx> {
             }
         }
         for primitive in [Primitive::Int, Primitive::Long, Primitive::ULong] {
-            if primitive.integer_fit(val, sign) {
+            if primitive.integer_fit(val) {
                 return ConstInner::Err {
                     msg: format!("mismatched types: expected {ty}, found {}",
                                  Ty::new_primitive(tcx, primitive)),
@@ -165,28 +165,28 @@ impl<'tcx> Const<'tcx> {
     }
 
     fn kind_to_ty(tcx: TyCtxt<'tcx>, kind: &'tcx ast::ExprKind) -> Ty<'tcx> {
-        use ast::{ExprKind, Constant};
+        use ast::{ExprKind, Literal};
         match kind {
-            ExprKind::String(..) => Ty::new_primitive(tcx, Primitive::String),
-            ExprKind::Constant(Constant::Char(..)) => Ty::new_primitive(tcx, Primitive::Char),
-            ExprKind::Constant(Constant::Boolean(..)) => Ty::new_primitive(tcx, Primitive::Bool),
-            ExprKind::Constant(Constant::Integer(..)) | ExprKind::UnaryOp(..)
+            ExprKind::Literal(Literal::String(..)) => Ty::new_primitive(tcx, Primitive::String),
+            ExprKind::Literal(Literal::Char(..)) => Ty::new_primitive(tcx, Primitive::Char),
+            ExprKind::Literal(Literal::Boolean(..)) => Ty::new_primitive(tcx, Primitive::Bool),
+            ExprKind::Literal(Literal::Integer(..)) | ExprKind::UnaryOp(..)
                 => Ty::new_primitive(tcx, Primitive::Int),
             _ => unreachable!("simple kind_to_ty doesn't support {:?}", kind)
         }
     }
 
     fn try_val_from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<Self> {
-        use ast::{ExprKind, Constant};
+        use ast::{ExprKind, Literal};
         use Primitive::*;
         match &expr.kind {
-            ExprKind::String(..) | ExprKind::Constant(..) => (),
+            ExprKind::Literal(..) => (),
             ExprKind::UnaryOp(unary)
-                if matches!(unary.expr.kind, ExprKind::Constant(ast::Constant::Integer(..))) => (),
+                if matches!(unary.expr.kind, ExprKind::Literal(ast::Literal::Integer(..))) => (),
             _ => return None
         }
         let inner = match (ty.0, &expr.kind) {
-            (TyKind::Primitive(String), ExprKind::String(str)) =>  {
+            (TyKind::Primitive(String), ExprKind::Literal(Literal::String(str))) =>  {
                 let mut slice = Vec::new();
                 for byte in str.as_bytes() {
                     let val = Scalar::from_number(*byte);
@@ -198,24 +198,17 @@ impl<'tcx> Const<'tcx> {
 
                 ConstInner::Value(ty, ValTree::Branch(slice))
             }
-            (TyKind::Primitive(Bool), ExprKind::Constant(Constant::Boolean(bool))) =>
+            (TyKind::Primitive(Bool), ExprKind::Literal(Literal::Boolean(bool))) =>
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*bool as u8))),
-            (TyKind::Primitive(Char), ExprKind::Constant(Constant::Char(char))) =>
+            (TyKind::Primitive(Char), ExprKind::Literal(Literal::Char(char))) =>
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
-            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Constant(Constant::Integer(int))) =>
-                Self::int_to_val(tcx, *int, ty, NumberSign::Positive, expr.span),
-            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::UnaryOp(unary))
-                if matches!(unary.expr.kind, ExprKind::Constant(Constant::Integer(..))) => {
-                let ExprKind::Constant(Constant::Integer(int)) = unary.expr.kind else {
-                    unreachable!()
-                };
-                Self::int_to_val(tcx, int, ty, NumberSign::Negative, expr.span)
-            }
-            (TyKind::Refrence(..), ExprKind::Constant(ast::Constant::Null)) =>
+            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Literal(Literal::Integer(int))) =>
+                Self::int_to_val(tcx, *int, ty, expr.span),
+            (TyKind::Refrence(..), ExprKind::Literal(ast::Literal::Null)) =>
                 // FIXME: `as usize` here will make the size of the scalar depend on the size
                 // of the architecture the compiler was compiled on, not the target usize
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(0 as usize))),
-            (_, ExprKind::Constant(ast::Constant::Null)) => ConstInner::Err {
+            (_, ExprKind::Literal(ast::Literal::Null)) => ConstInner::Err {
                 msg: format!("non refrence-type {ty} cannot be null"),
                 span: expr.span
             },
@@ -373,11 +366,6 @@ impl<'tcx> Ty<'tcx> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum NumberSign {
-    Positive, Negative
-}
-
 #[repr(u32)]
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub enum Primitive {
@@ -411,9 +399,9 @@ impl std::fmt::Display for Primitive {
 }
 
 impl Primitive {
-    pub fn integer_fit(&self, int: u64, sign: NumberSign) -> bool {
+    pub fn integer_fit(&self, int: i64) -> bool {
         use Primitive::*;
-        if sign == NumberSign::Negative && matches!(self, Byte | UShort | Uint | ULong | NUint) {
+        if int < 0 && matches!(self, Byte | UShort | Uint | ULong | NUint) {
             return false;
         }
 
@@ -423,7 +411,7 @@ impl Primitive {
         };
         let bits = self.size() as u32;
 
-        let range = if sign == NumberSign::Negative { // create lower range
+        let range = if int < 0 { // create lower range
             1 << (bits - 1)
         } else if signed { // create "small" upper range
             (1 << (bits - 1)) - 1
@@ -431,7 +419,7 @@ impl Primitive {
             (1u64).checked_shl(bits).unwrap_or(0).wrapping_sub(1)
         };
 
-        int <= range
+        int.abs() as u64 <= range
     }
 
     pub fn signed(&self) -> Option<bool> {

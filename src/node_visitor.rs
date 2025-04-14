@@ -1,5 +1,5 @@
 
-use crate::ast::{self, Block, Constant, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Item, ItemKind, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
+use crate::ast::{self, Block, Literal, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Item, ItemKind, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
 
 
 pub trait Visitor: Sized {
@@ -65,7 +65,7 @@ pub trait Visitor: Sized {
         visit_slice(&block.stmts, |stmt| self.visit_stmt(stmt));
     }
 
-    fn visit_const(&mut self, cnst: &Constant) {
+    fn visit_literal(&mut self, cnst: &Literal) {
         noop(cnst);
     }
 
@@ -179,8 +179,7 @@ pub fn noop_visit_expr_kind<T: Visitor>(expr_kind: &ExprKind, vis: &mut T) {
             visit_slice(subscript.args, |arg| vis.visit_expr(arg));
         }
         ExprKind::Field(field) => vis.visit_expr(field.expr),
-        ExprKind::Constant(cnst) => vis.visit_const(cnst),
-        ExprKind::String(_) => (),
+        ExprKind::Literal(literal) => vis.visit_literal(literal),
         ExprKind::Name(name) => vis.visit_name(name),
         ExprKind::Tuple(items) =>
             visit_slice(items, |item| vis.visit_expr(item)),
@@ -237,7 +236,7 @@ pub fn noop_visit_generic_argument<T: Visitor>(arg: &GenericArgument, vis: &mut 
     match arg {
         GenericArgument::Ty(expr) => vis.visit_ty_expr(expr),
         GenericArgument::Expr(expr) => vis.visit_nested_const(expr),
-        GenericArgument::Constant(cnst) => vis.visit_const(cnst),
+        GenericArgument::Literal(cnst) => vis.visit_literal(cnst),
     }
 }
 

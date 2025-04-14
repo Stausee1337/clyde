@@ -65,6 +65,10 @@ macro_rules! Token {
     [&=] => { crate::lexer::Punctuator::AnpersandAssign };
     [|=] => { crate::lexer::Punctuator::VBarAssign };
 
+    [++] => { crate::lexer::Punctuator::DoublePlus };
+    [--] => { crate::lexer::Punctuator::DoubleMinus };
+
+
 
     [const] => { crate::lexer::Keyword::Const };
     [use] => { crate::lexer::Keyword::Use };
@@ -985,6 +989,13 @@ pub enum Punctuator {
     AnpersandAssign,
     #[str = "|="]
     VBarAssign,
+
+
+
+    #[str = "++"]
+    DoublePlus,
+    #[str = "--"]
+    DoubleMinus,
 }
 
 impl Punctuator {
@@ -1231,7 +1242,7 @@ impl AssociotiveOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, Operator)]
+#[derive(Debug, Clone, Copy, Operator, PartialEq, Eq)]
 pub enum UnaryOp {
     #[token = "~"]
     BitwiseNot,
