@@ -161,7 +161,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let cond_diverges = self.diverges.replace(Diverges::Maybe);
 
         let mut endless = false;
-        // TODO: repace with propper compile time constant evaluation
+        // TODO: replace with propper compile time constant evaluation
         if res == bool && matches!(while_loop.condition.kind, ast::ExprKind::Constant(ast::Constant::Boolean(true))) {
             endless = true;
         }
@@ -1046,9 +1046,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 };
                 expected
             }
-            ast::ExprKind::UnaryOp(unary)
+            ast::ExprKind::UnaryOp(unary @ ast::UnaryOp { operator: lexer::UnaryOp::Minus, .. })
                 if matches!(unary.expr.kind, ast::ExprKind::Constant(ast::Constant::Integer(..))) => {
-                let ast::ExprKind::Constant(ast::Constant::Integer(int)) = expr.kind else {
+                let ast::ExprKind::Constant(ast::Constant::Integer(int)) = unary.expr.kind else {
                     unreachable!()
                 };
                 self.check_expr_integer(int, Negative, expected)
@@ -1152,12 +1152,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::Resolution::Local(node_id) => 
                 *self.associations.get(node_id)
                     .expect("check_expr_name(...) unknown Local(NodeId)"),
-            ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Const | DefinitionKind::Global) =>
+            ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Const | DefinitionKind::Static) =>
                 self.tcx.type_of(*def_id),
             ast::Resolution::Err => Ty::new_error(self.tcx),
             ast::Resolution::Primitive |
             ast::Resolution::Def(_, DefinitionKind::Enum | DefinitionKind::Struct) => 
                 panic!("type-like resolution in check_expr_name"),
+            ast::Resolution::Def(_, DefinitionKind::NestedConst | DefinitionKind::Variant | DefinitionKind::Field) => 
+                panic!("nested definition in check_expr_name"),
         }
     }
 
@@ -1222,6 +1224,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return Ty::new_error(self.tcx);
         }
         found
+    }
+    
+    fn results(self) -> TypecheckResults<'tcx> {
+        TypecheckResults {
+            field_indices: self.field_indices,
+            variant_translations: self.variant_translations,
+            associations: self.associations
+        }
     }
 }
 
@@ -1357,9 +1367,13 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
     }
 }
 
-pub struct TypecheckResults;
+pub struct TypecheckResults<'tcx> {
+    pub field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
+    pub variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
+    pub associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
+}
 
-pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults {
+pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {
     let node = tcx.node_by_def_id(def_id);
 
     let body = node.body()
@@ -1378,7 +1392,7 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults {
         ctxt.check_expr_with_expectation(body.body, Expectation::Coerce(ty));
     }
 
-    &TypecheckResults
+    tcx.arena.alloc(ctxt.results())
 }
 
 pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {

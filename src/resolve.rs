@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::{ast::{self, DefinitionKind, NodeId, OutsideLoopScope, Resolution}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, interface, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
+use crate::{ast::{self, DefinitionKind, NodeId, OutsideLoopScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, interface, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -26,14 +26,17 @@ impl std::fmt::Display for NameSpace {
     }
 }
 
-impl From<DefinitionKind> for NameSpace {
-    fn from(value: DefinitionKind) -> Self {
+impl TryFrom<DefinitionKind> for NameSpace {
+    type Error = ();
+
+    fn try_from(value: DefinitionKind) -> Result<Self, ()> {
         use DefinitionKind as D;
-        match value {
+        Ok(match value {
             D::Struct | D::Enum => NameSpace::Type,
             D::Function => NameSpace::Function,
-            D::Global | D::Const => NameSpace::Variable,
-        }
+            D::Static | D::Const => NameSpace::Variable,
+            _ => return Err(())
+        })
     }
 }
 
@@ -50,20 +53,25 @@ struct Local {
     span: Span,
 }
 
+pub struct Definition {
+    pub node: NodeId,
+    pub kind: DefinitionKind
+}
+
 struct ResolutionState<'tcx> {
     items: Vec<ast::DefId>,
     diagnostics: &'tcx DiagnosticsCtxt,
     types: HashMap<Symbol, Declaration, ahash::RandomState>,
     functions: HashMap<Symbol, Declaration, ahash::RandomState>,
     globals: HashMap<Symbol, Declaration, ahash::RandomState>,
-    declarations: index_vec::IndexVec<ast::DefId, ast::NodeId>
+    declarations: index_vec::IndexVec<ast::DefId, Definition>
 }
 
 pub struct ResolutionResults<'tcx> {
     pub ast_info: &'tcx interface::AstInfo<'tcx>,
     pub items: Vec<ast::DefId>,
     pub entry: Option<ast::DefId>,
-    pub declarations: index_vec::IndexVec<ast::DefId, ast::NodeId>
+    pub declarations: index_vec::IndexVec<ast::DefId, Definition>
 }
 
 impl<'tcx> ResolutionState<'tcx> {
@@ -82,14 +90,21 @@ impl<'tcx> ResolutionState<'tcx> {
         let space = match kind {
             DefinitionKind::Struct | DefinitionKind::Enum => &mut self.types,
             DefinitionKind::Function => &mut self.functions,
-            DefinitionKind::Global | DefinitionKind::Const => &mut self.globals,
+            DefinitionKind::Static | DefinitionKind::Const => &mut self.globals,
+            _ => unreachable!("invalid Definition in define")
         };
         let declaration = Declaration {
-            site: self.declarations.push(site).into(), kind, span: name.span
+            site: self.declarations.push(Definition {
+                node: site,
+                kind
+            }), 
+            kind,
+            span: name.span
         };
         self.items.push(declaration.site);
         if let Some(prev) = space.insert(name.symbol, declaration) {
-            let space: NameSpace = kind.into();
+            let space: NameSpace = kind.try_into()
+                .expect("invalid Definition in define");
             Message::error(format!("redeclaration of {space} {name:?}", name = name.symbol.get()))
                 .at(name.span)
                 .hint(format!("previous declaration of {name:?} here", name = name.symbol.get()), prev.span)
@@ -119,6 +134,10 @@ impl<'r, 'tcx> TypeResolutionPass<'r, 'tcx> {
     fn resolve(&mut self, tree: &ast::SourceFile) {
         self.visit(tree);
     }
+
+    fn declare(&mut self, node: NodeId, kind: DefinitionKind) -> ast::DefId {
+        self.resolution.declarations.push(Definition { node, kind })
+    }
 }
 
 impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
@@ -139,7 +158,7 @@ impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
             },
             ast::ItemKind::GlobalVar(global) => {
                 self.resolution.define(
-                    if global.constant {DefinitionKind::Global} else {DefinitionKind::Const},
+                    if global.constant {DefinitionKind::Static} else {DefinitionKind::Const},
                     global.ident, item.node_id);
                 self.visit_ty_expr(global.ty);
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
@@ -151,19 +170,19 @@ impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
     fn visit_field_def(&mut self, field_def: &ast::FieldDef) {
         self.visit_ty_expr(field_def.ty);
         node_visitor::visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
-        field_def.def_id.set(self.resolution.declarations.push(field_def.node_id).into())
+        field_def.def_id.set(self.declare(field_def.node_id, DefinitionKind::Field))
             .unwrap();
     }
 
     fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
         node_visitor::visit_option(variant_def.sset, |sset| self.visit_expr(sset));
-        variant_def.def_id.set(self.resolution.declarations.push(variant_def.node_id).into())
+        variant_def.def_id.set(self.declare(variant_def.node_id, DefinitionKind::Variant))
             .unwrap();
     }
 
     fn visit_nested_const(&mut self, expr: &ast::NestedConst) {
         self.visit_expr(expr.expr);
-        expr.def_id.set(self.resolution.declarations.push(expr.node_id).into())
+        expr.def_id.set(self.declare(expr.node_id, DefinitionKind::NestedConst))
             .unwrap();
     }
 }

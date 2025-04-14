@@ -23,34 +23,26 @@ pub enum Node<'ast> {
 }
 
 impl<'ast> Node<'ast> {
-    // TODO: body for FieldDef 
+    // TODO: body for FieldDef/Struct
     pub fn body(self) -> Option<Body<'ast>> {
         match self {
             Self::Item(item) => match &item.kind {
-                ItemKind::Function(func) => {
-                    if let Some(ref body) = func.body {
-                        Some(Body {
-                            params: &func.sig.params,
-                            body
-                        })
-                    } else {
-                        None
-                    }
-                }
-                ItemKind::GlobalVar(global) => {
-                    if let Some(ref body) = global.init {
-                        Some(Body { params: &[], body })
-                    } else {
-                        None
-                    }
+                ItemKind::Function(func @ Function { body: Some(body), .. }) =>
+                    return Some(Body {
+                        params: &func.sig.params,
+                        body
+                    }),
+                ItemKind::GlobalVar(GlobalVar { init: Some(body), .. }) => {
+                    return Some(Body { params: &[], body })
                 },
-                _ => None,
+                _ => (),
             },
-            Self::NestedConst(expr) => Some(Body {
+            Self::NestedConst(expr) => return Some(Body {
                 params: &[], body: &expr.expr
             }),
-            _ => None
+            _ => ()
         }
+        None
     }
 
     pub fn signature(self) -> Option<&'ast FnSignature<'ast>> {
@@ -138,11 +130,14 @@ pub const DEF_ID_UNDEF: DefId = DefId(u32::MAX);
 
 #[derive(Debug, Clone, Copy)]
 pub enum DefinitionKind {
-    Global,
+    Static,
     Function,
     Struct,
     Enum,
     Const,
+    NestedConst,
+    Field,
+    Variant,
 }
 
 #[derive(Debug, Clone, Copy)]

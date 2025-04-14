@@ -15,6 +15,7 @@ mod types;
 mod context;
 mod typecheck;
 mod string_internals;
+mod intermediate;
 
 fn main() -> ExitCode {
     let options = match interface::parse_argv_options(env::args()) {

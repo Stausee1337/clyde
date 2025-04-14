@@ -3,7 +3,7 @@ use hashbrown::hash_table::{HashTable, Entry};
 
 use ahash::AHasher;
 
-use crate::{ast::{self, DefId, NodeId, OwnerId}, diagnostics::DiagnosticsCtxt, interface::Session, resolve::ResolutionResults, typecheck, types};
+use crate::{ast::{self, DefId, NodeId, OwnerId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
 
 macro_rules! define_queries {
     ($(fn $name:ident($pat:ty) -> $rty:ty;)*) => {
@@ -105,8 +105,13 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn node_by_def_id(self, id: DefId) -> ast::Node<'tcx> {
-        let node_id = self.resolutions.declarations[id];
-        self.get_node_by_id(node_id)
+        let def = &self.resolutions.declarations[id];
+        self.get_node_by_id(def.node)
+    }
+
+    pub fn def_kind(self, id: DefId) -> ast::DefinitionKind {
+        let def = &self.resolutions.declarations[id];
+        def.kind
     }
 
     #[inline]
@@ -117,8 +122,9 @@ impl<'tcx> TyCtxt<'tcx> {
 
 define_queries! {
     fn type_of(ast::DefId) -> types::Ty<'tcx>;
-    fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults;
+    fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
     fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
+    fn build_ir(ast::DefId) -> &'tcx intermediate::Body<'tcx>;
 }
 
 pub trait Internable<'tcx>: Hash + Eq {

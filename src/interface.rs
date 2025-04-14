@@ -8,7 +8,7 @@ use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 #[cfg(target_family = "windows")]
 use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE};
 
-use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck};
+use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, intermediate, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -523,7 +523,8 @@ impl<'tcx> Compiler<'tcx> {
             let providers = Providers {
                 type_of: typecheck::type_of,
                 typecheck: typecheck::typecheck,
-                fn_sig: typecheck::fn_sig
+                fn_sig: typecheck::fn_sig,
+                build_ir: intermediate::build_ir
             };
 
             let gcx = self.gcx_cell
