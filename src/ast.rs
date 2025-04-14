@@ -17,7 +17,6 @@ pub enum Node<'ast> {
     TypeExpr(&'ast TypeExpr<'ast>),
     Field(&'ast FieldDef<'ast>),
     Variant(&'ast VariantDef<'ast>),
-    Block(&'ast Block<'ast>),
     Param(&'ast Param<'ast>),
     GenericParam(&'ast GenericParam<'ast>),
 }
@@ -291,23 +290,10 @@ pub struct Param<'ast> {
     pub node_id: NodeId
 }
 
-impl<'ast> IntoNode<'ast> for Param<'ast>  {
-    fn into_node(&'ast self) -> Node<'ast> {
-        Node::Param(self)
-    }
-}
-
 #[derive(Debug)]
 pub struct Block<'ast> {
     pub stmts: &'ast [&'ast Stmt<'ast>],
     pub span: Span,
-    pub node_id: NodeId,
-}
-
-impl<'ast> IntoNode<'ast> for Block<'ast>  {
-    fn into_node(&'ast self) -> Node<'ast> {
-        Node::Block(self)
-    }
 }
 
 #[derive(Debug)]
@@ -326,7 +312,7 @@ impl<'ast> IntoNode<'ast> for Stmt<'ast>  {
 #[derive(Debug)]
 pub enum StmtKind<'ast> {
     Expr(&'ast Expr<'ast>),
-    Block(&'ast Block<'ast>),
+    Block(Block<'ast>),
     If(If<'ast>),
     While(While<'ast>),
     For(For<'ast>),
@@ -347,19 +333,19 @@ pub struct Local<'ast> {
 pub struct For<'ast> {
     pub bound_var: Ident,
     pub iterator: &'ast Expr<'ast>,
-    pub body: &'ast Block<'ast>
+    pub body: Block<'ast>
 }
 
 #[derive(Debug)]
 pub struct While<'ast> {
     pub condition: &'ast Expr<'ast>,
-    pub body: &'ast Block<'ast>,
+    pub body: Block<'ast>,
 }
 
 #[derive(Debug)]
 pub struct If<'ast> {
     pub condition: &'ast Expr<'ast>,
-    pub body: &'ast Block<'ast>,
+    pub body: Block<'ast>,
     pub else_branch: Option<&'ast Stmt<'ast>>
 }
 
@@ -431,7 +417,7 @@ pub enum ExprKind<'ast> {
     /*ShorthandEnum(Ident),*/
     Range(Range<'ast>),
     Deref(&'ast Expr<'ast>),
-    Block(&'ast Block<'ast>),
+    Block(Block<'ast>),
     Err
 }
 

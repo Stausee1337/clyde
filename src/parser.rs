@@ -1604,7 +1604,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
     }
 
-    fn parse_block(&mut self) -> &'ast ast::Block<'ast> {
+    fn parse_block(&mut self) -> ast::Block<'ast> {
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -1617,10 +1617,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let stmts = self.alloc(stmts);
 
-        make_owned_node!(self, ast::Block {
+        ast::Block {
             stmts,
             span: Span::interpolate(start, end),
-        })
+        }
     }
 
     fn parse_struct_item(&mut self) -> &'ast ast::Item<'ast> {

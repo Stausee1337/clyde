@@ -151,7 +151,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         body_ty
     }
 
-    fn check_stmt_while(&mut self, while_loop: &'tcx ast::While<'tcx>) -> Ty<'tcx> {
+    fn check_stmt_while(&mut self, while_loop: &'tcx ast::While<'tcx>, node_id: NodeId) -> Ty<'tcx> {
 
         let bool = Ty::new_primitive(self.tcx, types::Primitive::Bool);
         let res = self.check_expr_with_expectation(while_loop.condition, Expectation::Coerce(bool));
@@ -167,7 +167,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         let ctxt = LoopCtxt {
-            owner: while_loop.body.node_id, may_break: false
+            owner: node_id, may_break: false
         };
 
         let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
@@ -213,7 +213,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         self.ty_assoc(node_id, base);
 
         let ctxt = LoopCtxt {
-            owner: for_loop.body.node_id, may_break: false
+            owner: node_id, may_break: false
         };
 
         let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
@@ -274,7 +274,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::StmtKind::If(if_stmt) =>
                 return self.check_stmt_if(if_stmt),
             ast::StmtKind::While(while_loop) =>
-                return self.check_stmt_while(while_loop),
+                return self.check_stmt_while(while_loop, stmt.node_id),
             ast::StmtKind::For(for_loop) =>
                 self.check_stmt_for(for_loop, stmt.node_id),
             ast::StmtKind::Local(local) =>

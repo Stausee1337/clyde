@@ -376,14 +376,14 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
             ast::StmtKind::While(while_loop) => {
                 self.visit_expr(while_loop.condition);
                 self.with_rib(|this| {
-                    this.enter_loop_ctxt(while_loop.body.node_id, |this| this.visit_block(&while_loop.body));
+                    this.enter_loop_ctxt(stmt.node_id, |this| this.visit_block(&while_loop.body));
                 });
             }
             ast::StmtKind::For(for_loop) => {
                 self.define(for_loop.bound_var.clone(), stmt.node_id);
                 self.visit_expr(for_loop.iterator);
                 self.with_rib(|this| {
-                    this.enter_loop_ctxt(for_loop.body.node_id, |this| this.visit_block(&for_loop.body));
+                    this.enter_loop_ctxt(stmt.node_id, |this| this.visit_block(&for_loop.body));
                 });
             }
             _ => node_visitor::noop_visit_stmt_kind(&stmt.kind, self),
