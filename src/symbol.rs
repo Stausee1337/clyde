@@ -44,6 +44,7 @@ impl StringInterner {
 const PRIMITIVES: &[&'static str] = &[
     "bool", "void",
     "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "nint", "nuint",
+    "float",
     "char", "str",
     "tuple"
 ];

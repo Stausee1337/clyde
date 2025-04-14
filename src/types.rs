@@ -129,10 +129,10 @@ impl<'tcx> Const<'tcx> {
         let node = tcx.node_by_def_id(def_id);
 
         let body = node.body()
-            .expect("create const without a body?");
+            .expect("const should have a body");
 
         let ty = tcx.type_of(def_id);
-        match Self::try_val_from_literal(tcx, ty, body.body) {
+        match Self::try_val_from_simple_expr(tcx, ty, body.body) {
             Some(v) => v,
             None => tcx.intern(ConstInner::Err {
                 msg: "Sry, propper const evaluation is not a priority".to_string(),
@@ -142,51 +142,51 @@ impl<'tcx> Const<'tcx> {
     }
 
     fn int_to_val(
-        tcx: TyCtxt<'tcx>, val: i64, ty: Ty<'tcx>, span: Span) -> ConstInner<'tcx> {
+        tcx: TyCtxt<'tcx>, val: i64, ty: Ty<'tcx>) -> Result<ConstInner<'tcx>, String> {
         if let Ty(TyKind::Primitive(primitive)) = ty {
             if primitive.integer_fit(val) {
                 let scalar = Scalar {
                     size: primitive.size() / 8,
                     data: val as u128
                 };
-                return ConstInner::Value(ty, ValTree::Scalar(scalar)); 
+                return Ok(ConstInner::Value(ty, ValTree::Scalar(scalar))); 
             }
         }
         for primitive in [Primitive::Int, Primitive::Long, Primitive::ULong] {
             if primitive.integer_fit(val) {
-                return ConstInner::Err {
-                    msg: format!("mismatched types: expected {ty}, found {}",
-                                 Ty::new_primitive(tcx, primitive)),
-                    span
-                }
+                return Err(format!("mismatched types: expected {ty}, found {}", Ty::new_primitive(tcx, primitive)));
             }
         }
         panic!("u64 to big for ulong ???")
     }
 
-    fn kind_to_ty(tcx: TyCtxt<'tcx>, kind: &'tcx ast::ExprKind) -> Ty<'tcx> {
-        use ast::{ExprKind, Literal};
-        match kind {
-            ExprKind::Literal(Literal::String(..)) => Ty::new_primitive(tcx, Primitive::String),
-            ExprKind::Literal(Literal::Char(..)) => Ty::new_primitive(tcx, Primitive::Char),
-            ExprKind::Literal(Literal::Boolean(..)) => Ty::new_primitive(tcx, Primitive::Bool),
-            ExprKind::Literal(Literal::Integer(..)) | ExprKind::UnaryOp(..)
-                => Ty::new_primitive(tcx, Primitive::Int),
-            _ => unreachable!("simple kind_to_ty doesn't support {:?}", kind)
+    fn literal_to_ty(tcx: TyCtxt<'tcx>, literal: &'tcx ast::Literal) -> Ty<'tcx> {
+        match literal {
+            ast::Literal::String(..) => Ty::new_primitive(tcx, Primitive::String),
+            ast::Literal::Char(..) => Ty::new_primitive(tcx, Primitive::Char),
+            ast::Literal::Boolean(..) => Ty::new_primitive(tcx, Primitive::Bool),
+            ast::Literal::Integer(..) => Ty::new_primitive(tcx, Primitive::Int),
+            ast::Literal::Floating(..) => Ty::new_primitive(tcx, Primitive::Float),
+            ast::Literal::Null => panic!("can't infer type from null")
         }
     }
 
-    fn try_val_from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<Self> {
-        use ast::{ExprKind, Literal};
-        use Primitive::*;
-        match &expr.kind {
-            ExprKind::Literal(..) => (),
-            ExprKind::UnaryOp(unary)
-                if matches!(unary.expr.kind, ExprKind::Literal(ast::Literal::Integer(..))) => (),
-            _ => return None
+    fn try_val_from_simple_expr(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<Self> {
+        let ast::ExprKind::Literal(literal) = &expr.kind else {
+            return None;
+        };
+        match Self::from_literal(tcx, ty, literal) {
+            Ok(cnst) => Some(cnst),
+            Err(msg) => Some(tcx.intern(ConstInner::Err {
+                msg, span: expr.span
+            }))
         }
-        let inner = match (ty.0, &expr.kind) {
-            (TyKind::Primitive(String), ExprKind::Literal(Literal::String(str))) =>  {
+    }
+
+    pub fn from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, literal: &'tcx ast::Literal) -> Result<Self, String> {
+        use Primitive::*;
+        let inner = match (ty.0, literal) {
+            (TyKind::Primitive(String), ast::Literal::String(str)) =>  {
                 let mut slice = Vec::new();
                 for byte in str.as_bytes() {
                     let val = Scalar::from_number(*byte);
@@ -198,27 +198,23 @@ impl<'tcx> Const<'tcx> {
 
                 ConstInner::Value(ty, ValTree::Branch(slice))
             }
-            (TyKind::Primitive(Bool), ExprKind::Literal(Literal::Boolean(bool))) =>
+            (TyKind::Primitive(Bool), ast::Literal::Boolean(bool)) =>
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*bool as u8))),
-            (TyKind::Primitive(Char), ExprKind::Literal(Literal::Char(char))) =>
+            (TyKind::Primitive(Char), ast::Literal::Char(char)) =>
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
-            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ExprKind::Literal(Literal::Integer(int))) =>
-                Self::int_to_val(tcx, *int, ty, expr.span),
-            (TyKind::Refrence(..), ExprKind::Literal(ast::Literal::Null)) =>
+            (TyKind::Primitive(SByte|Byte|Short|UShort|Int|Uint|Long|ULong|Nint|NUint), ast::Literal::Integer(int)) =>
+                Self::int_to_val(tcx, *int, ty)?,
+            (TyKind::Refrence(..), ast::Literal::Null) =>
                 // FIXME: `as usize` here will make the size of the scalar depend on the size
                 // of the architecture the compiler was compiled on, not the target usize
                 ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(0 as usize))),
-            (_, ExprKind::Literal(ast::Literal::Null)) => ConstInner::Err {
-                msg: format!("non refrence-type {ty} cannot be null"),
-                span: expr.span
-            },
-            _ => ConstInner::Err {
-                msg: format!("mismatched types: expected {ty}, found {}", Self::kind_to_ty(tcx, &expr.kind)),
-                span: expr.span
-            }
+            (_, ast::Literal::Null) =>
+                return Err(format!("non refrence-type {ty} cannot be null")),
+            _ =>
+                return Err(format!("mismatched types: expected {ty}, found {}", Self::literal_to_ty(tcx, literal))),
         };
 
-        Some(tcx.intern(inner))
+        Ok(tcx.intern(inner))
     }
 
     pub fn try_as_usize(&self) -> Option<usize> {
@@ -371,7 +367,9 @@ impl<'tcx> Ty<'tcx> {
 pub enum Primitive {
     Bool, Void,
     SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint,
-    Char, String
+    Float,
+    Char, String,
+    Tuple
 }
 
 impl TryFrom<Symbol> for Primitive {
@@ -442,7 +440,9 @@ impl Primitive {
             Long | ULong => 64,
             Nint | NUint => 64, 
             Bool => 8, Void => 0,
-            Char => 32, String => 128
+            Char => 32, String => 128,
+            Float => 32,
+            Tuple => panic!()
         }
     }
 }
