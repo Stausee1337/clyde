@@ -15,7 +15,7 @@ pub enum Node<'ast> {
     SourceFile(&'ast SourceFile<'ast>),
     Stmt(&'ast Stmt<'ast>),
     TypeExpr(&'ast TypeExpr<'ast>),
-    Field(&'ast FieldDef<'ast>),
+    FieldDef(&'ast FieldDef<'ast>),
     Variant(&'ast VariantDef<'ast>),
     Param(&'ast Param<'ast>),
     GenericParam(&'ast GenericParam<'ast>),
@@ -218,7 +218,7 @@ pub struct GlobalVar<'ast> {
 pub struct Struct<'ast> {
     pub ident: Ident,
     pub generics: &'ast [&'ast GenericParam<'ast>],
-    pub fields: &'ast [FieldDef<'ast>],
+    pub fields: &'ast [&'ast FieldDef<'ast>],
     pub attributes: &'ast [Attribute]
 }
 
@@ -234,7 +234,7 @@ pub struct FieldDef<'ast> {
 
 impl<'ast> IntoNode<'ast> for FieldDef<'ast>  {
     fn into_node(&'ast self) -> Node<'ast> {
-        Node::Field(self)
+        Node::FieldDef(self)
     }
 }
 

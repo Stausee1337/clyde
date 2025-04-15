@@ -605,7 +605,7 @@ impl<'a> Tokenizer<'a> {
         let literal = self.slice(self.position() - start, length).unwrap();
         self.token = Token {
             kind: TokenKind::Literal(literal, kind),
-            span: self.make_span(start, self.position() - 1)
+            span: self.make_span(start, self.position())
         };
         goto!(End);
     }

@@ -175,7 +175,9 @@ impl Parsable for Literal {
             TokenKind::Literal(repr, LiteralKind::Char) => {
                 let mut parser = StringParser::new(StringKind::Char);
                 let mut res = None;
-                for char in repr.chars() {
+                let mut chars = repr.chars();
+                chars.next();
+                for char in chars {
                     match parser.feed(char) {
                         Ok(Some(out)) => {
                             res = Some(out);
@@ -454,7 +456,8 @@ impl<'a, T: Tokenish> std::fmt::Display for TokenJoiner<'a, T> {
     }
 }
 
-macro_rules! make_owned_node {
+// makes a Node that doesn't follow the `Node`Kind-paradigm
+macro_rules! make_non_canonical_node {
     ($parser:ident, ast::$node:ident { $($init:tt)* }) => {{
         let node_id = if let Some(owner_id) = $parser.owner_stack.last() {
             NodeId {
@@ -717,7 +720,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
             _ => {
                 let expr = self.parse_expr(Restrictions::empty());
-                let expr = make_owned_node!(self, ast::NestedConst {
+                let expr = make_non_canonical_node!(self, ast::NestedConst {
                     span: expr.span,
                     expr,
                     def_id: OnceCell::new() 
@@ -851,7 +854,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
                 sure = true;
 
-                ast::GenericArgument::Expr(make_owned_node!(self, ast::NestedConst {
+                ast::GenericArgument::Expr(make_non_canonical_node!(self, ast::NestedConst {
                     expr,
                     span: expr.span,
                     def_id: OnceCell::new()
@@ -1117,6 +1120,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.cursor.advance();
         
         let field; 
+        let end = self.cursor.current();
         if let Some(ident) = self.bump_on::<ast::Ident>() {
             field = ast::FieldIdent::Named(ident)
         } else if let Some(index) = self.bump_on::<u64>() {
@@ -1133,7 +1137,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 expr,
                 field
             }),
-            Span::interpolate(expr.span, start.span),
+            Span::interpolate(expr.span, end.span),
         )
     }
 
@@ -1624,7 +1628,74 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_struct_item(&mut self) -> &'ast ast::Item<'ast> {
-        todo!()
+        self.with_owner(|this| {
+            let start = this.cursor.span();
+            this.cursor.advance();
+
+            let ident = TRY!(this.expect_any::<ast::Ident, _>());
+            this.cursor.advance();
+
+            // FIXME: remove generic-parsing code here and in parse_function_item
+            let mut generics = vec![];
+            if this.bump_if(Token![<]).is_some() {
+                this.cursor.advance();
+
+                while !this.matches(Token![>]) {
+                    generics.push(this.parse_generic_param());
+
+                    TRY!(this.expect_either(&[Token![,], Token![>]]));
+                    this.bump_if(Token![,]);
+                }
+                this.cursor.advance();
+            }
+
+            let generics = this.alloc_slice(&generics);
+
+            TRY!(this.expect_either(&[Punctuator::LCurly, Token![;]]));
+            let mut fields = vec![];
+
+            if this.bump_if(Punctuator::LCurly).is_some() {
+                while !this.matches(Punctuator::RCurly) {
+                    let start = this.cursor.span();
+
+                    let ty = this.parse_ty_expr();
+                    let name = TRY!(this.expect_any::<ast::Ident, _>());
+                    this.cursor.advance();
+
+                    let mut init = None;
+                    let end;
+                    if this.bump_if(Token![=]).is_some() {
+                        let expr = this.parse_expr(Restrictions::empty());
+                        end = expr.span;
+                        init = Some(expr);
+                    } else {
+                        end = name.span;
+                    }
+                    TRY!(this.expect_one(Token![;]));
+
+                    let span = Span::interpolate(start, end);
+                    this.cursor.advance();
+                    fields.push(make_non_canonical_node!(this, ast::FieldDef {
+                        name, ty, default_init: init, span, def_id: OnceCell::new()
+                    }));
+                }
+            }
+            let end = this.cursor.span();
+            this.cursor.advance();
+
+            let fields = this.alloc_slice(&fields);
+
+            let span = Span::interpolate(start, end);
+            this.make_node(
+                ast::ItemKind::Struct(ast::Struct {
+                    ident,
+                    generics,
+                    fields,
+                    attributes: &[]
+                }),
+                span
+            )
+        })
     }
 
     fn parse_enum_item(&mut self) -> &'ast ast::Item<'ast> {
@@ -1684,7 +1755,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let ident = TRY!(self.expect_any::<ast::Ident, _>());
             self.cursor.advance();
 
-            params.push(make_owned_node!(self, ast::Param {
+            params.push(make_non_canonical_node!(self, ast::Param {
                 ident,
                 ty,
                 span: Span::interpolate(start, ident.span),
@@ -1731,6 +1802,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_global_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident, constant: bool) -> &'ast ast::Item<'ast> {
+        println!("parse_global_item: {ty:#?} {:?} {:?}", ident.symbol, self.cursor.current());
         todo!()
     }
 
@@ -1772,7 +1844,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             let items = this.alloc_slice(&items);
 
-            make_owned_node!(this, ast::SourceFile {
+            make_non_canonical_node!(this, ast::SourceFile {
                 items,
                 span: file_span,
             }) 

@@ -1344,7 +1344,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             ast::ItemKind::Err =>
                 panic!("resolved Err to Definiton")
         }
-        ast::Node::Field(field) => {
+        ast::Node::FieldDef(field) => {
             let ctx = LoweringCtxt::new(tcx);
             ctx.lower_ty(&field.ty)
         }
