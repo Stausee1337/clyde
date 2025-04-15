@@ -396,10 +396,10 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                 .at(control_flow.span)
                 .push(self.resolution.diagnostics);
 
-            control_flow.destination.set(Err(OutsideLoopScope));
+            control_flow.destination.set(Err(OutsideLoopScope)).unwrap();
             return;
         };
-        control_flow.destination.set(Ok(*owner));
+        control_flow.destination.set(Ok(*owner)).unwrap();
     }
 
     fn visit_name(&mut self, name: &ast::Name) {

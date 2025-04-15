@@ -231,6 +231,13 @@ impl<'tcx> Const<'tcx> {
             }
         }
     }
+
+    pub fn ty(&self) -> Option<Ty<'tcx>> {
+        match self.0 {
+            ConstInner::Value(ty, _) => Some(*ty),
+            _ => None
+        }
+    }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Internable)]
