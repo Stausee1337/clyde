@@ -158,6 +158,8 @@ impl Ord for Span {
 }
 
 impl Span {
+    pub const NULL: Self = Span::new(0, 0);
+
     pub const fn new(start: u32, end: u32) -> Self {
         Self { start, end }
     }

@@ -26,9 +26,10 @@ index_vec::define_index_type! {
     IMPL_RAW_CONVERSIONS = true;
 }
 
+#[derive(Default)]
 pub struct BasicBlock<'tcx> {
     pub statements: Vec<Statement<'tcx>>,
-    pub terminator: OnceCell<Terminator>
+    pub terminator: OnceCell<Terminator<'tcx>>
 }
 
 index_vec::define_index_type! {
@@ -42,20 +43,20 @@ pub struct Statement<'tcx> {
     pub span: Span
 }
 
-pub struct Terminator {
-    pub kind: TerminatorKind,
+pub struct Terminator<'tcx> {
+    pub kind: TerminatorKind<'tcx>,
     pub span: Span
 }
 
-pub enum TerminatorKind {
+pub enum TerminatorKind<'tcx> {
     Goto(BlockId),
     Diverge {
-        condition: RegisterId,
+        condition: Operand<'tcx>,
         true_target: BlockId,
         false_target: BlockId
     },
     Return {
-        value: Option<RegisterId>
+        value: Operand<'tcx>
     }
 }
 
@@ -147,7 +148,7 @@ pub enum RValue<'tcx> {
         args: Box<[SpanOperand<'tcx>]>,
     },
     ExplicitInit {
-        ty: Operand<'tcx>,
+        ty: Ty<'tcx>,
         initializers: Box<[(FieldIdx, SpanOperand<'tcx>)]>,
     }
 }
@@ -169,7 +170,8 @@ struct TranslationCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
     typecheck: &'tcx TypecheckResults<'tcx>,
     registers: IndexVec<RegisterId, Register<'tcx>>,
-    register_lookup: HashMap<ast::NodeId, RegisterId, ahash::RandomState>
+    register_lookup: HashMap<ast::NodeId, RegisterId, ahash::RandomState>,
+    blocks: IndexVec<BlockId, BasicBlock<'tcx>>
 }
 
 impl<'tcx> TranslationCtxt<'tcx> {
@@ -181,7 +183,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
             tcx,
             typecheck,
             registers: IndexVec::with_capacity(params.len()),
-            register_lookup: Default::default()
+            register_lookup: Default::default(),
+            blocks: IndexVec::new()
         };
 
         for param in params {
@@ -204,8 +207,16 @@ impl<'tcx> TranslationCtxt<'tcx> {
         self.registers.push(Register { mutability, ty })
     }
 
+    fn create_block(&mut self) -> BlockId {
+        self.blocks.push(BasicBlock::default())
+    }
+
     fn emit_into(&mut self, block: BlockId, stmt: Statement<'tcx>) {
-        todo!()
+        let block = &mut self.blocks[block];
+        let None = block.terminator.get() else {
+            panic!("can't emit into terminated block");
+        };
+        block.statements.push(stmt);
     }
 
     fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
@@ -393,6 +404,45 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 block
             }
+            ast::ExprKind::TypeInit(init) => {
+                let ty = self.typecheck.associations[&expr.node_id];
+
+                let mut initializers = vec![];
+
+                for (idx, init) in init.initializers.iter().enumerate() {
+                    let ir_init;
+                    let ir_idx;
+                    let span;
+                    match init {
+                        ast::TypeInitKind::Field(ident, expr) => {
+                            span = Span::interpolate(ident.span, expr.span);
+                            (block, ir_init) = self.expr_as_operand(block, expr);
+                            ir_idx = self.typecheck.field_indices[&expr.node_id];
+                        }
+                        ast::TypeInitKind::Direct(expr) => {
+                            span = expr.span;
+                            (block, ir_init) = self.expr_as_operand(block, expr);
+                            ir_idx = FieldIdx::from_usize(idx);
+                        }
+                    }
+
+                    initializers.push((ir_idx, ir_init.with_span(span)));
+                }
+
+                self.emit_into(
+                    block,
+                    Statement {
+                        place: dest,
+                        rhs: RValue::ExplicitInit {
+                            ty,
+                            initializers: initializers.into_boxed_slice()
+                        },
+                        span: expr.span
+                    }
+                );
+
+                block
+            }
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
             ast::ExprKind::Deref(..) => {
                 let place;
@@ -489,6 +539,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 };
 
                 // FIXME: remove duplication with Place and Temporaray handling
+                // TODO: I think this is the point we should build a copy if the register is mutable
 
                 (block, Operand::Copy(self.register_lookup[&local]))
             }
@@ -498,6 +549,16 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 (block, Operand::Copy(register))
             }
         }
+    }
+
+    fn ret(&mut self,  block: BlockId, op: SpanOperand<'tcx>) {
+        let terminator = Terminator {
+            kind: TerminatorKind::Return { value: op.operand },
+            span: op.span
+        };
+        let Err(..) = self.blocks[block].terminator.set(terminator) else {
+            panic!("terminating terminated block");
+        };
     }
 
     fn build(self) -> &'tcx Body<'tcx> {
@@ -518,9 +579,14 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
 
     match tcx.def_kind(def_id) {
         DefinitionKind::Function => {
+            // let start = ctxt.create_block();
+            todo!()
         }
         DefinitionKind::NestedConst | DefinitionKind::Const |  DefinitionKind::Static => {
-            todo!()
+            let result;
+            let mut block = ctxt.create_block();
+            (block, result) = ctxt.expr_as_operand(block, body.body);
+            ctxt.ret(block, result.with_span(Span::NULL));
         }
         _ => unreachable!()
     }
