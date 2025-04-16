@@ -95,9 +95,15 @@ impl<'src> TokenCursor<'src> {
         unsafe { self.current = self.current.add(1) };
     }
 
-    fn try_advance(&mut self) {
+    fn try_error_advance(&mut self) {
         if self.end <= self.current {
             return;
+        }
+        if let TokenKind::Punctuator(
+            Punctuator::LParen | Punctuator::LBracket | Punctuator::LCurly |
+            Punctuator::RParen | Punctuator::RBracket | Punctuator::RCurly
+        ) = self.current().kind {
+            return; // never adanvce over delimiter
         }
         unsafe { self.current = self.current.add(1) };
     }
@@ -595,7 +601,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             .at(span)
             .push(self.diagnostics);
 
-        self.cursor.try_advance(); // try_advance past the error
+        self.cursor.try_error_advance(); // try_advance past the error
         let node = self.make_node(N::ERROR, span);
         ExpectError::Fail(node)
     }
@@ -614,7 +620,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
-        self.cursor.try_advance(); // try_advance past the error
+        self.cursor.try_error_advance(); // try_advance past the error
         let node = self.make_node(N::ERROR, span);
         ExpectError::Fail(node)
     }
@@ -625,7 +631,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
-        self.cursor.try_advance(); // try_advance past the error
+        self.cursor.try_error_advance(); // try_advance past the error
         self.make_node(N::ERROR, span)
     }
 
@@ -1036,7 +1042,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 if restrictions.contains(Restrictions::NO_CODE_BLOCKS) {
                     return self.parse_type_init_body(None);
                 }
-                let block = self.parse_block();
+                let block = self.parse_block(true);
                 end = block.span;
                 ast::ExprKind::Block(block)
             }
@@ -1417,7 +1423,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let condition = self.parse_expr(Restrictions::NO_CURLY_BLOCKS);
 
         TRY!(self.expect_one(Punctuator::LCurly));
-        let body = self.parse_block();
+        let body = self.parse_block(false);
 
         let mut else_branch = None;
         if self.bump_if(Token![else]).is_some() {
@@ -1425,7 +1431,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 self.parse_if_stmt()
             } else {
                 TRY!(self.expect_one(Punctuator::LCurly));
-                let body = self.parse_block();
+                let body = self.parse_block(false);
                 let span = body.span;
                 self.make_node(ast::StmtKind::Block(body), span)
             });
@@ -1448,7 +1454,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         )
     }
 
-    fn parse_return_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
+    fn parse_return_stmt(&mut self, keyword: Keyword) -> &'ast ast::Stmt<'ast> {
         let start = self.cursor.span();
         self.cursor.advance();
         
@@ -1465,10 +1471,22 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             self.cursor.advance();
         }
         
-        self.make_node(
-            ast::StmtKind::Return(expr),
-            Span::interpolate(start, end)
-        )
+        match keyword {
+            Token![return] =>
+                self.make_node(
+                    ast::StmtKind::Return(expr),
+                    Span::interpolate(start, end)
+                ),
+            Token![yeet] =>
+                self.make_node(
+                    ast::StmtKind::Yeet(ast::Yeet {
+                        expr,
+                        origin: ast::YeetOrigin::Explicit
+                    }),
+                    Span::interpolate(start, end)
+                ),
+            _ => unreachable!()
+        }
     }
 
     fn parse_for_loop(&mut self) -> &'ast ast::Stmt<'ast> {
@@ -1483,7 +1501,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let iterator = self.parse_expr(Restrictions::NO_CURLY_BLOCKS);
 
         TRY!(self.expect_one(Punctuator::LCurly));
-        let body = self.parse_block();
+        let body = self.parse_block(false);
 
         let span = Span::interpolate(start, body.span);
         self.make_node(
@@ -1503,7 +1521,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let condition = self.parse_expr(Restrictions::NO_CURLY_BLOCKS);
 
         TRY!(self.expect_one(Punctuator::LCurly));
-        let body = self.parse_block();
+        let body = self.parse_block(false);
 
         let span = Span::interpolate(start, body.span);
         self.make_node(
@@ -1536,8 +1554,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         )
     }
 
-    fn parse_stmt(&mut self) -> &'ast ast::Stmt<'ast> {
-        const UNEXPECTED_STMT: &'static str = "var, if, return, for, while, break, continue, <ident>, <expr>";
+    fn parse_stmt(&mut self, allow_implicit_yeet: impl FnOnce(&mut Self) -> bool) -> &'ast ast::Stmt<'ast> {
+        const UNEXPECTED_STMT: &'static str = "var, if, return, for, while, break, continue, yeet, <ident>, <expr>";
 
         // if we've got semicolons in the stream at this point, its because the last statement
         // likely errored, so don't warn here as they probably aren't actually redundant
@@ -1549,8 +1567,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     self.parse_variable_declaration(None),
                 Token![if] =>
                     self.parse_if_stmt(),
-                Token![return] => 
-                    self.parse_return_stmt(),
+                Token![return] | Token![yeet] => 
+                    self.parse_return_stmt(keyword),
                 Token![for] => 
                     self.parse_for_loop(),
                 Token![while] => 
@@ -1577,17 +1595,25 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let expr = self.parse_expr(Restrictions::empty());
 
         let end;
-        if !matches!(expr.kind, ast::ExprKind::Block(..)) {
+        let kind = if allow_implicit_yeet(self) {
+            end = expr.span;
+            ast::StmtKind::Yeet(ast::Yeet {
+                expr: Some(expr),
+                origin: ast::YeetOrigin::Implicit
+            })
+        } else if !matches!(expr.kind, ast::ExprKind::Block(..)) {
             TRY!(self.expect_one(Token![;]));
             end = self.cursor.span();
             self.cursor.advance();
+            ast::StmtKind::Expr(expr)
         } else {
             end = self.cursor.span();
-        }
+            ast::StmtKind::Expr(expr)
+        };
 
         self.remove_redundant_semis(true);
 
-        self.make_node(ast::StmtKind::Expr(expr), Span::interpolate(expr.span, end))
+        self.make_node(kind, Span::interpolate(expr.span, end))
     }
 
     fn remove_redundant_semis(&mut self, warn: bool) {
@@ -1608,13 +1634,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
     }
 
-    fn parse_block(&mut self) -> ast::Block<'ast> {
+    fn parse_block(&mut self, expr_block: bool) -> ast::Block<'ast> {
         let start = self.cursor.span();
         self.cursor.advance();
 
         let mut stmts = vec![];
         while !self.matches(Punctuator::RCurly) {
-            stmts.push(self.parse_stmt());
+            stmts.push(self.parse_stmt(|this| expr_block && this.matches(Punctuator::RCurly)));
         }
         let end = self.cursor.span();
         self.cursor.advance();
@@ -1777,7 +1803,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let body = match self.match_on::<Punctuator>() {
             Some(Punctuator::LCurly) => {
-                let block = self.parse_block();
+                let block = self.parse_block(false);
                 let span = block.span;
                 Some(self.make_node(ast::ExprKind::Block(block), span))
             }

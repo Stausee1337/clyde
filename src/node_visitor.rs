@@ -146,6 +146,7 @@ pub fn noop_visit_stmt_kind<T: Visitor>(stmt_kind: &StmtKind, vis: &mut T) {
         }
         StmtKind::ControlFlow(cf) => vis.visit_control_flow(cf),
         StmtKind::Block(block) => vis.visit_block(block),
+        StmtKind::Yeet(yeet) => visit_option(yeet.expr, |expr| vis.visit_expr(expr)),
         StmtKind::Err => ()
     }
 }

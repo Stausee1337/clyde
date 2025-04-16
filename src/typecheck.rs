@@ -38,11 +38,17 @@ struct LoopCtxt {
     may_break: bool
 }
 
+#[derive(Debug, Default)]
+struct BlockCtxt<'tcx> {
+    result_ty: Option<Ty<'tcx>>
+}
+
 struct TypecheckCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
     return_ty: Option<Ty<'tcx>>,
     diverges: Cell<Diverges>,
     loop_stack: Vec<LoopCtxt>,
+    block_stack: Vec<BlockCtxt<'tcx>>,
     field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     lowering_ctxt: LoweringCtxt<'tcx>,
@@ -56,6 +62,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return_ty: None,
             diverges: Cell::new(Diverges::Maybe),
             loop_stack: Vec::new(),
+            block_stack: Vec::new(),
             field_indices: Default::default(),
             variant_translations: Default::default(),
             lowering_ctxt: LoweringCtxt::new(tcx),
@@ -81,6 +88,17 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
         }
         None
+    }
+
+    fn enter_block_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, do_work: F) -> T {
+        self.block_stack.push(BlockCtxt::default());
+        let rv = do_work(self);
+        let _ctxt = self.block_stack.pop().unwrap();
+        rv 
+    }
+
+    fn block_ctxt(&mut self) -> Option<&mut BlockCtxt<'tcx>> {
+        self.block_stack.last_mut()
     }
 
     fn ty_assoc(&mut self, node_id: ast::NodeId, ty: Ty<'tcx>) {
@@ -285,7 +303,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let Some(return_ty) = self.return_ty else {
                     Message::error("`return` found outside of function body")
                         .at(stmt.span)
-                        .note("use break ...; for producing values")
+                        .note("use yeet ...; for producing values")
                         .push(self.diagnostics());
                     return Ty::new_error(self.tcx);
                 };
@@ -312,6 +330,36 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     return Ty::new_never(self.tcx);
                 } else {
                     return Ty::new_error(self.tcx);
+                }
+            }
+            ast::StmtKind::Yeet(yeet) => {
+                let Some(block_ctxt) = self.block_ctxt() else {
+                    Message::error("`yeet` found outside of block expression")
+                        .at(stmt.span)
+                        .note("use return ...; for producing values within functions")
+                        .push(self.diagnostics());
+                    return Ty::new_error(self.tcx);
+                };
+
+                let expected = block_ctxt.result_ty;
+                let expectation = expected.into();
+                let ty = yeet.expr.map(|expr| self.check_expr_with_expectation(expr, expectation));
+
+                match (ty, expected) {
+                    (None, Some(expected)) => {
+                        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
+                        self.maybe_emit_type_error(void, expected, stmt.span);
+                    }
+                    (Some(found), None) => {
+                        let block_ctxt = self.block_ctxt().unwrap();
+                        block_ctxt.result_ty = Some(found);
+                    }
+                    (None, None) => {
+                        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
+                        let block_ctxt = self.block_ctxt().unwrap();
+                        block_ctxt.result_ty = Some(void);
+                    },
+                    (Some(..), Some(..)) => (), // expression already typechecked
                 }
             }
             ast::StmtKind::Err => (),
@@ -346,7 +394,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         let ty = if let Diverges::Maybe = self.diverges.get() {
-            Ty::new_primitive(self.tcx, types::Primitive::Void)
+            self.block_ctxt()
+                .and_then(|ctxt| ctxt.result_ty)
+                .unwrap_or_else(|| Ty::new_primitive(self.tcx, types::Primitive::Void))
         } else {
             Ty::new_never(self.tcx)
         };
@@ -1018,7 +1068,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         Ty::new_tuple(self.tcx, tys)
     }
 
-    fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
+    fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>, is_body: bool) -> Ty<'tcx> {
         match &expr.kind {
             ast::ExprKind::Literal(ast::Literal::String(..)) => 
                 Ty::new_primitive(self.tcx, Primitive::String),
@@ -1060,8 +1110,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             ast::ExprKind::Name(name) =>
                 self.check_expr_name(name),
-            ast::ExprKind::Block(block) =>
-                self.check_block(block, Expectation::None), 
+            ast::ExprKind::Block(block) => {
+                if !is_body {
+                    self.enter_block_ctxt(|this| {
+                        this.check_block(block, expected.into())
+                    })
+                } else {
+                    self.check_block(block, expected.into())
+                }
+            },
             ast::ExprKind::Err =>
                 Ty::new_error(self.tcx),
             ast::ExprKind::FunctionCall(call) =>
@@ -1162,7 +1219,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         let prev_diverge = self.diverges.get();
         self.diverges.set(Diverges::Maybe);
-        let ty = self.check_expr(&expr, expected); 
+        let ty = self.check_expr(&expr, expected, false); 
 
         if let Expectation::Coerce(expected) = expectation {
             self.maybe_emit_type_error(ty, expected, expr.span);
@@ -1184,7 +1241,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     fn check_return_ty(&mut self, expr: &'tcx ast::Expr, ret_ty: Ty<'tcx>, ret_ty_span: Span) {
         self.return_ty = Some(ret_ty);
 
-        let ty = self.check_expr(&expr, Some(ret_ty));
+        let ty = self.check_expr(&expr, Some(ret_ty), true);
         self.maybe_emit_type_error(ty, ret_ty, ret_ty_span);
 
         if matches!(ret_ty, Ty(types::TyKind::Primitive(types::Primitive::Void))) &&

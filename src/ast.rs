@@ -319,6 +319,7 @@ pub enum StmtKind<'ast> {
     Local(Local<'ast>),
     Return(Option<&'ast Expr<'ast>>),
     ControlFlow(ControlFlow),
+    Yeet(Yeet<'ast>),
     Err
 }
 
@@ -380,6 +381,17 @@ impl std::fmt::Display for ControlFlowKind {
             ControlFlowKind::Continue => f.write_str("continue"),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct Yeet<'ast> {
+    pub expr: Option<&'ast Expr<'ast>>,
+    pub origin: YeetOrigin
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum YeetOrigin {
+    Explicit, Implicit
 }
 
 #[derive(Debug)]

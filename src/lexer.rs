@@ -90,6 +90,7 @@ macro_rules! Token {
     [return] => { crate::lexer::Keyword::Return };
     [break] => { crate::lexer::Keyword::Break };
     [continue] => { crate::lexer::Keyword::Continue };
+    [yeet] => { crate::lexer::Keyword::Yeet };
     [template] => { crate::lexer::Keyword::Template };
     [interface] => { crate::lexer::Keyword::Interface };
     [closure] => { crate::lexer::Keyword::Closure };
@@ -1055,6 +1056,8 @@ pub enum Keyword {
     Break,
     #[str = "continue"]
     Continue,
+    #[str = "yeet"]
+    Yeet,
     #[str = "template"]
     Template,
     #[str = "interface"]
