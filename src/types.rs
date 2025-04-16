@@ -160,7 +160,7 @@ impl<'tcx> Const<'tcx> {
         panic!("u64 to big for ulong ???")
     }
 
-    fn literal_to_ty(tcx: TyCtxt<'tcx>, literal: &'tcx ast::Literal) -> Ty<'tcx> {
+    fn literal_to_ty(tcx: TyCtxt<'tcx>, literal: &ast::Literal) -> Ty<'tcx> {
         match literal {
             ast::Literal::String(..) => Ty::new_primitive(tcx, Primitive::String),
             ast::Literal::Char(..) => Ty::new_primitive(tcx, Primitive::Char),
@@ -183,7 +183,7 @@ impl<'tcx> Const<'tcx> {
         }
     }
 
-    pub fn from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, literal: &'tcx ast::Literal) -> Result<Self, String> {
+    pub fn from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, literal: &ast::Literal) -> Result<Self, String> {
         use Primitive::*;
         let inner = match (ty.0, literal) {
             (TyKind::Primitive(String), ast::Literal::String(str)) =>  {
@@ -215,6 +215,11 @@ impl<'tcx> Const<'tcx> {
         };
 
         Ok(tcx.intern(inner))
+    }
+
+    pub fn from_bool(tcx: TyCtxt<'tcx>, value: bool) -> Const<'tcx> {
+        let bool = Ty::new_primitive(tcx, Primitive::Bool);
+        tcx.intern(ConstInner::Value(bool, ValTree::Scalar(Scalar::from_number(value as u8))))
     }
 
     pub fn try_as_usize(&self) -> Option<usize> {

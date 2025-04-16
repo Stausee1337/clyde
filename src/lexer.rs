@@ -1185,13 +1185,13 @@ pub enum BinaryOp {
 pub enum AssignmentOp {
     #[token = "="]
     Assign,
-    #[token = ":="]
-    WalrusAssign,
+    // #[token = ":="]
+    // WalrusAssign,
 
     #[token = "+="]
     PlusAssign,
     #[token = "-="]
-    MinusAssing,
+    MinusAssign,
     #[token = "*="]
     MulAssign,
     #[token = "/="]
@@ -1199,22 +1199,17 @@ pub enum AssignmentOp {
     #[token = "%="]
     ModAssign,
 
-    #[token = "||="]
-    BinaryOrAssign,
-    #[token = "&&="]
-    BinaryAndAssign,
-    #[token = "^="]
-    BinaryXorAssign,
-
     #[token = "<<="]
-    ShlAssign,
+    LeftShiftAssign,
     #[token = ">>="]
-    ShrAssign,
+    RightShiftAssign,
 
     #[token = "&="]
-    AndAssign,
+    BitwiseAndAssign,
     #[token = "|="]
-    OrAssign,
+    BitwiseOrAssign,
+    #[token = "^="]
+    BitwiseXorAssign,
 }
 
 impl AssignmentOp {

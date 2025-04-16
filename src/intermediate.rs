@@ -72,7 +72,8 @@ pub enum Place<'tcx> {
     Index {
         target: Operand<'tcx>,
         idx: Operand<'tcx>
-    }
+    },
+    None
 }
 
 impl<'tcx> Place<'tcx> {
@@ -101,7 +102,8 @@ impl<'tcx> Place<'tcx> {
 pub enum Operand<'tcx> {
     Copy(RegisterId),
     Const(Const<'tcx>),
-    Definition(DefId)
+    Definition(DefId),
+    Uninit // Used for void values
 }
 
 #[derive(Clone, Copy)]
@@ -216,10 +218,133 @@ impl<'tcx> TranslationCtxt<'tcx> {
         let None = block.terminator.get() else {
             panic!("can't emit into terminated block");
         };
+        if let Place::None = stmt.place {
+            let RValue::Call { .. } = stmt.rhs else {
+                return;
+            };
+        }
         block.statements.push(stmt);
     }
 
-    fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
+    fn build_diverge(&mut self, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> (BlockId, BlockId) {
+        match &expr.kind {
+            ast::ExprKind::BinaryOp(logical @ ast::BinaryOp { operator: lexer::BinaryOp::BooleanOr, .. }) => {
+                let (true_block, mut continuation) = self.build_diverge(block, logical.lhs);
+                let false_block = self.create_block();
+
+                let condition;
+                (continuation, condition) = self.expr_as_operand(continuation, logical.rhs);
+                self.diverge(continuation, condition, true_block, false_block, logical.rhs.span);
+
+                (true_block, false_block)
+            }
+            ast::ExprKind::BinaryOp(logical @ ast::BinaryOp { operator: lexer::BinaryOp::BooleanAnd, .. }) => {
+                let (mut continuation, false_block) = self.build_diverge(block, logical.lhs);
+
+                let true_block = self.create_block();
+
+                let condition;
+                (continuation, condition) = self.expr_as_operand(continuation, logical.rhs);
+                self.diverge(continuation, condition, true_block, false_block, logical.rhs.span);
+
+                (true_block, false_block)
+            }
+            _ => {
+                let true_block = self.create_block();
+                let false_block = self.create_block();
+
+                let condition;
+                (block, condition) = self.expr_as_operand(block, expr);
+                self.diverge(block, condition, true_block, false_block, expr.span);
+
+                (true_block, false_block)
+            }
+        }
+    }
+
+    fn cover_ast_stmt(&mut self, mut block: BlockId, stmt: &'tcx ast::Stmt<'tcx>) -> BlockId {
+        match &stmt.kind {
+            ast::StmtKind::Local(local) => {
+                let reg = self.create_register(stmt.node_id, Mutability::Mut);
+                if let Some(init) = local.init {
+                    self.write_expr_into(Place::Register(reg), block, init);
+                }
+                block
+            }
+            ast::StmtKind::Expr(expr) =>
+                self.write_expr_into(Place::None, block, expr),
+            ast::StmtKind::If(if_stmt) => {
+                let (mut then_block, mut else_block) = self.build_diverge(block, if_stmt.condition);
+                then_block = self.cover_ast_block(then_block, &if_stmt.body);
+
+                let join_block;
+                if let Some(else_branch) = if_stmt.else_branch {
+                    join_block = self.create_block();
+                    else_block = self.cover_ast_stmt(else_block, else_branch);
+                    self.goto(else_block, join_block, else_branch.span);
+                } else {
+                    join_block = else_block;
+                }
+
+                self.goto(then_block, join_block, stmt.span);
+                join_block
+            },
+            ast::StmtKind::For(..) | ast::StmtKind::While(..) => block,
+            ast::StmtKind::ControlFlow(..) => block,
+            ast::StmtKind::Return(ret) => {
+                let op;
+                (block, op) = ret.map(|expr| self.expr_as_operand(block, expr))
+                    .unwrap_or_else(|| (block, Operand::Uninit));
+                self.ret(block, op.with_span(stmt.span));
+                block
+            }
+            ast::StmtKind::Yeet(_yeet) => {
+                // TODO: create Ctxt around yeet-able blocks.
+                // Here the place given by the Ctxt will be used to write in the given value
+                // Also this block should be terminated here
+                todo!()
+            }
+            ast::StmtKind::Block(ast_block) =>
+                self.cover_ast_block(block, ast_block),
+            ast::StmtKind::Err => block
+        }
+    }
+
+    fn cover_ast_block(&mut self, mut block: BlockId, ast_block: &ast::Block<'tcx>) -> BlockId {
+        for stmt in ast_block.stmts {
+            block = self.cover_ast_stmt(block, stmt);
+        }
+
+        block
+    }
+
+    fn handle_logical_op(&mut self, dest: Place<'tcx>, block: BlockId, logical: LogicalOp, lhs: &'tcx ast::Expr<'tcx>, rhs: &'tcx ast::Expr<'tcx>) -> BlockId {
+        let (then_block, else_block) = self.build_diverge(block, lhs);
+        let (short_circuit, continuation, constant) = match logical {
+            LogicalOp::Or => (then_block, else_block, true),
+            LogicalOp::And => (else_block, then_block, false),
+        };
+
+        let constant = Const::from_bool(self.tcx, constant);
+        self.emit_into(
+            short_circuit,
+            Statement {
+                place: dest,
+                rhs: RValue::Use(Operand::Const(constant)),
+                span: lhs.span
+            }
+        );
+        
+        let rhs_block = self.write_expr_into(dest, continuation, rhs);
+
+        let join_block = self.create_block();
+        self.goto(short_circuit, join_block, lhs.span);
+        self.goto(rhs_block, join_block, rhs.span);
+
+        join_block
+    }
+
+    fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &ast::Expr<'tcx>) -> BlockId {
         match &expr.kind {
             ast::ExprKind::Name(name) if matches!(name.resolution(), Some(ast::Resolution::Local(..))) => {
                 let place;
@@ -258,7 +383,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     _ => unreachable!()
                 };
 
-                todo!()
+                self.handle_logical_op(dest, block, logical, binary.lhs, binary.rhs)
             }
             ast::ExprKind::BinaryOp(binary) => {
                 let binop = match binary.operator {
@@ -298,6 +423,91 @@ impl<'tcx> TranslationCtxt<'tcx> {
                             lhs, rhs,
                             op: binop
                         },
+                        span: expr.span
+                    }
+                );
+
+                block
+            }
+            ast::ExprKind::AssignOp(assign) => {
+                let dest2;
+                (block, dest2) = self.expr_as_place(block, assign.lhs);
+
+                let binop = match assign.operator {
+                    lexer::AssignmentOp::Assign => {
+                        let rhs;
+                        (block, rhs) = self.expr_as_operand(block, assign.rhs);
+
+                        self.emit_into(
+                            block,
+                            Statement {
+                                place: dest2,
+                                rhs: RValue::Use(rhs),
+                                span: expr.span
+                            }
+                        );
+
+                        self.emit_into(
+                            block,
+                            Statement {
+                                place: dest,
+                                rhs: RValue::Read(dest2),
+                                span: expr.span
+                            }
+                        );
+
+                        return block;
+                    }
+                    lexer::AssignmentOp::MulAssign => BinaryOp::Mul,
+                    lexer::AssignmentOp::DivAssign => BinaryOp::Div,
+                    lexer::AssignmentOp::ModAssign => BinaryOp::Rem,
+
+                    lexer::AssignmentOp::PlusAssign => BinaryOp::Add,
+                    lexer::AssignmentOp::MinusAssign => BinaryOp::Sub,
+
+                    lexer::AssignmentOp::BitwiseXorAssign => BinaryOp::Xor,
+                    lexer::AssignmentOp::BitwiseOrAssign => BinaryOp::Or,
+                    lexer::AssignmentOp::BitwiseAndAssign => BinaryOp::And,
+
+                    lexer::AssignmentOp::LeftShiftAssign => BinaryOp::Shl,
+                    lexer::AssignmentOp::RightShiftAssign => BinaryOp::Shr
+                };
+
+                let rhs;
+                (block, rhs) = self.expr_as_operand(block, assign.rhs);
+
+                let lhs = if let Place::Register(reg) = dest2 {
+                    Operand::Copy(reg)
+                } else {
+                    let reg = self.tmp_register(self.typecheck.associations[&expr.node_id], Mutability::Const);
+                    self.emit_into(
+                        block,
+                        Statement {
+                            place: Place::Register(reg),
+                            rhs: RValue::Read(dest2),
+                            span: Span::NULL
+                        }
+                    );
+                    Operand::Copy(reg)
+                };
+
+                self.emit_into(
+                    block,
+                    Statement {
+                        place: dest2,
+                        rhs: RValue::BinaryOp {
+                            lhs, rhs,
+                            op: binop
+                        },
+                        span: expr.span
+                    }
+                );
+
+                self.emit_into(
+                    block,
+                    Statement {
+                        place: dest,
+                        rhs: RValue::Read(dest2),
                         span: expr.span
                     }
                 );
@@ -443,6 +653,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 block
             }
+            ast::ExprKind::Block(ast_block) => {
+                block = self.cover_ast_block(block, ast_block);
+                // TODO: create YeetCtxt around blocks that aren't bodies and do something with
+                // them here. 
+                // The `dest` param of this function is provided as `Place` to place the result
+                // into
+                block
+            }
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
             ast::ExprKind::Deref(..) => {
                 let place;
@@ -463,7 +681,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         }
     }
 
-    fn as_tmp(&mut self, block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> (BlockId, RegisterId) {
+    fn as_tmp(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> (BlockId, RegisterId) {
         let ty = self.typecheck.associations[&expr.node_id];
         let reg = self.tmp_register(ty, Mutability::Const);
         let dest = Place::Register(reg);
@@ -471,7 +689,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         (block, reg)
     }
 
-    fn try_expr_as_place(&mut self, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> Option<(BlockId, Place<'tcx>)> {
+    fn try_expr_as_place(&mut self, mut block: BlockId, expr: &ast::Expr<'tcx>) -> Option<(BlockId, Place<'tcx>)> {
         let res = match &expr.kind {
             ast::ExprKind::Name(name) if matches!(name.resolution(), Some(ast::Resolution::Local(..))) => {
                 let Some(ast::Resolution::Local(local)) = name.resolution() else {
@@ -511,14 +729,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
         Some(res)
     }
 
-    fn expr_as_place(&mut self, block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> (BlockId, Place<'tcx>) {
+    fn expr_as_place(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> (BlockId, Place<'tcx>) {
         self.try_expr_as_place(block, expr).expect("expr has a place")
     }
 
     fn expr_as_operand(
         &mut self,
         mut block: BlockId,
-        expr: &'tcx ast::Expr<'tcx>,
+        expr: &ast::Expr<'tcx>,
     ) -> (BlockId, Operand<'tcx>) {
         match &expr.kind {
             ast::ExprKind::Literal(literal) => {
@@ -551,10 +769,34 @@ impl<'tcx> TranslationCtxt<'tcx> {
         }
     }
 
-    fn ret(&mut self,  block: BlockId, op: SpanOperand<'tcx>) {
+    fn ret(&mut self, block: BlockId, op: SpanOperand<'tcx>) {
         let terminator = Terminator {
             kind: TerminatorKind::Return { value: op.operand },
             span: op.span
+        };
+        let Err(..) = self.blocks[block].terminator.set(terminator) else {
+            panic!("terminating terminated block");
+        };
+    }
+
+    fn diverge(&mut self, block: BlockId, condition: Operand<'tcx>, true_dest: BlockId, false_dest: BlockId, span: Span) {
+        let terminator = Terminator {
+            kind: TerminatorKind::Diverge {
+                condition,
+                true_target: true_dest,
+                false_target: false_dest
+            },
+            span
+        };
+        let Err(..) = self.blocks[block].terminator.set(terminator) else {
+            panic!("terminating terminated block");
+        };
+    }
+
+    fn goto(&mut self, block: BlockId, dest: BlockId, span: Span) {
+        let terminator = Terminator {
+            kind: TerminatorKind::Goto(dest),
+            span
         };
         let Err(..) = self.blocks[block].terminator.set(terminator) else {
             panic!("terminating terminated block");
@@ -579,8 +821,9 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
 
     match tcx.def_kind(def_id) {
         DefinitionKind::Function => {
-            // let start = ctxt.create_block();
-            todo!()
+            let start = ctxt.create_block();
+            // TODO: enter block-body scope
+            ctxt.write_expr_into(Place::None, start, body.body);
         }
         DefinitionKind::NestedConst | DefinitionKind::Const |  DefinitionKind::Static => {
             let result;
