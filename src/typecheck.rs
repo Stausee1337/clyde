@@ -90,11 +90,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         None
     }
 
-    fn enter_block_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, do_work: F) -> T {
+    fn enter_block_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, do_work: F) -> (BlockCtxt<'tcx>, T) {
         self.block_stack.push(BlockCtxt::default());
         let rv = do_work(self);
-        let _ctxt = self.block_stack.pop().unwrap();
-        rv 
+        let ctxt = self.block_stack.pop().unwrap();
+        (ctxt, rv)
     }
 
     fn block_ctxt(&mut self) -> Option<&mut BlockCtxt<'tcx>> {
@@ -394,9 +394,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         let ty = if let Diverges::Maybe = self.diverges.get() {
-            self.block_ctxt()
-                .and_then(|ctxt| ctxt.result_ty)
-                .unwrap_or_else(|| Ty::new_primitive(self.tcx, types::Primitive::Void))
+            Ty::new_primitive(self.tcx, types::Primitive::Void)
         } else {
             Ty::new_never(self.tcx)
         };
@@ -1112,9 +1110,17 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_name(name),
             ast::ExprKind::Block(block) => {
                 if !is_body {
-                    self.enter_block_ctxt(|this| {
-                        this.check_block(block, expected.into())
-                    })
+                    let (ctxt, ty) = self.enter_block_ctxt(|this| {
+                        this.check_block(block, Expectation::None)
+                    });
+
+                    if let Some(result_ty) = ctxt.result_ty {
+                        self.maybe_emit_type_error(ty, result_ty, expr.span);
+                        self.diverges.set(Diverges::Maybe);
+                        result_ty
+                    } else {
+                        ty
+                    }
                 } else {
                     self.check_block(block, expected.into())
                 }
