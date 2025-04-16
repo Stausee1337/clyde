@@ -361,6 +361,22 @@ impl<'tcx> Ty<'tcx> {
         return found;
     }
 
+    /// Searches slice types for bendable types (Never, Err)
+    /// while preferring Err and rejecting Never
+    pub fn with_non_bendable(types: &[Ty<'tcx>]) -> Option<Ty<'tcx>> {
+        let mut never = None;
+        for ty in types {
+            if let Ty(TyKind::Err) = ty {
+                return Some(*ty);
+            } else if let Ty(TyKind::Never) = ty {
+                never = Some(*ty);
+                continue;
+            }
+            return Some(*ty);
+        }
+        never
+    }
+
     pub fn is_incomplete(&self) -> bool {
         match self {
             Ty(TyKind::Array(_, Const(ConstInner::Placeholder))) => true,

@@ -151,7 +151,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let mut body_ty = self.check_block(&if_stmt.body, Expectation::None);
         let body_diverges = self.diverges.replace(Diverges::Maybe);
 
-
         if let Some(else_branch) = if_stmt.else_branch {
             let else_ty = self.check_stmt(else_branch);
             let else_diverges = self.diverges.get();
@@ -361,6 +360,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     },
                     (Some(..), Some(..)) => (), // expression already typechecked
                 }
+                return Ty::new_never(self.tcx);
             }
             ast::StmtKind::Err => (),
         }
@@ -389,8 +389,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             if let Ty(types::TyKind::Never) = self.check_stmt(stmt) {
                 self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::Always(stmt.span)));
             }
-
-            self.diverges.set(std::cmp::max(self.diverges.get(), prev_diverge));
+            let current_diverge = self.diverges.get();
+            self.diverges.set(std::cmp::max(current_diverge, prev_diverge));
         }
 
         let ty = if let Diverges::Maybe = self.diverges.get() {
@@ -1271,7 +1271,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 .push(self.diagnostics());
             return Ty::new_error(self.tcx);
         }
-        found
+        Ty::with_non_bendable(&[found, expected]).unwrap()
     }
     
     fn results(self) -> TypecheckResults<'tcx> {
