@@ -1814,20 +1814,34 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_global_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident, constant: bool) -> &'ast ast::Item<'ast> {
-        println!("parse_global_item: {ty:#?} {:?} {:?}", ident.symbol, self.cursor.current());
-        todo!()
+        let mut init = None;
+        if self.bump_if(Token![=]).is_some() {
+            init = Some(self.parse_expr(Restrictions::empty()));
+        }
+        TRY!(self.expect_one(Token![;]));
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        self.make_node(
+            ast::ItemKind::GlobalVar(ast::GlobalVar {
+                ident,
+                ty,
+                init,
+                constant
+            }),
+            Span::interpolate(ty.span, end)
+        )
     }
 
     fn parse_item(&mut self) -> &'ast ast::Item<'ast> {
         if let Some(keyword) = self.match_on::<Keyword>() {
-            return match keyword {
+            match keyword {
                 Token![struct] =>
-                    self.parse_struct_item(),
+                    return self.parse_struct_item(),
                 Token![enum] =>
-                    self.parse_enum_item(),
-                _ =>
-                    self.unexpected("`struct`, `enum`, <type>")
-            };
+                    return self.parse_enum_item(),
+                _ => ()
+            }
         }
 
         self.with_owner(|this| {
