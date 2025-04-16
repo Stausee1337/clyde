@@ -412,15 +412,12 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                 self.visit_name(name),
             ast::ExprKind::TypeInit(ty_init) => {
                 node_visitor::visit_slice(ty_init.initializers, |field| self.visit_type_init(field));
-                let Some(ty) = ty_init.ty else {
-                    return;
-                };
-                match &ty.kind {
+                match &ty_init.ty.kind {
                     ast::TypeExprKind::Name(name) => {
                         self.resolve(NameSpace::Type, name, true);
                     },
                     ast::TypeExprKind::Array(array) => {
-                        self.visit_ty_expr(ty);
+                        self.visit_ty_expr(ty_init.ty);
                         match array.cap {
                             ast::ArrayCapacity::Discrete(ref expr) =>
                                 self.visit_nested_const(expr),
@@ -431,7 +428,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                         self.visit_ty_expr(ty),
                     ast::TypeExprKind::Generic(..) => {
                         Message::fatal("generic types are not supported yet")
-                            .at(ty.span)
+                            .at(ty_init.ty.span)
                             .push(self.resolution.diagnostics);
                     }
                     ast::TypeExprKind::Ref(..) =>

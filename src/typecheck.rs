@@ -859,15 +859,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_init(
-        &mut self, ty_init: &'tcx ast::TypeInit<'tcx>, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
-        let ty = ty_init.ty.map(|expr| self.lowering_ctxt.lower_ty(expr));
+        &mut self, ty_init: &'tcx ast::TypeInit<'tcx>, _expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
+        let ty = self.lowering_ctxt.lower_ty(ty_init.ty);
         
-        let Some(ty) = ty.or(expected) else {
+        /*let Some(ty) = ty.or(expected) else {
             Message::error("can't infer type of anonymous init expresssion")
                 .at(span)
                 .push(self.diagnostics());
             return Ty::new_error(self.tcx);
-        };
+        };*/
 
         use types::TyKind;
         match ty {

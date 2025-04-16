@@ -462,7 +462,7 @@ pub struct Subscript<'ast> {
 
 #[derive(Debug)]
 pub struct TypeInit<'ast> {
-    pub ty: Option<&'ast TypeExpr<'ast>>,
+    pub ty: &'ast TypeExpr<'ast>,
     pub initializers: &'ast [TypeInitKind<'ast>]
 }
 

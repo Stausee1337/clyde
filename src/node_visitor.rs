@@ -172,7 +172,7 @@ pub fn noop_visit_expr_kind<T: Visitor>(expr_kind: &ExprKind, vis: &mut T) {
             visit_slice(call.generic_args, |arg| vis.visit_generic_argument(arg));
         }
         ExprKind::TypeInit(init) => {
-            visit_option(init.ty, |ty| vis.visit_ty_expr(ty));
+            vis.visit_ty_expr(init.ty);
             visit_slice(init.initializers, |init| vis.visit_type_init(init));
         }
         ExprKind::Subscript(subscript) => {

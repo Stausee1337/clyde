@@ -16,7 +16,6 @@ bitflags::bitflags! {
 #[derive(Clone, Copy)]
 struct Restrictions: u32 {
     const NO_CURLY_BLOCKS = 0x1;
-    const NO_CODE_BLOCKS  = 0x2;
 }
 }
 
@@ -908,7 +907,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn parse_type_init_body(
         &mut self,
-        ty_expr: Option<&'ast ast::TypeExpr<'ast>>) -> &'ast ast::Expr<'ast> {
+        ty_expr: &'ast ast::TypeExpr<'ast>) -> &'ast ast::Expr<'ast> {
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -988,7 +987,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     ParseTry::Never => (),
                 }
                 if let Some(ty_expr) = ty_expr {
-                    return self.parse_type_init_body(Some(ty_expr));
+                    return self.parse_type_init_body(ty_expr);
                 }
             }
 
@@ -1039,15 +1038,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 ast::ExprKind::Tuple(self.alloc_slice(&tuple_args))
             },
             Punctuator::LCurly => {
-                if restrictions.contains(Restrictions::NO_CODE_BLOCKS) {
-                    return self.parse_type_init_body(None);
-                }
                 let block = self.parse_block(true);
                 end = block.span;
                 ast::ExprKind::Block(block)
             }
             _ => {
-                println!("{:?}", self.cursor.current());
                 return self.unexpected(UNEXPECTED_NONPRIMARY);
             }
         };
@@ -1345,7 +1340,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             let mut init = None;
             if this.bump_if(Token![=]).is_some() {
-                let expr = this.parse_expr(Restrictions::NO_CODE_BLOCKS);
+                let expr = this.parse_expr(Restrictions::empty());
                 init = Some(expr);
                 end = expr.span;
             }
@@ -1393,12 +1388,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let mut init = None;
         if self.bump_if(Token![=]).is_some() {
-            let restrictions = if let Some(..) = ty_expr {
-                Restrictions::NO_CODE_BLOCKS
-            } else {
-                Restrictions::empty()
-            };
-            let expr = self.parse_expr(restrictions);
+            let expr = self.parse_expr(Restrictions::empty());
             init = Some(expr);
             end = expr.span;
         }
@@ -1555,29 +1545,25 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_stmt(&mut self, allow_implicit_yeet: impl FnOnce(&mut Self) -> bool) -> &'ast ast::Stmt<'ast> {
-        const UNEXPECTED_STMT: &'static str = "var, if, return, for, while, break, continue, yeet, <ident>, <expr>";
-
         // if we've got semicolons in the stream at this point, its because the last statement
         // likely errored, so don't warn here as they probably aren't actually redundant
         self.remove_redundant_semis(false);
 
         if let Some(keyword) = self.match_on::<Keyword>() {
-            return match keyword {
+            match keyword {
                 Token![var] =>
-                    self.parse_variable_declaration(None),
+                    return self.parse_variable_declaration(None),
                 Token![if] =>
-                    self.parse_if_stmt(),
+                    return self.parse_if_stmt(),
                 Token![return] | Token![yeet] => 
-                    self.parse_return_stmt(keyword),
+                    return self.parse_return_stmt(keyword),
                 Token![for] => 
-                    self.parse_for_loop(),
+                    return self.parse_for_loop(),
                 Token![while] => 
-                    self.parse_while_loop(),
+                    return self.parse_while_loop(),
                 Token![break] | Token![continue] => 
-                    self.parse_control_flow(keyword),
-                _ => {
-                    self.unexpected(UNEXPECTED_STMT)
-                }
+                    return self.parse_control_flow(keyword),
+                _ => ()
             };
         }
 
