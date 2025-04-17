@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::{ast::{self, DefinitionKind, NodeId, OutsideLoopScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, interface, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
+use crate::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, interface, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -396,7 +396,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                 .at(control_flow.span)
                 .push(self.resolution.diagnostics);
 
-            control_flow.destination.set(Err(OutsideLoopScope)).unwrap();
+            control_flow.destination.set(Err(OutsideScope)).unwrap();
             return;
         };
         control_flow.destination.set(Ok(*owner)).unwrap();

@@ -1471,7 +1471,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 self.make_node(
                     ast::StmtKind::Yeet(ast::Yeet {
                         expr,
-                        origin: ast::YeetOrigin::Explicit
+                        origin: ast::YeetOrigin::Explicit,
+                        owner: OnceCell::new()
                     }),
                     Span::interpolate(start, end)
                 ),
@@ -1585,7 +1586,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             end = expr.span;
             ast::StmtKind::Yeet(ast::Yeet {
                 expr: Some(expr),
-                origin: ast::YeetOrigin::Implicit
+                origin: ast::YeetOrigin::Implicit,
+                owner: OnceCell::new()
             })
         } else if !matches!(expr.kind, ast::ExprKind::Block(..)) {
             TRY!(self.expect_one(Token![;]));

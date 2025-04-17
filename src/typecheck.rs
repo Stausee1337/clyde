@@ -38,9 +38,19 @@ struct LoopCtxt {
     may_break: bool
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct BlockCtxt<'tcx> {
+    owner: NodeId,
     result_ty: Option<Ty<'tcx>>
+}
+
+impl<'tcx> BlockCtxt<'tcx> {
+    fn new(node_id: NodeId) -> Self {
+        Self {
+            owner: node_id,
+            result_ty: None
+        }
+    }
 }
 
 struct TypecheckCtxt<'tcx> {
@@ -90,8 +100,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         None
     }
 
-    fn enter_block_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, do_work: F) -> (BlockCtxt<'tcx>, T) {
-        self.block_stack.push(BlockCtxt::default());
+    fn enter_block_ctxt<F: FnOnce(&mut Self) -> T, T>(&mut self, node_id: NodeId, do_work: F) -> (BlockCtxt<'tcx>, T) {
+        self.block_stack.push(BlockCtxt::new(node_id));
         let rv = do_work(self);
         let ctxt = self.block_stack.pop().unwrap();
         (ctxt, rv)
@@ -333,12 +343,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             ast::StmtKind::Yeet(yeet) => {
                 let Some(block_ctxt) = self.block_ctxt() else {
+                    yeet.owner.set(Err(ast::OutsideScope)).unwrap();
                     Message::error("`yeet` found outside of block expression")
                         .at(stmt.span)
-                        .note("use return ...; for producing values within functions")
+                        .note("use return ...; to return a value from a function")
                         .push(self.diagnostics());
                     return Ty::new_error(self.tcx);
                 };
+                // FIXME: resolve yeet expressions at resolve pass like we should
+                yeet.owner.set(Ok(block_ctxt.owner)).unwrap();
 
                 let expected = block_ctxt.result_ty;
                 let expectation = expected.into();
@@ -1110,7 +1123,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 self.check_expr_name(name),
             ast::ExprKind::Block(block) => {
                 if !is_body {
-                    let (ctxt, ty) = self.enter_block_ctxt(|this| {
+                    let (ctxt, ty) = self.enter_block_ctxt(expr.node_id, |this| {
                         this.check_block(block, Expectation::None)
                     });
 

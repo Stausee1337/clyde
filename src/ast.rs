@@ -363,12 +363,12 @@ pub struct If<'ast> {
 }
 
 #[derive(Debug)]
-pub struct OutsideLoopScope;
+pub struct OutsideScope;
 
 #[derive(Debug)]
 pub struct ControlFlow {
     pub kind: ControlFlowKind,
-    pub destination: OnceCell<Result<NodeId, OutsideLoopScope>>,
+    pub destination: OnceCell<Result<NodeId, OutsideScope>>,
     pub span: Span,
 }
 
@@ -398,7 +398,8 @@ impl std::fmt::Display for ControlFlowKind {
 #[derive(Debug)]
 pub struct Yeet<'ast> {
     pub expr: Option<&'ast Expr<'ast>>,
-    pub origin: YeetOrigin
+    pub origin: YeetOrigin,
+    pub owner: OnceCell<Result<NodeId, OutsideScope>>
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -1,5 +1,5 @@
 
-use std::{cell::OnceCell, collections::HashMap, fmt::Write};
+use std::{cell::OnceCell, collections::{HashMap, HashSet}, fmt::Write};
 
 use index_vec::{Idx, IndexVec};
 
@@ -259,6 +259,23 @@ pub enum LogicalOp {
     And, Or
 }
 
+enum ScopeKind<'tcx> {
+    Loop {
+        continue_target: BlockId,
+        break_target: BlockId,
+    },
+    BlockExpr {
+        result_dest: OnceCell<Place<'tcx>>,
+        join_block: OnceCell<BlockId>
+    },
+    Body
+}
+
+struct BlockScope<'tcx> {
+    owner: NodeId,
+    scope: ScopeKind<'tcx>
+}
+
 struct TranslationCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
     def: DefId,
@@ -266,8 +283,10 @@ struct TranslationCtxt<'tcx> {
     typecheck: &'tcx TypecheckResults<'tcx>,
     registers: IndexVec<RegisterId, Register<'tcx>>,
     register_lookup: HashMap<ast::NodeId, RegisterId, ahash::RandomState>,
-    blocks: IndexVec<BlockId, BasicBlock<'tcx>>
+    blocks: IndexVec<BlockId, BasicBlock<'tcx>>,
+    scope_stack: Vec<BlockScope<'tcx>>
 }
+
 
 impl<'tcx> TranslationCtxt<'tcx> {
     fn new(
@@ -282,7 +301,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
             typecheck,
             registers: IndexVec::with_capacity(params.len()),
             register_lookup: Default::default(),
-            blocks: IndexVec::new()
+            blocks: IndexVec::new(),
+            scope_stack: vec![],
         };
 
         for param in params {
@@ -320,6 +340,25 @@ impl<'tcx> TranslationCtxt<'tcx> {
             };
         }
         block.statements.push(stmt);
+    }
+
+    fn enter_block_scope<F: FnOnce(&mut Self) -> R, R>(&mut self, owner: NodeId, scope: ScopeKind<'tcx>, f: F) -> R {
+        self.scope_stack.push(BlockScope {
+            owner,
+            scope
+        });
+        let rv = f(self);
+        let _scope = self.scope_stack.pop().unwrap();
+        rv
+    }
+
+    fn find_scope(&mut self, owner: NodeId) -> Option<&mut ScopeKind<'tcx>> {
+        for scope in self.scope_stack.iter_mut().rev() {
+            if scope.owner == owner {
+                return Some(&mut scope.scope);
+            }
+        }
+        None
     }
 
     fn build_diverge(&mut self, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> (BlockId, BlockId) {
@@ -391,8 +430,40 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 }
                 join_block
             },
-            ast::StmtKind::For(..) | ast::StmtKind::While(..) => block,
-            ast::StmtKind::ControlFlow(..) => block,
+            ast::StmtKind::While(while_loop) => {
+                let condition_block = self.create_block();
+                self.goto(block, condition_block, while_loop.condition.span);
+
+                let (mut then_block, else_block) = self.build_diverge(condition_block, while_loop.condition);
+                then_block = self.enter_block_scope(
+                    stmt.node_id,
+                    ScopeKind::Loop { continue_target: then_block, break_target: else_block },
+                    |this| this.cover_ast_block(then_block, &while_loop.body)
+                );
+                if !self.is_terminated(then_block) {
+                    self.goto(then_block, condition_block, stmt.span);
+                }
+
+                else_block
+            },
+            ast::StmtKind::For(..) => block,
+            ast::StmtKind::ControlFlow(control_flow) => {
+                if let Ok(dest) = control_flow.destination.get().unwrap() {
+                    let Some(ScopeKind::Loop { break_target, continue_target }) = self.find_scope(*dest) else {
+                        panic!("expected loop scope");
+                    };
+                    let (break_target, continue_target) = (*break_target, *continue_target);
+
+                    match control_flow.kind {
+                        ast::ControlFlowKind::Break => 
+                            self.goto(block, break_target, stmt.span),
+                        ast::ControlFlowKind::Continue =>
+                            self.goto(block, continue_target, stmt.span),
+                    }
+                }
+
+                block
+            },
             ast::StmtKind::Return(ret) => {
                 let op;
                 (block, op) = ret.map(|expr| self.expr_as_operand(block, expr))
@@ -400,11 +471,39 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 self.ret(block, op.with_span(stmt.span));
                 block
             }
-            ast::StmtKind::Yeet(_yeet) => {
-                // TODO: create Ctxt around yeet-able blocks.
-                // Here the place given by the Ctxt will be used to write in the given value
-                // Also this block should be terminated here
-                todo!()
+            ast::StmtKind::Yeet(yeet) => {
+                if let Ok(owner) = yeet.owner.get().unwrap() {
+                    let Some(ScopeKind::BlockExpr { join_block, result_dest }) = self.find_scope(*owner) else {
+                        panic!("expected block scope")
+                    };
+
+                    let reg = if yeet.expr.is_some() {
+                        result_dest.get().map(|p| *p)
+                    } else {
+                        None
+                    };
+
+                    let dest = if let Some(expr) = yeet.expr {
+                        let dest = reg.unwrap_or_else(|| {
+                            let ty = self.typecheck.associations[&expr.node_id];
+                            Place::Register(self.tmp_register(ty, Mutability::Const))
+                        });
+                        self.write_expr_into(dest, block, expr);
+
+                        Some(dest)
+                    } else {
+                        None
+                    };
+
+                    if let Some(dest) = dest {
+                        let Some(ScopeKind::BlockExpr { result_dest, .. }) = self.find_scope(*owner) else {
+                            unreachable!()
+                        };
+                        let _ = result_dest.set(dest);
+                    }
+                }
+
+                block
             }
             ast::StmtKind::Block(ast_block) =>
                 self.cover_ast_block(block, ast_block),
@@ -415,6 +514,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
     fn cover_ast_block(&mut self, mut block: BlockId, ast_block: &ast::Block<'tcx>) -> BlockId {
         for stmt in ast_block.stmts {
             block = self.cover_ast_stmt(block, stmt);
+            if let ast::StmtKind::ControlFlow(..) | ast::StmtKind::Return(..) | ast::StmtKind::Yeet(..) = stmt.kind {
+                break; // don't emit after diverging statement, even if there is code, it's
+                       // unreachable
+            }
         }
 
         block
@@ -756,11 +859,22 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 block
             }
             ast::ExprKind::Block(ast_block) => {
-                block = self.cover_ast_block(block, ast_block);
-                // TODO: create YeetCtxt around blocks that aren't bodies and do something with
-                // them here. 
-                // The `dest` param of this function is provided as `Place` to place the result
-                // into
+                if let Some(ScopeKind::Body) = self.find_scope(expr.node_id) {
+                    return self.cover_ast_block(block, ast_block);
+                }
+                let result_dest = if let Place::None = dest {
+                    OnceCell::new()
+                } else {
+                    let cell = OnceCell::new();
+                    let _ = cell.set(dest);
+                    cell
+                };
+
+                block = self.enter_block_scope(
+                    expr.node_id,
+                    ScopeKind::BlockExpr { join_block: OnceCell::new(), result_dest },
+                    |this| this.cover_ast_block(block, ast_block)
+                );
                 block
             }
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
@@ -956,11 +1070,15 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
     let result_ty = match tcx.def_kind(def_id) {
         DefinitionKind::Function => {
             let start = ctxt.create_block();
-            // TODO: enter block-body scope
-            let block = ctxt.write_expr_into(Place::None, start, body.body);
+            let block = ctxt.enter_block_scope(
+                body.body.node_id,
+                ScopeKind::Body,
+                |ctxt| ctxt.write_expr_into(Place::None, start, body.body)
+            );
             if !ctxt.is_terminated(block) {
                 ctxt.ret(block, Operand::Uninit.with_span(Span::NULL));
             }
+            println!("block {:?}", block);
 
             let sig = tcx.fn_sig(def_id);
             sig.returns
@@ -1019,9 +1137,9 @@ fn display_bb(block: BlockId, bb: &BasicBlock, out: &mut dyn Write) -> Result<()
         write!(out, "{INDENT}{INDENT}{stmt:?};\n")?;
     }
 
-    let terminator = bb.terminator.get().expect("terminated basic block");
-
-    write!(out, "{INDENT}{INDENT}{terminator:?};\n")?;
+    if let Some(terminator) = bb.terminator.get() {
+        write!(out, "{INDENT}{INDENT}{terminator:?};\n")?;
+    }
 
     write!(out, "{INDENT}}}\n")?;
 
