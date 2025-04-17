@@ -865,9 +865,23 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 };
 
                 // FIXME: remove duplication with Place and Temporaray handling
-                // TODO: I think this is the point we should build a copy if the register is mutable
+                
+                let mut reg = self.register_lookup[&local];
+                let info = &self.registers[reg];
+                if info.mutability == Mutability::Mut {
+                    let tmp = self.tmp_register(info.ty, Mutability::Const);
+                    self.emit_into(
+                        block,
+                        Statement {
+                            place: Place::Register(tmp),
+                            rhs: RValue::Read(Place::Register(reg)),
+                            span: Span::NULL
+                        }
+                    );
+                    reg = tmp;
+                }
 
-                (block, Operand::Copy(self.register_lookup[&local]))
+                (block, Operand::Copy(reg))
             }
             _ => {
                 let register;
