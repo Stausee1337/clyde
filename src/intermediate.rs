@@ -375,14 +375,20 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 let join_block;
                 if let Some(else_branch) = if_stmt.else_branch {
-                    join_block = self.create_block();
                     else_block = self.cover_ast_stmt(else_block, else_branch);
-                    self.goto(else_block, join_block, else_branch.span);
+                    if !self.is_terminated(else_block) {
+                        join_block = self.create_block();
+                        self.goto(else_block, join_block, else_branch.span);
+                    } else {
+                        join_block = else_block;
+                    }
                 } else {
                     join_block = else_block;
                 }
 
-                self.goto(then_block, join_block, stmt.span);
+                if !self.is_terminated(then_block) {
+                    self.goto(then_block, join_block, stmt.span);
+                }
                 join_block
             },
             ast::StmtKind::For(..) | ast::StmtKind::While(..) => block,
