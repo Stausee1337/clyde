@@ -63,6 +63,7 @@ struct TypecheckCtxt<'tcx> {
     variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
+    locals: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
 }
 
 impl<'tcx> TypecheckCtxt<'tcx> {
@@ -76,7 +77,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             field_indices: Default::default(),
             variant_translations: Default::default(),
             lowering_ctxt: LoweringCtxt::new(tcx),
-            associations: Default::default()
+            associations: Default::default(),
+            locals: Default::default()
         }
     }
 
@@ -115,6 +117,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         if let Some(prev) = self.associations.insert(node_id, ty) {
             assert_eq!(ty, prev, "tried to assoicate {node_id:?} twice with different types; First {prev:?} then {ty:?}");
             eprintln!("[WARNING] unwanted attempt to associate {node_id:?} with {ty:?} twice")
+        }
+    }
+
+    fn ty_local(&mut self, node_id: NodeId, ty: Ty<'tcx>) {
+        if let Some(prev) = self.locals.insert(node_id, ty) {
+            assert_eq!(ty, prev, "tried to create local {node_id:?} twice with different types; First {prev:?} then {ty:?}");
+            eprintln!("[WARNING] unwanted attempt to create local {node_id:?} with {ty:?} twice")
         }
     }
 
@@ -210,7 +219,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         Ty::new_never(self.tcx)
     }
 
-    fn check_stmt_for(&mut self, for_loop: &'tcx ast::For<'tcx>, node_id: NodeId) { 
+    fn check_stmt_for(&mut self, for_loop: &'tcx ast::For<'tcx>, node_id: NodeId) -> Ty<'tcx> {
 
         let iter_ty  = self.check_expr_with_expectation(for_loop.iterator, Expectation::None);
 
@@ -237,7 +246,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
         };
 
-        self.ty_assoc(node_id, base);
+        self.ty_local(node_id, base);
 
         let ctxt = LoopCtxt {
             owner: node_id, may_break: false
@@ -249,9 +258,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         });
 
         self.diverges.set(std::cmp::max(iter_diverges, Diverges::Maybe));
+
+        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
+        void
     }
 
-    fn check_stmt_local(&mut self, stmt: &'tcx ast::Stmt<'tcx>, local: &'tcx ast::Local<'tcx>) {
+    fn check_stmt_local(&mut self, stmt: &'tcx ast::Stmt<'tcx>, local: &'tcx ast::Local<'tcx>) -> Ty<'tcx> {
         let expected = local.ty.map(|ty| self.lowering_ctxt.lower_ty(&ty));
 
         if let Some(expected) = expected {
@@ -263,28 +275,23 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
         }
 
+        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
         if expected.is_none() && local.init.is_none() {
             Message::error("type-anonymous variable declarations require an init expresssion")
                 .at(stmt.span)
                 .push(self.diagnostics());
-            self.ty_assoc(stmt.node_id, Ty::new_error(self.tcx));
-            return;
+            self.ty_local(stmt.node_id, Ty::new_error(self.tcx));
+            void
         } else if let Some(expr) = local.init {
             let ty = self.check_expr_with_expectation(expr, expected.into());
+            self.ty_local(stmt.node_id, expected.unwrap_or(ty));
             if let Ty(types::TyKind::Never) = ty {
-                self.ty_assoc(stmt.node_id, expected.unwrap_or(ty)); 
-                // TODO: figure out what really to do with that
-                // maybe some sort of a `Bendable` TyKind, for this
-                // specific situations. For now its `Never`
-                // eg. var test = todo();
-                self.diverges.set(Diverges::Always(stmt.span));
-                return;
+                return ty;
             }
-            self.ty_assoc(stmt.node_id, expected.unwrap_or(ty));
+            void
         } else if let Some(expected) = expected {
-            // TODO: check if TyKind can acutally be instantiated like this:
-            // Type var; So to speak, checking if a type is fully defaultable
-            self.ty_assoc(stmt.node_id, expected);
+            self.ty_local(stmt.node_id, expected);
+            void
         } else {
             unreachable!()
         }
@@ -303,9 +310,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::StmtKind::While(while_loop) =>
                 return self.check_stmt_while(while_loop, stmt.node_id),
             ast::StmtKind::For(for_loop) =>
-                self.check_stmt_for(for_loop, stmt.node_id),
+                return self.check_stmt_for(for_loop, stmt.node_id),
             ast::StmtKind::Local(local) =>
-                self.check_stmt_local(stmt, local),
+                return self.check_stmt_local(stmt, local),
             ast::StmtKind::Block(block) =>
                 return self.check_block(block, Expectation::None),
             ast::StmtKind::Return(expr) => {
@@ -319,15 +326,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let ty = expr
                     .as_ref()
                     .map(|expr| self.check_expr_with_expectation(expr, Expectation::Coerce(return_ty)));
-                let ty = match ty {
-                    Some(ty) => ty,
-                    None => {
-                        let ty = Ty::new_primitive(self.tcx, types::Primitive::Void);
-                        self.maybe_emit_type_error(ty, return_ty, stmt.span);
-                        ty
-                    }
-                };
-                self.ty_assoc(stmt.node_id, ty);
+                if let None = ty {
+                    let ty = Ty::new_primitive(self.tcx, types::Primitive::Void);
+                    self.maybe_emit_type_error(ty, return_ty, stmt.span);
+                }
                 return Ty::new_never(self.tcx);
             }
             ast::StmtKind::ControlFlow(flow) => {
@@ -399,7 +401,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             self.maybe_warn_unreachable(stmt.span, "statement");
 
             let prev_diverge = self.diverges.replace(Diverges::Maybe);
-            if let Ty(types::TyKind::Never) = self.check_stmt(stmt) {
+            let ty = self.check_stmt(stmt);
+            self.ty_assoc(stmt.node_id, ty);
+
+            if let Ty(types::TyKind::Never) = ty {
                 self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::Always(stmt.span)));
             }
             let current_diverge = self.diverges.get();
@@ -511,7 +516,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             if int.size() >= lhs_int.size() {
                 continue;
             }
-            let int_signed = unsafe { int.signed().unwrap_unchecked() };
+            let int_signed = int.signed().unwrap();
             if !lhs_signed && int_signed {
                 continue;
             }
@@ -560,8 +565,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     let lhs_ty = self.check_expr_with_expectation(lhs, expectation);
                     self.check_expr_with_expectation(rhs, Expectation::Guide(lhs_ty));
                 }
-                let lhs_ty = unsafe { *self.associations.get(&binop.lhs.node_id).unwrap_unchecked() };
-                let rhs_ty = unsafe { *self.associations.get(&binop.rhs.node_id).unwrap_unchecked() };
+                let lhs_ty = self.associations[&binop.lhs.node_id];
+                let rhs_ty = self.associations[&binop.rhs.node_id];
                 let Some(ret_ty) = self.check_op_between(binop.operator, lhs_ty, rhs_ty) else {
                     Message::error(
                         format!("operation {} is not defined between {lhs_ty} and {rhs_ty}", binop.operator))
@@ -597,8 +602,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     let lhs_ty = self.check_expr_with_expectation(lhs, expectation);
                     self.check_expr_with_expectation(rhs, Expectation::Guide(lhs_ty));
                 }
-                let lhs_ty = unsafe { *self.associations.get(&binop.lhs.node_id).unwrap_unchecked() };
-                let rhs_ty = unsafe { *self.associations.get(&binop.rhs.node_id).unwrap_unchecked() };
+                let lhs_ty = self.associations[&binop.lhs.node_id];
+                let rhs_ty = self.associations[&binop.rhs.node_id];
                 let Some(ret_ty) = self.check_op_between(binop.operator, lhs_ty, rhs_ty) else {
                     Message::error(
                         format!("operation {} is not defined between {lhs_ty} and {rhs_ty}", binop.operator))
@@ -1168,8 +1173,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     Primitive::{SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint, Char}
                 };
 
-                let start_ty = *self.associations.get(&range.start.node_id).unwrap();
-                let end_ty = *self.associations.get(&range.end.node_id).unwrap();
+                let start_ty = self.associations[&range.start.node_id];
+                let end_ty = self.associations[&range.end.node_id];
                 let mut has_error = false;
                 if start_ty != end_ty {
                     self.maybe_emit_type_error(end_ty, start_ty, expr.span);
@@ -1217,7 +1222,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         };
         match resolution {
             ast::Resolution::Local(node_id) => 
-                *self.associations.get(node_id)
+                *self.locals.get(node_id)
                     .expect("check_expr_name(...) unknown Local(NodeId)"),
             ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Const | DefinitionKind::Static) =>
                 self.tcx.type_of(*def_id),
@@ -1297,7 +1302,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         TypecheckResults {
             field_indices: self.field_indices,
             variant_translations: self.variant_translations,
-            associations: self.associations
+            associations: self.associations,
+            locals: self.locals
         }
     }
 }
@@ -1438,6 +1444,7 @@ pub struct TypecheckResults<'tcx> {
     pub field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     pub variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
     pub associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
+    pub locals: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
 }
 
 pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {
@@ -1451,7 +1458,7 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {
     if let Some(ast::FnSignature { returns, .. }) = node.signature() {
         let sig = tcx.fn_sig(def_id);
         for param in sig.params {
-            ctxt.ty_assoc(param.node_id, param.ty);
+            ctxt.ty_local(param.node_id, param.ty);
         }
         ctxt.check_return_ty(body.body, sig.returns, returns.span);
     } else {

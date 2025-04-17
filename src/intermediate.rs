@@ -46,6 +46,7 @@ pub struct BasicBlock<'tcx> {
 }
 
 index_vec::define_index_type! {
+    #[must_use]
     pub struct BlockId = u32;
     IMPL_RAW_CONVERSIONS = true;
     DEBUG_FORMAT = "bb{}";
@@ -315,7 +316,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     fn create_register(&mut self, node_id: NodeId, mutability: Mutability) -> RegisterId {
         let reg = self.registers.push(Register {
             mutability,
-            ty: self.typecheck.associations[&node_id],
+            ty: self.typecheck.locals[&node_id],
         });
         self.register_lookup.insert(node_id, reg);
         reg
@@ -330,16 +331,16 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 
     fn emit_into(&mut self, block: BlockId, stmt: Statement<'tcx>) {
-        let block = &mut self.blocks[block];
-        let None = block.terminator.get() else {
-            panic!("can't emit into terminated block");
-        };
+        let bb = &mut self.blocks[block];
+        if let Some(terminator) = bb.terminator.get() {
+            panic!("can't emit into terminated block {block:?}\n{terminator:?}");
+        }
         if let Place::None = stmt.place {
             let RValue::Call { .. } = stmt.rhs else {
                 return;
             };
         }
-        block.statements.push(stmt);
+        bb.statements.push(stmt);
     }
 
     fn enter_block_scope<F: FnOnce(&mut Self) -> R, R>(&mut self, owner: NodeId, scope: ScopeKind<'tcx>, f: F) -> R {
@@ -358,6 +359,19 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 return Some(&mut scope.scope);
             }
         }
+        None
+    }
+
+    fn try_get_join_block(&mut self) -> Option<BlockId> {
+        let blocks = &mut self.blocks;
+
+        if let Some(BlockScope { scope: ScopeKind::BlockExpr { join_block, .. }, .. }) = self.scope_stack
+            .iter_mut()
+            .rev()
+            .find(|scope| matches!(scope.scope, ScopeKind::BlockExpr { .. })) {
+            return Some(*join_block.get_or_init(|| blocks.push(BasicBlock::default())));
+        }
+
         None
     }
 
@@ -402,7 +416,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::StmtKind::Local(local) => {
                 let reg = self.create_register(stmt.node_id, Mutability::Mut);
                 if let Some(init) = local.init {
-                    self.write_expr_into(Place::Register(reg), block, init);
+                    block = self.write_expr_into(Place::Register(reg), block, init);
                 }
                 block
             }
@@ -410,24 +424,29 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 self.write_expr_into(Place::None, block, expr),
             ast::StmtKind::If(if_stmt) => {
                 let (mut then_block, mut else_block) = self.build_diverge(block, if_stmt.condition);
+
+                let mut join_block = self.try_get_join_block();
                 then_block = self.cover_ast_block(then_block, &if_stmt.body);
 
-                let join_block;
                 if let Some(else_branch) = if_stmt.else_branch {
                     else_block = self.cover_ast_stmt(else_block, else_branch);
-                    if !self.is_terminated(else_block) {
-                        join_block = self.create_block();
-                        self.goto(else_block, join_block, else_branch.span);
-                    } else {
-                        join_block = else_block;
+                    if !self.is_terminated(else_block) && Some(then_block) != join_block {
+                        let jblock = self.create_block();
+                        self.goto(else_block, jblock, else_branch.span);
+                        join_block = Some(jblock);
                     }
-                } else {
-                    join_block = else_block;
+                }
+
+                let join_block = join_block.unwrap_or(else_block);
+
+                if then_block == join_block {
+                    return else_block;
                 }
 
                 if !self.is_terminated(then_block) {
                     self.goto(then_block, join_block, stmt.span);
                 }
+
                 join_block
             },
             ast::StmtKind::While(while_loop) => {
@@ -476,6 +495,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     let Some(ScopeKind::BlockExpr { join_block, result_dest }) = self.find_scope(*owner) else {
                         panic!("expected block scope")
                     };
+                    let join_block = join_block.get().map(|b| *b);
 
                     let reg = if yeet.expr.is_some() {
                         result_dest.get().map(|p| *p)
@@ -488,7 +508,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                             let ty = self.typecheck.associations[&expr.node_id];
                             Place::Register(self.tmp_register(ty, Mutability::Const))
                         });
-                        self.write_expr_into(dest, block, expr);
+                        block = self.write_expr_into(dest, block, expr);
 
                         Some(dest)
                     } else {
@@ -500,6 +520,11 @@ impl<'tcx> TranslationCtxt<'tcx> {
                             unreachable!()
                         };
                         let _ = result_dest.set(dest);
+                    }
+
+                    if let Some(join_block) = join_block {
+                        self.goto(block, join_block, stmt.span);
+                        return join_block;
                     }
                 }
 
@@ -514,7 +539,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     fn cover_ast_block(&mut self, mut block: BlockId, ast_block: &ast::Block<'tcx>) -> BlockId {
         for stmt in ast_block.stmts {
             block = self.cover_ast_stmt(block, stmt);
-            if let ast::StmtKind::ControlFlow(..) | ast::StmtKind::Return(..) | ast::StmtKind::Yeet(..) = stmt.kind {
+            if let Ty(TyKind::Never) = self.typecheck.associations[&stmt.node_id] {
                 break; // don't emit after diverging statement, even if there is code, it's
                        // unreachable
             }
@@ -1030,6 +1055,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 
     fn goto(&mut self, block: BlockId, dest: BlockId, span: Span) {
+        assert_ne!(block, dest);
         let terminator = Terminator {
             kind: TerminatorKind::Goto(dest),
             span
@@ -1062,8 +1088,6 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
         .expect("build ir for node without a body");
 
     let typecheck_results = tcx.typecheck(def_id);
-
-
 
     let mut ctxt = TranslationCtxt::new(tcx, def_id, typecheck_results, body.params);
 
