@@ -197,6 +197,18 @@ impl<'ast> IntoNode<'ast> for Item<'ast>  {
     }
 }
 
+impl<'ast> Item<'ast> {
+    pub fn ident(&self) -> Ident {
+        match self.kind {
+            ItemKind::Enum(enm) => enm.ident,
+            ItemKind::Struct(strct) => strct.ident,
+            ItemKind::Function(func) => func.ident,
+            ItemKind::GlobalVar(var) => var.ident,
+            ItemKind::Err => unreachable!()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ItemKind<'ast> {
     Function(Function<'ast>),

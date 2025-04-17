@@ -35,9 +35,14 @@ fn main() -> ExitCode {
         }
 
         gcx.enter(|tcx| {
+
             tcx.resolutions.items.iter().for_each(|&def_id| {
                 if let Some(..) = tcx.node_by_def_id(def_id).body() {
-                    tcx.typecheck(def_id);
+                    let body = tcx.build_ir(def_id);
+                    let mut buffer = String::new();
+                    intermediate::display_ir_body(tcx, body, &mut buffer)
+                        .unwrap();
+                    println!("{buffer}");
                 }
             });
 

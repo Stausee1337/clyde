@@ -1,4 +1,4 @@
-use std::{cell::RefCell, hash::{Hash, Hasher}, ops::Deref, marker::PhantomData, any::TypeId};
+use std::{any::TypeId, cell::{Cell, RefCell}, hash::{Hash, Hasher}, marker::PhantomData, ops::Deref};
 use hashbrown::hash_table::{HashTable, Entry};
 
 use ahash::AHasher;
@@ -76,12 +76,45 @@ impl<'tcx> GlobalCtxt<'tcx> {
 
     pub fn enter<R, F: FnOnce(TyCtxt<'tcx>) -> R>(&'tcx self, do_work: F) -> R {
         let tcx = TyCtxt { gcx: self };
-        do_work(tcx)
+        enter(&tcx, || do_work(tcx))
     }
 
     pub fn diagnostics(&self) -> &DiagnosticsCtxt {
         self.session.diagnostics()
     }
+}
+
+thread_local! {
+    static TLV: Cell<*const ()> = Cell::new(std::ptr::null_mut());
+}
+
+fn enter<'tcx, F: FnOnce() -> R, R>(ctxt: &TyCtxt<'tcx>, f: F) -> R {
+    TLV.with(|tlv| {
+        let old = tlv.replace(ctxt as *const _ as *const ());
+        let r = f();
+        tlv.set(old);
+        r
+    })
+}
+
+unsafe fn unerase<'a, 'tcx>(ctxt: *const ()) -> &'a TyCtxt<'tcx> {
+    &*(ctxt as *const TyCtxt<'tcx>)
+}
+
+pub fn with_tcx<F, R>(f: F) -> R
+where
+    F: for<'a, 'tcx> FnOnce(Option<&'a TyCtxt<'tcx>>) -> R
+{
+    TLV.with(|tlv| {
+        let ctxt = tlv.get();
+        let r = if ctxt.is_null() {
+            f(None)
+        } else {
+            unsafe { f(Some(unerase(ctxt))) }
+        };
+
+        r
+    })
 }
 
 #[derive(Clone, Copy)]
