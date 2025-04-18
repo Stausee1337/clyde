@@ -3,7 +3,7 @@ use hashbrown::hash_table::{HashTable, Entry};
 
 use ahash::AHasher;
 
-use crate::{ast::{self, DefId, NodeId, OwnerId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
+use crate::{ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
 
 macro_rules! define_queries {
     ($(fn $name:ident($pat:ty) -> $rty:ty;)*) => {

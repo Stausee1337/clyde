@@ -1705,7 +1705,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     ident,
                     generics,
                     fields,
-                    attributes: &[]
                 }),
                 span
             )
@@ -1809,7 +1808,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 sig,
                 body,
                 span,
-                attributes: &[]
             }),
             span 
         )
@@ -1901,17 +1899,22 @@ pub fn parse_file<'a, 'tcx>(
     
     println!("Parsing ...");
 
+    let mut owners = ast_info.global_owners.borrow_mut();
     let source_file = if !stream.is_empty() {
         let arena = &ast_info.arena;
-        let mut owners = ast_info.global_owners.borrow_mut();
         let mut parser = Parser::new(stream, arena, &mut owners, diagnostics);
         parser.parse_source_file(source.byte_span)
     } else {
-        ast_info.arena.alloc(ast::SourceFile {
+        let owner_id = owners.len_idx();
+        let owner_id = owners.push(ast::Owner::new(owner_id));
+        let node = ast_info.arena.alloc(ast::SourceFile {
             items: &[],
-            node_id: todo!(),
-            span: Span::new(0, 0)
-        })
+            node_id: NodeId { owner: owner_id, local: LocalId::from_raw(0) },
+            span: Span::NULL
+        });
+        let node = &*node;
+        owners[owner_id].initialize(ast::Node::SourceFile(node), IndexVec::new());
+        node
     };
 
     Ok(source_file)

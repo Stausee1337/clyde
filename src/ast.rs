@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::cell::OnceCell;
 use std::hash::Hash;
 
@@ -231,7 +233,6 @@ pub struct Struct<'ast> {
     pub ident: Ident,
     pub generics: &'ast [&'ast GenericParam<'ast>],
     pub fields: &'ast [&'ast FieldDef<'ast>],
-    pub attributes: &'ast [Attribute]
 }
 
 #[derive(Debug)]
@@ -255,7 +256,6 @@ pub struct Enum<'ast> {
     pub ident: Ident,
     pub extends: Option<&'ast TypeExpr<'ast>>,
     pub variants: &'ast [VariantDef<'ast>],
-    pub attributes: &'ast [Attribute]
 }
 
 #[derive(Debug)]
@@ -279,7 +279,6 @@ pub struct Function<'ast> {
     pub sig: FnSignature<'ast>,
     pub body: Option<&'ast Expr<'ast>>,
     pub span: Span,
-    pub attributes: &'ast [Attribute]
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -287,11 +286,6 @@ pub struct FnSignature<'ast> {
     pub returns: &'ast TypeExpr<'ast>,
     pub params: &'ast [&'ast Param<'ast>],
     pub generics: &'ast [&'ast GenericParam<'ast>],
-}
-
-#[derive(Debug)]
-pub struct Attribute {
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -6,7 +6,7 @@ use index_vec::IndexVec;
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 
 #[cfg(target_family = "windows")]
-use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE};
+use windows::Win32::System::Memory::{VirtualAlloc, /*VirtualFree, MEM_RELEASE,*/ MEM_COMMIT, MEM_RESERVE,  PAGE_READWRITE};
 
 use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, intermediate, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck};
 
