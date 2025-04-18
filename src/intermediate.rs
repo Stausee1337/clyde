@@ -1,5 +1,5 @@
 
-use std::{cell::OnceCell, collections::{HashMap, HashSet}, fmt::Write};
+use std::{cell::OnceCell, collections::HashMap, fmt::Write};
 
 use index_vec::{Idx, IndexVec};
 
@@ -150,14 +150,13 @@ pub enum Operand<'tcx> {
     Copy(RegisterId),
     Const(Const<'tcx>),
     Definition(DefId),
-    Uninit // Used for void values
 }
 
 impl<'tcx> std::fmt::Debug for Operand<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Operand::Copy(reg) => write!(f, "copy {reg:?}"),
-            Operand::Const(_cnst) => write!(f, "const XXX"), // TODO: simple constant display
+            Operand::Const(cnst) => write!(f, "const {cnst:?}"),
             Operand::Definition(def_id) => {
                 let ident = context::with_tcx(|tcx| {
                     let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(*def_id);
@@ -170,7 +169,6 @@ impl<'tcx> std::fmt::Debug for Operand<'tcx> {
 
                 write!(f, "{}", ident.symbol.get())
             },
-            Operand::Uninit => write!(f, "---"),
         }
     }
 }
@@ -200,7 +198,8 @@ impl<'tcx> Operand<'tcx> {
 }
 
 pub enum RValue<'tcx> {
-    Use(Operand<'tcx>),
+    Const(Const<'tcx>),
+    Definition(DefId),
     Read(Place<'tcx>),
     Ref(Place<'tcx>),
     Invert(Operand<'tcx>),
@@ -224,10 +223,20 @@ pub enum RValue<'tcx> {
     }
 }
 
+impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
+    fn from(value: Operand<'tcx>) -> Self {
+        match value {
+            Operand::Copy(reg) => RValue::Read(Place::Register(reg)),
+            Operand::Const(cnst) => RValue::Const(cnst),
+            Operand::Definition(def) => RValue::Definition(def)
+        }
+    }
+}
+
 impl<'tcx> std::fmt::Debug for RValue<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RValue::Use(operand) => write!(f, "{operand:?}"),
+            // RValue::Use(operand) => write!(f, "{operand:?}"),
             RValue::Read(place) => write!(f, "{place:?}"),
             RValue::Ref(place) => write!(f, "&{place:?}"),
             RValue::Invert(operand) => write!(f, "Inv({operand:?})"),
@@ -242,7 +251,27 @@ impl<'tcx> std::fmt::Debug for RValue<'tcx> {
                 let args = args.join(", ");
                 write!(f, "{callee:?}({args})")
             },
-            RValue::ExplicitInit { ty, initializers } => todo!(),
+            RValue::Const(cnst) => write!(f, "const {cnst:?}"),
+            RValue::Definition(def_id) => {
+                let ident = context::with_tcx(|tcx| {
+                    let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(*def_id);
+                    if let ast::Node::Item(item) = node {
+                        return item.ident();
+                    } else {
+                        panic!("non-item in definition");
+                    };
+                });
+
+                write!(f, "{}", ident.symbol.get())
+            },
+            RValue::ExplicitInit { ty, initializers } => {
+                let mut args = vec![];
+                for (idx, operand) in initializers {
+                    args.push(format!(".{} = {:?}", idx.0, operand.operand));
+                }
+                let args = args.join(", ");
+                write!(f, "{ty} {{ {args} }}")
+            }
         }
     }
 }
@@ -398,6 +427,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 (true_block, false_block)
             }
+            ast::ExprKind::UnaryOp(ast::UnaryOp { expr, operator: lexer::UnaryOp::Not }) => {
+                let (true_block, false_block) = self.build_diverge(block, expr);
+                (false_block, true_block) // it's boolean inv: just flip the targets
+            }
             _ => {
                 let true_block = self.create_block();
                 let false_block = self.create_block();
@@ -424,6 +457,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 self.write_expr_into(Place::None, block, expr),
             ast::StmtKind::If(if_stmt) => {
                 let (mut then_block, mut else_block) = self.build_diverge(block, if_stmt.condition);
+
+                // FIXME: for now (just if stmts in body-scopes or expr-scopes) this seems to work
+                // out. If it will hold up with if-stms within loop-ctxt's or vica verca: 
+                // We'll see.
+                // One idea for improvement: if the then_ or the else_block, diverge via a
+                // `return` terminator, we could potentially skip creating a join_block.
+                // I'd also like to not hardcode this in here, but find an even more general
+                // solution
 
                 let mut join_block = self.try_get_join_block();
                 then_block = self.cover_ast_block(then_block, &if_stmt.body);
@@ -486,7 +527,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::StmtKind::Return(ret) => {
                 let op;
                 (block, op) = ret.map(|expr| self.expr_as_operand(block, expr))
-                    .unwrap_or_else(|| (block, Operand::Uninit));
+                    .unwrap_or_else(|| (block, Operand::Const(Const::void_value(self.tcx))));
                 self.ret(block, op.with_span(stmt.span));
                 block
             }
@@ -560,7 +601,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             short_circuit,
             Statement {
                 place: dest,
-                rhs: RValue::Use(Operand::Const(constant)),
+                rhs: Operand::Const(constant).into(),
                 span: lhs.span
             }
         );
@@ -599,7 +640,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     block,
                     Statement {
                         place: dest,
-                        rhs: RValue::Use(operand),
+                        rhs: operand.into(),
                         span: expr.span
                     }
                 );
@@ -672,7 +713,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                             block,
                             Statement {
                                 place: dest2,
-                                rhs: RValue::Use(rhs),
+                                rhs: rhs.into(),
                                 span: expr.span
                             }
                         );
@@ -902,6 +943,34 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 );
                 block
             }
+            ast::ExprKind::Tuple(args) => {
+
+                let ty = self.typecheck.associations[&expr.node_id];
+
+                let mut initializers = vec![];
+
+                for (idx, expr) in args.iter().enumerate() {
+                    let ir_init;
+                    (block, ir_init) = self.expr_as_operand(block, expr);
+                    let ir_idx = FieldIdx::from_usize(idx);
+
+                    initializers.push((ir_idx, ir_init.with_span(expr.span)));
+                }
+
+                self.emit_into(
+                    block,
+                    Statement {
+                        place: dest,
+                        rhs: RValue::ExplicitInit {
+                            ty,
+                            initializers: initializers.into_boxed_slice()
+                        },
+                        span: expr.span
+                    }
+                );
+
+                block
+            },
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
             ast::ExprKind::Deref(..) => {
                 let place;
@@ -918,7 +987,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 block
             }
-            ast::ExprKind::Tuple(..) | ast::ExprKind::Range(..) => todo!(),
+            ast::ExprKind::Range(..) => todo!(),
             ast::ExprKind::Err => block
         }
     }
@@ -1100,7 +1169,11 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
                 |ctxt| ctxt.write_expr_into(Place::None, start, body.body)
             );
             if !ctxt.is_terminated(block) {
-                ctxt.ret(block, Operand::Uninit.with_span(Span::NULL));
+                ctxt.ret(
+                    block,
+                    Operand::Const(Const::void_value(tcx))
+                        .with_span(Span::NULL)
+                );
             }
             println!("block {:?}", block);
 

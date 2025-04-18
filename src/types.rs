@@ -121,10 +121,16 @@ pub enum ConstInner<'tcx> {
     }
 }
 
-#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+#[derive(Hash, Clone, Copy, PartialEq, Eq)]
 pub struct Const<'tcx>(pub &'tcx ConstInner<'tcx>);
 
 impl<'tcx> Const<'tcx> {
+    pub fn void_value(tcx: TyCtxt<'tcx>) -> Const<'tcx> {
+        let void = Ty::new_primitive(tcx, Primitive::Void);
+        let value = ValTree::Branch(&[]);
+        tcx.intern(ConstInner::Value(void, value))
+    }
+
     pub fn from_definition(tcx: TyCtxt<'tcx>, def_id: DefId) -> Const<'tcx> {
         let node = tcx.node_by_def_id(def_id);
 
@@ -236,11 +242,37 @@ impl<'tcx> Const<'tcx> {
             }
         }
     }
+}
 
-    pub fn ty(&self) -> Option<Ty<'tcx>> {
+impl<'tcx> std::fmt::Debug for Const<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
-            ConstInner::Value(ty, _) => Some(*ty),
-            _ => None
+            ConstInner::Value(Ty(TyKind::Primitive(primitive)), value) => {
+                let scalar = if let ValTree::Scalar(scalar) = value {
+                    Some(scalar.data)
+                } else {
+                    None
+                };
+                match primitive {
+                    Primitive::Void => f.write_str("<empty>"),
+                    Primitive::Bool =>
+                        write!(f, "{}_bool", scalar.unwrap() != 0),
+                    Primitive::Char =>
+                        write!(f, "{}_char", char::from_u32(scalar.unwrap() as u32).unwrap()),
+                    Primitive::String => f.write_str("<string>"),
+                    Primitive::Float => todo!(),
+                    _ => {
+                        if primitive.signed().unwrap() {
+                            write!(f, "{}_{primitive}", scalar.unwrap() as i64)
+                        } else {
+                            write!(f, "{}_{primitive}", scalar.unwrap() as u64)
+                        }
+                    }
+                }
+            }
+            ConstInner::Value(..) => f.write_str("<value>"),
+            ConstInner::Placeholder => f.write_str("_"),
+            ConstInner::Err { .. } => f.write_str("<err>"),
         }
     }
 }
@@ -291,14 +323,14 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Function(_) => write!(f, "function"),
             TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
             TyKind::Tuple(tys) => {
-                f.write_str("(")?;
+                f.write_str("tuple<")?;
                 for (idx, ty) in tys.iter().enumerate() {
                     write!(f, "{ty}")?;
                     if idx != tys.len() - 1 {        
                         f.write_str(", ")?;
                     }
                 }
-                f.write_str(")")?;
+                f.write_str(">")?;
                 Ok(())
             }
             TyKind::Err => write!(f, "Err"),
