@@ -799,6 +799,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }};
             }
 
+            // FIXME: we actually should be creating another delimiter stack, reporing them like we
+            // do in the lexer at TokenStream::build
             // Stacks
             let mut angle = 0usize;
             let mut paren = 0usize;
@@ -1886,19 +1888,8 @@ pub fn parse_file<'a, 'tcx>(
     let source = session.file_cacher().load_file(path)?;
 
 
-    println!("Tokenization ...");
-    let (stream, errors) = lexer::tokenize(&source);
-    for err in errors {
-        println!("{:?}", err);
-    }
-
-    /*let xxx = stream.into_boxed_slice();
-    for x in xxx {
-        println!("{:?}", x);
-    }*/
+    let stream = lexer::tokenize(&source, diagnostics)?;
     
-    println!("Parsing ...");
-
     let mut owners = ast_info.global_owners.borrow_mut();
     let source_file = if !stream.is_empty() {
         let arena = &ast_info.arena;

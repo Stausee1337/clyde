@@ -27,7 +27,10 @@ fn main() -> ExitCode {
     
     build_compiler(sess, |compiler| {
 
-        let gcx = compiler.global_ctxt()?; 
+        let Ok(gcx) = compiler.global_ctxt() else {
+            compiler.sess.diagnostics().render();
+            return Err(());
+        };
 
         if gcx.diagnostics().has_fatal() {
             gcx.diagnostics().render();

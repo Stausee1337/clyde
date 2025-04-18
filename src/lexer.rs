@@ -1,6 +1,6 @@
 use std::{fmt::Write, marker::PhantomData, ops::{Deref, DerefMut}};
 
-use crate::{interface::{self, File}, string_internals, symbol::Symbol};
+use crate::{diagnostics::{DiagnosticsCtxt, Message}, interface::{self, File}, string_internals, symbol::Symbol};
 use clyde_macros::{LexFromString, Operator};
 
 use tinyvec::ArrayVec;
@@ -133,15 +133,14 @@ enum LexState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexErrorKind {
     UnexpectedEOS,
-    InvalidCharacter,
+    InvalidCharacter(char),
     IncompleteIntegerLiteral,
     NonDecimalFloatingPointLiteral,
     StringError(StringError),
-    InvalidUtf8
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct LexError {
+struct LexError {
     kind: LexErrorKind,
     span: Span
 }
@@ -362,8 +361,72 @@ pub struct TokenStream<'a> {
 }
 
 impl<'a> TokenStream<'a> {
-    pub fn empty() -> Self {
-        Self { tokens: Vec::new() }
+    fn build(tokens: Vec<Token<'a>>, diagnostics: &DiagnosticsCtxt) -> Result<Self, ()> {
+
+        #[derive(PartialEq, Eq)]
+        enum Delimiter { Paren, Bracket, Curly }
+
+        macro_rules! indent {
+            ($stack:ident, $kind:path, $tok:ident) => {{
+                $stack.push(($kind, $tok));
+            }};
+        }
+
+        macro_rules! dedent {
+            ($stack:ident, $kind:path, $tok:ident) => {{
+                let Some((kind, start)) = $stack.pop() else {
+                    Self::create_delimiter_diagnostic(None, Some(*$tok), diagnostics);
+                    return Err(());
+                };
+                if kind != $kind {
+                    Self::create_delimiter_diagnostic(Some(*start), Some(*$tok), diagnostics);
+                    return Err(());
+                }
+            }};
+        }
+
+        let mut stack = vec![];
+        for tok in &tokens {
+            match tok.kind {
+                TokenKind::Punctuator(Punctuator::LParen) =>
+                    indent!(stack, Delimiter::Paren, tok),
+                TokenKind::Punctuator(Punctuator::LCurly) =>
+                    indent!(stack, Delimiter::Curly, tok),
+                TokenKind::Punctuator(Punctuator::LBracket) =>
+                    indent!(stack, Delimiter::Bracket, tok),
+
+                TokenKind::Punctuator(Punctuator::RParen) =>
+                    dedent!(stack, Delimiter::Paren, tok),
+                TokenKind::Punctuator(Punctuator::RCurly) =>
+                    dedent!(stack, Delimiter::Curly, tok),
+                TokenKind::Punctuator(Punctuator::RBracket) =>
+                    dedent!(stack, Delimiter::Bracket, tok),
+                _ => ()
+            }
+        }
+
+        if let Some((_, tok)) = stack.first() {
+            Self::create_delimiter_diagnostic(Some(**tok), None, diagnostics);
+            return Err(());
+        }
+
+        Ok(Self { tokens })
+    }
+
+    fn create_delimiter_diagnostic(start: Option<Token<'a>>, end: Option<Token<'a>>, diagnostics: &DiagnosticsCtxt) {
+        assert!(start.is_some() || end.is_some());
+        let span = end.map_or_else(|| start.unwrap().span, |tok| tok.span);
+        let message = match (start, end) {
+            (Some(..), Some(..)) => "unmatched closing delimiter",
+            (None, Some(..)) => "unexpected closing delimiter",
+            (Some(..), None) => "unclosed opening delimiter",
+            (None, None) => unreachable!()
+        };
+        let mut diagmsg = Message::error(message).at(span);
+        if let (Some(start), Some(_)) = (start, end) {
+            diagmsg = diagmsg.hint("unclosed delimiter", start.span);
+        }
+        diagmsg.push(diagnostics);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -482,7 +545,7 @@ struct Tokenizer<'a> {
 }
 
 impl<'a> Tokenizer<'a> {
-    fn tokenize_relative_source(mut cursor: SourceCursor<'a>, offset: u32) -> (TokenStream<'a>, Vec<LexError>) {
+    fn tokenize_relative_source(mut cursor: SourceCursor<'a>, offset: u32) -> (Vec<Token<'a>>, Vec<LexError>) {
         let mut tokenizer = Tokenizer {
             offset,
             bol: 0,
@@ -494,10 +557,10 @@ impl<'a> Tokenizer<'a> {
                 span: Span::zero()
             }
         };
-        tokenizer.lex_to_stream()
+        tokenizer.lex_to_tokens()
     }
     
-    fn lex_to_stream(&mut self) -> (TokenStream<'a>, Vec<LexError>) {
+    fn lex_to_tokens(&mut self) -> (Vec<Token<'a>>, Vec<LexError>) {
         let mut tokens = Vec::new();
         let mut errors = Vec::new();
         loop {
@@ -520,8 +583,7 @@ impl<'a> Tokenizer<'a> {
                 span: self.make_span(self.position(), self.position())
             });
         }
-        let stream = TokenStream { tokens };
-        (stream, errors)
+        (tokens, errors)
     }
 
     fn initial(&mut self) -> Result<LexState, LexErrorKind> {
@@ -704,7 +766,7 @@ impl<'a> Tokenizer<'a> {
         }
 
         let Some(punctuator) = punctuator else {
-            return Err(LexErrorKind::InvalidCharacter);
+            return Err(LexErrorKind::InvalidCharacter(self.current().unwrap()));
         };
 
         for _ in 0..length {
@@ -866,20 +928,56 @@ impl<'a> DerefMut for Tokenizer<'a> {
 }
 
 
-pub fn tokenize<'a>(source_file: &'a File) -> (TokenStream<'a>, Vec<LexError>) {
+pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Result<TokenStream<'a>, ()> {
     let contents = match source_file.contents() {
         Ok(contents) => contents,
         Err(interface::Utf8Error) => {
-            let err = LexError {
-                kind: LexErrorKind::InvalidUtf8,
-                span: Span::zero()
-            };
-            return (TokenStream::empty(), vec![err]);
+            eprintln!("ERROR: couldn't read {}: stream contains invalid UTF-8", source_file.path());
+            return Err(());
         }
     };
     let cursor = SourceCursor::new(contents);
-    let (stream, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
-    (stream, errors)
+    let (tokens, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
+    let stream = TokenStream::build(tokens, diagnostics)?;
+
+    for err in errors {
+        match err.kind {
+            LexErrorKind::InvalidCharacter(chr) => {
+                Message::error(format!("invalid character in stream: {chr:?}"))
+                    .at(err.span)
+                    .push(diagnostics);
+            }
+            LexErrorKind::IncompleteIntegerLiteral => {
+                Message::error(format!("integer literal seems incomplete"))
+                    .at(err.span)
+                    .push(diagnostics);
+            }
+            LexErrorKind::NonDecimalFloatingPointLiteral => {
+                Message::error(format!("non-decimal float literal is not allowed"))
+                    .at(err.span)
+                    .push(diagnostics);
+            }
+            LexErrorKind::StringError(error) => {
+                let message = match error {
+                    StringError::UnclosedLiteral => "unterminated string literal",
+                    StringError::EmptyCharLiteral => "char literal cannot be empty",
+                    StringError::MultiCharLiteral => "multi-character char literal is invalid",
+                    StringError::UnknownCharEscape => "unknown escape character in literal",
+                    StringError::InvalidCharInHexByte => "invalid hexadecimal in literal escape"
+                };
+                Message::error(message)
+                    .at(err.span)
+                    .push(diagnostics);
+            }
+            LexErrorKind::UnexpectedEOS => {
+                Message::error("file ended unexpectedly")
+                    .at(err.span)
+                    .push(diagnostics);
+            }
+        }
+    }
+
+    Ok(stream)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]
