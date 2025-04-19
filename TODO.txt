@@ -1,0 +1,32 @@
+
+Ordered (by priority):
+- Codegen
+- Directives (`#if`, `#include`, etc ...)
+    - Files and Imports -> Namespaces
+- Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
+    - Enums
+- Generic Functions and Adts
+    - Nullabilties (Optional<T> modeled as T? and null == None)
+    - Monomorphization
+- Methods
+- Overloaded Functions
+- Operator Overloading
+
+Unodered (Ideas for implementations):
+- Switch stmts using `#if <expr> == {`
+- Type Inference variables
+    - enabling floating point types f32/f64
+- Parser hardening (better error handling + recovery)
+- Mutabilities (const/mutable variables, ptrs, etc ...)
+- Complex Syntax Extensions 
+    - Macros (calls to `#expand fns` in all sorts of places)
+    - Nesting of Items (inner functions, structures, etc)
+    - `#if` in Items, at source scope, etc
+    - Type alliases, new syntax for consts (maybe parsing clash)
+      e.g. `a :: b` = `const a = b` or `a::b` (Path)
+    - `#if` Polymorphism (with narrowing using if-stmts)
+- Duck-Typing polymorphism `fnname<T: ~LooksLike>(T similar)`
+- Error handling `int mayerror(...) !MyError`
+- Moving values (Borrowck), Refrences, RAII (Destructors)
+
+
