@@ -191,12 +191,21 @@ pub enum StringError {
     EmptyCharLiteral,
     MultiCharLiteral,
     UnknownCharEscape,
-    InvalidCharInHexByte
+    InvalidCharInHexByte,
+    InvalidCharInUnicodeLiteral,
+    NonUnicodeCharInLiteral
 }
 
 #[derive(PartialEq, Eq)]
 pub enum StringParseState {
-    Normal, Escape, HexByte(ArrayVec<[u8; 2]>), Unicode(ArrayVec<[u8; 5]>), Ended
+    Normal,
+    Escape,
+    HexByte(ArrayVec<[u8; 2]>),
+    Unicode {
+        data: ArrayVec<[u8; 8]>,
+        is_long: bool
+    },
+    Ended
 }
 
 pub struct StringParser {
@@ -254,7 +263,10 @@ impl StringParser {
                 return Ok(None);
             }
             'u' | 'U' => {
-                self.state = StringParseState::Unicode(ArrayVec::new());
+                self.state = StringParseState::Unicode {
+                    data: ArrayVec::new(),
+                    is_long: char.is_ascii_uppercase()
+                };
                 return Ok(None);
             }
             _ => return Err(StringError::UnknownCharEscape)
@@ -268,6 +280,7 @@ impl StringParser {
             unreachable!();
         };
         let (('a'..='f') | ('A'..='F') | ('0'..='9')) = char else {
+            self.state = StringParseState::Normal;
             return Err(StringError::InvalidCharInHexByte);
         };
         vec.push(char as u8);
@@ -280,8 +293,34 @@ impl StringParser {
         return Ok(None);
     }
 
-    fn unicode(&mut self, _char: char) -> Result<Option<char>, StringError> {
-        todo!()
+    fn unicode(&mut self, char: char) -> Result<Option<char>, StringError> {
+        let StringParseState::Unicode { ref mut data, is_long } = self.state else {
+            unreachable!();
+        };
+        let (('a'..='f') | ('A'..='F') | ('0'..='9')) = char else {
+            self.state = StringParseState::Normal;
+            return Err(StringError::InvalidCharInUnicodeLiteral);
+        };
+        data.push(char as u8);
+        if data.len() == 4 && !is_long {
+            let src = unsafe { std::str::from_utf8_unchecked(data.as_slice()) };
+            let number = u32::from_str_radix(src, 16).unwrap();
+            self.state = StringParseState::Normal;
+            let Some(unichar) = char::from_u32(number) else {
+                return Err(StringError::NonUnicodeCharInLiteral);
+            };
+            return Ok(Some(unichar));
+        } else if data.len() == 8 && is_long {
+            let src = unsafe { std::str::from_utf8_unchecked(data.as_slice()) };
+            let number = u32::from_str_radix(src, 16).unwrap();
+            self.state = StringParseState::Normal;
+            let Some(unichar) = char::from_u32(number) else {
+                return Err(StringError::NonUnicodeCharInLiteral);
+            };
+            return Ok(Some(unichar));
+        }
+
+        return Ok(None);
     }
 
     pub fn feed(&mut self, char: char) -> Result<Option<char>, StringError> {
@@ -289,7 +328,7 @@ impl StringParser {
             StringParseState::Normal => self.normal(char)?,
             StringParseState::Escape => self.escape(char)?,
             StringParseState::HexByte(..) => self.hex_byte(char)?,
-            StringParseState::Unicode(..) => self.unicode(char)?,
+            StringParseState::Unicode { .. } => self.unicode(char)?,
             StringParseState::Ended =>
                 panic!("calling feed(..) on ended StringParser")
         };
@@ -573,6 +612,8 @@ impl<'a> Tokenizer<'a> {
                         kind,
                         span: self.make_span(start, self.position())
                     });
+                    // TODO: also push an error token here, and add resilliance in the parser in
+                    // those cases
                     self.bump();
                 }
             }
@@ -963,7 +1004,9 @@ pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Res
                     StringError::EmptyCharLiteral => "char literal cannot be empty",
                     StringError::MultiCharLiteral => "multi-character char literal is invalid",
                     StringError::UnknownCharEscape => "unknown escape character in literal",
-                    StringError::InvalidCharInHexByte => "invalid hexadecimal in literal escape"
+                    StringError::InvalidCharInHexByte => "invalid hexadecimal in literal escape",
+                    StringError::InvalidCharInUnicodeLiteral => "invalid hexadecimal in unicode literal escape",
+                    StringError::NonUnicodeCharInLiteral => "non unicode character in escape literal"
                 };
                 Message::error(message)
                     .at(err.span)

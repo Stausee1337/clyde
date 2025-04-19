@@ -497,7 +497,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 let (mut then_block, else_block) = self.build_diverge(condition_block, while_loop.condition);
                 then_block = self.enter_block_scope(
                     stmt.node_id,
-                    ScopeKind::Loop { continue_target: then_block, break_target: else_block },
+                    ScopeKind::Loop { continue_target: condition_block, break_target: else_block },
                     |this| this.cover_ast_block(then_block, &while_loop.body)
                 );
                 if !self.is_terminated(then_block) {
@@ -1063,9 +1063,9 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::Function)) =>
                     (block, Operand::Definition(*def_id)),
                 Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
-                Some(ast::Resolution::Err) => todo!("mayge try to create some fallback value"),
+                Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
                 Some(ast::Resolution::Local(..)) => unreachable!(),
-                None => panic!("unresolved Name at ir stage")
+                None => panic!("unresolved Name at IR stage")
             }
             ast::ExprKind::Name(name) if matches!(name.resolution(), Some(ast::Resolution::Local(..))) => {
                 let Some(ast::Resolution::Local(local)) = name.resolution() else {
