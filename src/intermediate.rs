@@ -123,28 +123,6 @@ impl<'tcx> std::fmt::Debug for Place<'tcx> {
     }
 }
 
-impl<'tcx> Place<'tcx> {
-    /*fn ty(&self, ctxt: &TranslationCtxt<'tcx>) -> Ty<'tcx> {
-        match self {
-            Place::Register(reg) =>
-                ctxt.registers[*reg].ty,
-            Place::Deref(reg) => {
-                let Ty(TyKind::Refrence(ty)) = ctxt.registers[*reg].ty else {
-                    panic!("no-refrence type in ir Place::Deref(..)");
-                };
-                *ty
-            }
-            Place::Field { ty, .. } => *ty,
-            Place::Index { target, .. } => {
-                let Ty(TyKind::Array(ty, _)) = target.ty(ctxt) else {
-                    panic!("non-array type in ir Place::Index {{  }}");
-                };
-                *ty
-            }
-        }
-    }*/
-}
-
 #[derive(Clone, Copy)]
 pub enum Operand<'tcx> {
     Copy(RegisterId),
@@ -180,15 +158,6 @@ pub struct SpanOperand<'tcx> {
 }
 
 impl<'tcx> Operand<'tcx> {
-    /*fn ty(&self, ctxt: &TranslationCtxt<'tcx>) -> Ty<'tcx> {
-        match self {
-            Operand::Copy(reg) =>
-                ctxt.registers[*reg].ty,
-            Operand::Const(cnst) => cnst.ty().unwrap_or_else(|| Ty::new_error(ctxt.tcx)),
-            Operand::Definition(def_id) => ctxt.tcx.type_of(*def_id)
-        }
-    }*/
-
     fn with_span(self, span: Span) -> SpanOperand<'tcx> {
         SpanOperand {
             operand: self,
