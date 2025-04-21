@@ -1,59 +1,12 @@
-use std::{any::TypeId, cell::{Cell, RefCell}, hash::{Hash, Hasher}, marker::PhantomData, ops::Deref};
-use hashbrown::hash_table::{HashTable, Entry};
-
-use ahash::AHasher;
+use std::{cell::{Cell, RefCell}, marker::PhantomData, ops::Deref, collections::{HashMap, hash_map::Entry as StdEntry}};
 
 use crate::{ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
-
-macro_rules! define_queries {
-    ($(fn $name:ident($pat:ty) -> $rty:ty;)*) => {
-        pub struct QueryCaches<'tcx> {
-            $(
-                pub $name: std::cell::RefCell<std::collections::HashMap<$pat, $rty>>, 
-            )*
-        }
-
-        impl<'tcx> Default for QueryCaches<'tcx> {
-            fn default() -> Self {
-                Self {
-                    $(
-                        $name: std::cell::RefCell::new(std::collections::HashMap::<$pat, $rty>::default()),
-                    )*
-                }
-            }
-        }
-
-        pub struct Providers {
-            $(
-                pub $name: for<'tcx> fn(tcx: crate::context::TyCtxt<'tcx>, key: $pat) -> $rty,
-            )*
-        }
-
-        impl<'tcx> crate::context::TyCtxt<'tcx> {
-            $(
-                pub fn $name(&self, key: $pat) -> $rty {
-                    use std::collections::hash_map::Entry;
-
-                    let mut cache = self.caches.$name.borrow_mut();
-                    match cache.entry(key) {
-                        Entry::Occupied(entry) => *entry.get(),
-                        Entry::Vacant(entry) => {
-                            let value = (self.providers.$name)(*self, key);
-                            entry.insert(value);
-                            value
-                        }
-                    }
-                }
-            )*
-        }
-    };
-}
 
 pub struct GlobalCtxt<'tcx> {
     pub resolutions: ResolutionResults<'tcx>,
     pub arena: bumpalo::Bump,
     pub session: &'tcx Session,
-    pub interner: Interner<'tcx>,
+    pub interners: Interners<'tcx>,
     pub providers: Providers,
     pub caches: QueryCaches<'tcx>,
 }
@@ -68,9 +21,9 @@ impl<'tcx> GlobalCtxt<'tcx> {
             resolutions,
             session,
             arena: bumpalo::Bump::new(),
-            interner: Interner::new(),
+            interners: Interners::default(),
             providers,
-            caches: QueryCaches::default()
+            caches: QueryCaches::default(),
         }
     }
 
@@ -146,19 +99,120 @@ impl<'tcx> TyCtxt<'tcx> {
         let def = &self.resolutions.declarations[id];
         def.kind
     }
+}
 
-    #[inline]
-    pub fn intern<Q: Internable<'tcx>>(self, q: Q) -> Q::Interned<'tcx> {
-        q.intern(self)
+macro_rules! define_queries {
+    ($(fn $name:ident($key:ident: $pat:ty) -> $rty:ty;)*) => {
+        macro_rules! for_every_query {
+            ( $callback:ident! ) => {
+                $callback!($($name, $key, $pat, $rty)*);
+            }
+        }
     }
 }
 
 define_queries! {
-    fn type_of(ast::DefId) -> types::Ty<'tcx>;
-    fn typecheck(ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
-    fn fn_sig(ast::DefId) -> types::Signature<'tcx>;
-    fn build_ir(ast::DefId) -> &'tcx intermediate::Body<'tcx>;
+    fn type_of(key: ast::DefId) -> types::Ty<'tcx>;
+    fn typecheck(key: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
+    fn fn_sig(key: ast::DefId) -> types::Signature<'tcx>;
+    fn build_ir(key: ast::DefId) -> &'tcx intermediate::Body<'tcx>;
 }
+
+macro_rules! define_query_caches {
+    ($($name:ident, $key:ident, $pat:ty, $rty:ty)*) => {
+        pub struct QueryCaches<'tcx> {
+            $(pub $name: RefCell<HashMap<$pat, $rty>>,)*
+        }
+
+        impl<'tcx> Default for QueryCaches<'tcx> {
+            fn default() -> Self {
+                Self {
+                    $($name: RefCell::new(HashMap::<$pat, $rty>::default()),)*
+                }
+            }
+        }
+    }
+}
+
+macro_rules! define_providers {
+    ($($name:ident, $key:ident, $pat:ty, $rty:ty)*) => { 
+        pub struct Providers {
+            $(pub $name: for<'tcx> fn(tcx: TyCtxt<'tcx>, $key: $pat) -> $rty,)*
+        }
+    }
+}
+
+macro_rules! define_tcx_impls {
+    ($($name:ident, $key:ident, $pat:ty, $rty:ty)*) => {$(
+        impl<'tcx> TyCtxt<'tcx> {
+            pub fn $name(&self, $key: $pat) -> $rty {
+                let mut cache = self.caches.$name.borrow_mut();
+                match cache.entry($key) {
+                    StdEntry::Occupied(entry) => *entry.get(),
+                    StdEntry::Vacant(entry) => {
+                        let value = (self.providers.$name)(*self, $key);
+                        entry.insert(value);
+                        value
+                    }
+                }
+            }
+        })*
+    };
+}
+
+for_every_query! { define_query_caches! }
+for_every_query! { define_providers! }
+for_every_query! { define_tcx_impls! }
+
+macro_rules! define_internables {
+    ($(into $pool:ident intern $name:ident ($in:ty) -> $out:ty;)*) => {
+        macro_rules! for_every_internable {
+            ( $callback:ident! ) => {
+                $callback!($($in, $out, $name, $pool)*);
+            }
+        }
+    }
+}
+
+define_internables! {
+    into adt_defs intern intern_adt(types::AdtDefInner) -> types::AdtDef<'tcx>;
+    into tys      intern intern_ty(types::TyKind<'tcx>) -> types::Ty<'tcx>;
+    into consts   intern intern_const(types::ConstInner<'tcx>) -> types::Const<'tcx>;
+}
+
+macro_rules! define_interners {
+    ($($in:ty, $out:ty, $fn:ident, $pool:ident)*) => {
+        pub struct Interners<'tcx> {
+            phantom: std::marker::PhantomData<&'tcx ()>,
+            $($pool: (),)*
+        }
+
+        impl<'tcx> Default for Interners<'tcx> {
+            fn default() -> Self {
+                Self {
+                    phantom: PhantomData,
+                    $($pool: Default::default(),)*
+                }
+            }
+        }
+    };
+}
+
+macro_rules! define_intern_fns {
+    ($($in:ty, $out:ty, $fn:ident, $pool:ident)*) => {$(
+        impl<'tcx> TyCtxt<'tcx> {
+            pub fn $fn(&self, _input: $in) -> $out {
+                let _interner = &self.interners.$pool;
+                todo!();
+            }
+        })*
+    };
+}
+
+for_every_internable! { define_interners! }
+for_every_internable! { define_intern_fns! }
+
+/*
 
 pub trait Internable<'tcx>: Hash + Eq {
     type Marker: Sized + 'static;
@@ -220,4 +274,4 @@ impl<'tcx> Interner<'tcx> {
         hasher.finish()
     }
 }
-
+*/

@@ -1,18 +1,8 @@
 use std::cell::OnceCell;
 use std::{cell::RefCell, rc::Rc};
-use std::hash::Hash;
-
-use bitflags::bitflags;
 
 use crate::interface::{File, RelativePosition};
 use crate::{interface::FileCacher, lexer::Span};
-
-bitflags! {
-    pub struct HappenedEvents: u8 {
-        const FATAL = 0b10;
-        const ERROR = 0b01;
-    }
-}
 
 pub struct InternalMessage {
     kind: MessageKind,
@@ -25,7 +15,6 @@ pub struct InternalMessage {
 struct DiagnosticsCtxtInner {
     file_cacher: Rc<FileCacher>,
     messages: Vec<InternalMessage>,
-    flags: HappenedEvents,
 }
 
 impl DiagnosticsCtxtInner {
@@ -127,21 +116,12 @@ impl DiagnosticsCtxt {
         let inner = DiagnosticsCtxtInner {
             file_cacher,
             messages: Vec::new(),
-            flags: HappenedEvents::empty()
         };
         DiagnosticsCtxt(RefCell::new(inner))
     }
 
     pub fn render(&self) {
         self.0.borrow_mut().render();
-    }
-
-    pub fn has_error(&self) -> bool {
-        self.0.borrow().flags.contains(HappenedEvents::ERROR)
-    }
-
-    pub fn has_fatal(&self) -> bool {
-        self.0.borrow().flags.contains(HappenedEvents::FATAL)
     }
 }
 

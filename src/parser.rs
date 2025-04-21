@@ -3,7 +3,7 @@ use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 use index_vec::IndexVec;
 
 use crate::{
-    ast::{self, Literal, LocalId, NodeId, Owner, OwnerId}, diagnostics::{DiagnosticsCtxt, Message}, interface::{self, Session}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol, Token
+    ast::{self, Literal, LocalId, NodeId, Owner, OwnerId}, diagnostics::{DiagnosticsCtxt, Message}, interface::Session, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol, Token
 };
 
 enum ParseTry<'src, T> {
@@ -205,6 +205,8 @@ impl Parsable for Literal {
                     NumberMode::Hex => 16
                 };
 
+                // FIXME: the lexer finds underscores to be valid in number literals, while
+                // this rust function does not
                 let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
                 Some(Literal::Integer(int as i64))
             }
@@ -244,6 +246,8 @@ impl Parsable for u64 {
                 NumberMode::Hex => 16
             };
 
+            // FIXME: the lexer finds underscores to be valid in number literals, while
+            // this rust function does not
             let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
             return Some(int);
         }
@@ -307,6 +311,8 @@ impl Parsable for NumberLiteral {
                     NumberMode::Hex => 16
                 };
 
+                // FIXME: the lexer finds underscores to be valid in number literals, while
+                // this rust function does not
                 let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
                 Some(NumberLiteral::Integer(int as i64))
             }
@@ -1883,7 +1889,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 pub fn parse_file<'a, 'tcx>(
     session: &'tcx Session,
     path: &Path,
-    ast_info: &'tcx interface::AstInfo<'tcx>) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
+    ast_info: &'tcx ast::AstInfo<'tcx>) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
     let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 

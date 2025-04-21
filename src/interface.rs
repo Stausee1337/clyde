@@ -1,5 +1,5 @@
 
-use std::{path::{PathBuf, Path}, env, process::{ExitCode, abort}, str::FromStr, ffi::OsStr, io::Read, fs, cell::{OnceCell, RefCell}, rc::Rc};
+use std::{cell::RefCell, env, ffi::OsStr, fs, io::Read, path::{Path, PathBuf}, process::{abort, ExitCode}, rc::Rc, str::FromStr};
 
 use index_vec::IndexVec;
 #[cfg(target_family = "unix")]
@@ -8,7 +8,7 @@ use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 #[cfg(target_family = "windows")]
 use windows::Win32::System::Memory::{VirtualAlloc, /*VirtualFree, MEM_RELEASE,*/ MEM_COMMIT, MEM_RESERVE,  PAGE_READWRITE};
 
-use crate::{ast, context::{GlobalCtxt, Providers}, diagnostics::DiagnosticsCtxt, intermediate, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck};
+use crate::{ast::AstInfo, context::Providers, diagnostics::DiagnosticsCtxt, intermediate, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck, context::{GlobalCtxt, TyCtxt}};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -35,6 +35,28 @@ impl Session {
 
     pub fn file_cacher(&self) -> &FileCacher {
         &self.file_cacher
+    }
+
+    pub fn global_ctxt<F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> Result<R, ()>, R>(&self, f: F) -> Result<R, ()> {
+        let ast_info = AstInfo {
+            arena: bumpalo::Bump::new(),
+            global_owners: RefCell::new(IndexVec::new())
+        };
+        let entry = parser::parse_file(&self, &self.input, &ast_info)?;
+        let resolutions = resolve::resolve_from_entry(
+            &self.diagnostics,
+            entry, &ast_info
+        );
+
+        let providers = Providers {
+            type_of: typecheck::type_of,
+            typecheck: typecheck::typecheck,
+            fn_sig: typecheck::fn_sig,
+            build_ir: intermediate::build_ir
+        };
+
+        let gcx = GlobalCtxt::new(&self, providers, resolutions);
+        gcx.enter(f)
     }
 }
 
@@ -496,63 +518,5 @@ pub unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
     // let bytes = osstr.as_bytes();
     let bytes = osstr.as_encoded_bytes();
     std::str::from_utf8_unchecked(bytes)
-}
-
-pub struct Compiler<'tcx> {
-    pub sess: Session,
-    ast_info: AstInfo<'tcx>,
-    gcx_cell: OnceCell<GlobalCtxt<'tcx>>,
-    gcx: RefCell<Option<&'tcx GlobalCtxt<'tcx>>>
-}
-
-impl<'tcx> Compiler<'tcx> {
-    fn parse_entry(&'tcx self) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
-        parser::parse_file(&self.sess, &self.sess.input, &self.ast_info)
-    }
-
-    pub fn global_ctxt(&'tcx self) -> Result<&'tcx GlobalCtxt<'tcx>, ()> {
-        let entry = self.parse_entry()?;
-        let resolutions = resolve::resolve_from_entry(
-            &self.sess.diagnostics,
-            entry, &self.ast_info
-        );
-        Ok(self.gcx
-            .borrow_mut()
-            .get_or_insert_with(|| {
-
-            let providers = Providers {
-                type_of: typecheck::type_of,
-                typecheck: typecheck::typecheck,
-                fn_sig: typecheck::fn_sig,
-                build_ir: intermediate::build_ir
-            };
-
-            let gcx = self.gcx_cell
-                .get_or_init(|| GlobalCtxt::new(&self.sess, providers, resolutions));
-            gcx
-        }))
-    }
-}
-
-pub struct AstInfo<'tcx> {
-    pub arena: bumpalo::Bump,
-    pub global_owners: RefCell<IndexVec<ast::OwnerId, ast::Owner<'tcx>>>
-}
-
-pub fn build_compiler<T, F>(sess: Session, f: F) -> T
-where
-    F: for<'tcx> FnOnce(&'tcx Compiler<'tcx>) -> T
-{
-    let mut compiler = Compiler {
-        ast_info: AstInfo {
-            arena: bumpalo::Bump::new(),
-            global_owners: RefCell::new(IndexVec::new())
-        },
-        sess, 
-        gcx_cell: OnceCell::new(),
-        gcx: RefCell::new(None)
-    };
-
-    f(&mut compiler)
 }
 

@@ -1,7 +1,7 @@
 
 use std::collections::HashMap;
 
-use crate::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, interface, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
+use crate::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
 
 /// AST (&tree) 
 ///     |          |
@@ -68,7 +68,7 @@ struct ResolutionState<'tcx> {
 }
 
 pub struct ResolutionResults<'tcx> {
-    pub ast_info: &'tcx interface::AstInfo<'tcx>,
+    pub ast_info: &'tcx ast::AstInfo<'tcx>,
     pub items: Vec<ast::DefId>,
     pub entry: Option<ast::DefId>,
     pub declarations: index_vec::IndexVec<ast::DefId, Definition>
@@ -112,7 +112,7 @@ impl<'tcx> ResolutionState<'tcx> {
         }
     }
 
-    fn results(self, ast_info: &'tcx interface::AstInfo<'tcx>) -> ResolutionResults<'tcx> {
+    fn results(self, ast_info: &'tcx ast::AstInfo<'tcx>) -> ResolutionResults<'tcx> {
         let entry = self.functions.get(&Symbol::intern("main")).map(|decl| decl.site);
         ResolutionResults {
             ast_info,
@@ -497,7 +497,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
 pub fn resolve_from_entry<'tcx>(
     diagnostics: &'tcx DiagnosticsCtxt,
     entry: &'tcx ast::SourceFile<'tcx>,
-    ast_info: &'tcx interface::AstInfo<'tcx>
+    ast_info: &'tcx ast::AstInfo<'tcx>
 ) -> ResolutionResults<'tcx> {
     let mut resolution = ResolutionState::new(diagnostics);
 

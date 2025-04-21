@@ -1,5 +1,9 @@
 
 Ordered (by priority):
+- Fix Integers (no inference, only fix integers, they're broken)
+    - Common types interning
+    - Ctxt Macros
+- Calculate structure data layout
 - Codegen
 - Directives (`#if`, `#include`, etc ...)
     - Files and Imports -> Namespaces

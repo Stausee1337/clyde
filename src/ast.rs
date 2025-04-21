@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::hash::Hash;
 
 use index_vec::IndexVec;
@@ -622,6 +622,11 @@ pub enum GenericParamKind<'ast> {
 pub struct NodeId {
     pub owner: OwnerId,
     pub local: LocalId
+}
+
+pub struct AstInfo<'ast> {
+    pub arena: bumpalo::Bump,
+    pub global_owners: RefCell<IndexVec<OwnerId, Owner<'ast>>>
 }
 
 pub trait IntoNode<'ast> {
