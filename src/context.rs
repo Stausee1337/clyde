@@ -1,4 +1,7 @@
-use std::{cell::{Cell, RefCell}, marker::PhantomData, ops::Deref, collections::{HashMap, hash_map::Entry as StdEntry}};
+use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher}, ops::Deref};
+
+use ahash::AHasher;
+use hashbrown::{hash_map::{HashMap, Entry as MapEntry}, hash_table::{HashTable, Entry as TableEntry}};
 
 use crate::{ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
 
@@ -148,8 +151,8 @@ macro_rules! define_tcx_impls {
             pub fn $name(&self, $key: $pat) -> $rty {
                 let mut cache = self.caches.$name.borrow_mut();
                 match cache.entry($key) {
-                    StdEntry::Occupied(entry) => *entry.get(),
-                    StdEntry::Vacant(entry) => {
+                    MapEntry::Occupied(entry) => *entry.get(),
+                    MapEntry::Vacant(entry) => {
                         let value = (self.providers.$name)(*self, $key);
                         entry.insert(value);
                         value
@@ -165,10 +168,10 @@ for_every_query! { define_providers! }
 for_every_query! { define_tcx_impls! }
 
 macro_rules! define_internables {
-    ($(into $pool:ident intern $name:ident ($in:ty) -> $out:ty;)*) => {
+    ($(into $pool:ident intern $name:ident ($in:ty) -> $($out:ident)::+ <'tcx>;)*) => {
         macro_rules! for_every_internable {
             ( $callback:ident! ) => {
-                $callback!($($in, $out, $name, $pool)*);
+                $callback!($($in, $($out)::+, $name, $pool)*);
             }
         }
     }
@@ -181,16 +184,14 @@ define_internables! {
 }
 
 macro_rules! define_interners {
-    ($($in:ty, $out:ty, $fn:ident, $pool:ident)*) => {
+    ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {
         pub struct Interners<'tcx> {
-            phantom: std::marker::PhantomData<&'tcx ()>,
-            $($pool: (),)*
+            $($pool: RefCell<HashTable<&'tcx $in>>,)*
         }
 
         impl<'tcx> Default for Interners<'tcx> {
             fn default() -> Self {
                 Self {
-                    phantom: PhantomData,
                     $($pool: Default::default(),)*
                 }
             }
@@ -199,11 +200,13 @@ macro_rules! define_interners {
 }
 
 macro_rules! define_intern_fns {
-    ($($in:ty, $out:ty, $fn:ident, $pool:ident)*) => {$(
+    ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {$(
         impl<'tcx> TyCtxt<'tcx> {
-            pub fn $fn(&self, _input: $in) -> $out {
-                let _interner = &self.interners.$pool;
-                todo!();
+            pub fn $fn(&self, input: $in) -> $($out)::+ <'tcx> {
+                let interner = &self.interners.$pool;
+                $($out)::+ (interner.intern(input, |kind| {
+                    self.arena.alloc(kind)
+                }))
             }
         })*
     };
@@ -212,66 +215,29 @@ macro_rules! define_intern_fns {
 for_every_internable! { define_interners! }
 for_every_internable! { define_intern_fns! }
 
-/*
-
-pub trait Internable<'tcx>: Hash + Eq {
-    type Marker: Sized + 'static;
-    type Interned<'a>: Sized;
-
-    fn intern(self, tcx: TyCtxt<'tcx>) -> Self::Interned<'tcx>;
+trait InternerExt<T: Borrow<V> + Hash + Copy, V: Hash + Eq> {
+    fn intern(&self, value: V, f: impl FnOnce(V) -> T) -> T;
 }
 
-pub struct Interner<'tcx> {
-    inner: RefCell<HashTable<(TypeId, u64, *const ())>>,
-    _phantom: PhantomData<&'tcx ()>
-}
+impl<T: Borrow<V> + Hash + Copy, V: Hash + Eq> InternerExt<T, V> for RefCell<HashTable<T>> {
+    fn intern(&self, value: V, f: impl FnOnce(V) -> T) -> T {
+        let hash = make_hash(&value);
+        let mut table = self.borrow_mut();
 
-impl<'tcx> Interner<'tcx> {
-    pub fn new() -> Self {
-        Self {
-            inner: RefCell::new(HashTable::default()),
-            _phantom: PhantomData::default()
-        }
-    }
-
-    pub fn intern<Q: Internable<'tcx>>(&self, q: Q, tcx: TyCtxt<'tcx>) -> &'tcx Q {
-        let q_hash = Self::make_hash(&q);
-        let q_type_id = TypeId::of::<Q::Marker>();
-        let mut table = self.inner.borrow_mut();
-
-        let entry = table.entry(
-            q_hash,
-            |&(e_type_id, e_hash, e_ptr)| {
-                if e_hash != q_hash {
-                    return false;
-                }
-                if e_type_id != q_type_id {
-                    return false;
-                }
-                let e: &'tcx Q = unsafe { &*(e_ptr as *const Q) };
-                q.eq(e)
-            },
-            |&(_, hash, _)| hash);
-
-        match entry {
-            Entry::Occupied(entry) => {
-                let e_ptr = entry.get().2;
-                let e: &'tcx Q = unsafe { &*(e_ptr as *const Q) };
-                e
-            }
-            Entry::Vacant(entry) => {
-                let e = tcx.arena.alloc(q);
-                let e_ptr: *const Q = &*e;
-                entry.insert((q_type_id, q_hash, e_ptr as *const ()));
-                e
+        match table.entry(hash, |item| item.borrow() == &value, |item| make_hash(item)) {
+            TableEntry::Occupied(entry) => *entry.get(),
+            TableEntry::Vacant(entry) => {
+                let v = f(value);
+                entry.insert(v);
+                v
             }
         }
     }
-
-    fn make_hash<H: ?Sized + Hash>(hashable: &H) -> u64 {
-        let mut hasher = AHasher::default();
-        hashable.hash(&mut hasher);
-        hasher.finish()
-    }
 }
-*/
+
+fn make_hash<H: Hash>(hashable: &H) -> u64 {
+    let mut hasher = AHasher::default();
+    hashable.hash(&mut hasher);
+    hasher.finish()
+}
+

@@ -1,6 +1,7 @@
 
-use std::{cell::OnceCell, collections::HashMap, fmt::Write};
+use std::{cell::OnceCell, fmt::Write};
 
+use hashbrown::HashMap;
 use index_vec::{Idx, IndexVec};
 
 use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::{self, TyCtxt}, lexer::{self, Span}, typecheck::TypecheckResults, types::{Const, FieldIdx, Ty, TyKind}};
@@ -281,7 +282,7 @@ struct TranslationCtxt<'tcx> {
     num_params: usize,
     typecheck: &'tcx TypecheckResults<'tcx>,
     registers: IndexVec<RegisterId, Register<'tcx>>,
-    register_lookup: HashMap<ast::NodeId, RegisterId, ahash::RandomState>,
+    register_lookup: HashMap<ast::NodeId, RegisterId>,
     blocks: IndexVec<BlockId, BasicBlock<'tcx>>,
     scope_stack: Vec<BlockScope<'tcx>>
 }
@@ -586,7 +587,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
     fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &ast::Expr<'tcx>) -> BlockId {
         match &expr.kind {
-            ast::ExprKind::Name(name) if matches!(name.resolution(), Some(ast::Resolution::Local(..))) => {
+            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(..)) = name.resolution() => {
                 let place;
                 (block, place) = self.expr_as_place(block, expr);
 
@@ -616,8 +617,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 block
             }
-            ast::ExprKind::BinaryOp(binary) if matches!(binary.operator, lexer::BinaryOp::BooleanOr | lexer::BinaryOp::BooleanAnd) => {
-                let logical = match binary.operator {
+            ast::ExprKind::BinaryOp(binary) if let op @ (lexer::BinaryOp::BooleanOr | lexer::BinaryOp::BooleanAnd) = binary.operator => {
+                let logical = match op {
                     lexer::BinaryOp::BooleanOr => LogicalOp::Or,
                     lexer::BinaryOp::BooleanAnd => LogicalOp::And,
                     _ => unreachable!()
@@ -964,7 +965,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     fn as_register(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> (BlockId, RegisterId) {
         if let ast::ExprKind::Name(name) = &expr.kind {
             if let Some(ast::Resolution::Local(local)) = name.resolution() {
-                return (block, self.register_lookup[&local]);
+                return (block, self.register_lookup[local]);
             }
         }
         let ty = self.typecheck.associations[&expr.node_id];
@@ -976,13 +977,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
     fn try_expr_as_place(&mut self, mut block: BlockId, expr: &ast::Expr<'tcx>) -> Option<(BlockId, Place<'tcx>)> {
         let res = match &expr.kind {
-            ast::ExprKind::Name(name) if matches!(name.resolution(), Some(ast::Resolution::Local(..))) => {
-                let Some(ast::Resolution::Local(local)) = name.resolution() else {
-                    unreachable!();
-                };
-
-                (block, Place::Register(self.register_lookup[&local]))
-            }
+            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() =>
+                (block, Place::Register(self.register_lookup[local])),
             ast::ExprKind::Subscript(subscript) => {
                 debug_assert_eq!(subscript.args.len(), 1);
                 let target;
@@ -1028,22 +1024,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 let ty = self.typecheck.associations[&expr.node_id];
                 (block, Operand::Const(Const::from_literal(self.tcx, ty, literal).unwrap()))
             }
-            ast::ExprKind::Name(name) if !matches!(name.resolution(), Some(ast::Resolution::Local(..))) => match name.resolution() {
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::Function)) =>
-                    (block, Operand::Definition(*def_id)),
-                Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
-                Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
-                Some(ast::Resolution::Local(..)) => unreachable!(),
-                None => panic!("unresolved Name at IR stage")
-            }
-            ast::ExprKind::Name(name) if matches!(name.resolution(), Some(ast::Resolution::Local(..))) => {
-                let Some(ast::Resolution::Local(local)) = name.resolution() else {
-                    unreachable!();
-                };
-
+            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() => {
                 // FIXME: remove duplication with Place and Temporaray handling
                 
-                let mut reg = self.register_lookup[&local];
+                let mut reg = self.register_lookup[local];
                 let info = &self.registers[reg];
                 if info.mutability == Mutability::Mut {
                     let tmp = self.tmp_register(info.ty, Mutability::Const);
@@ -1059,6 +1043,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 }
 
                 (block, Operand::Copy(reg))
+            }
+            ast::ExprKind::Name(name) => match name.resolution() {
+                Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::Function)) =>
+                    (block, Operand::Definition(*def_id)),
+                Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
+                Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
+                Some(ast::Resolution::Local(..)) => unreachable!(),
+                None => panic!("unresolved Name at IR stage")
             }
             _ => {
                 let register;

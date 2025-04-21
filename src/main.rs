@@ -1,3 +1,6 @@
+#![feature(dropck_eyepatch)]
+#![feature(let_chains)]
+#![feature(if_let_guard)]
 
 use std::{env, process::ExitCode};
 

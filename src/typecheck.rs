@@ -1,5 +1,7 @@
 use core::panic;
-use std::{collections::HashMap, cell::Cell};
+use std::cell::Cell;
+
+use hashbrown::HashMap;
 
 use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, self}, ast::{DefId, self, DefinitionKind, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}};
 
@@ -59,11 +61,11 @@ struct TypecheckCtxt<'tcx> {
     diverges: Cell<Diverges>,
     loop_stack: Vec<LoopCtxt>,
     block_stack: Vec<BlockCtxt<'tcx>>,
-    field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
-    variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
+    field_indices: HashMap<ast::NodeId, types::FieldIdx>,
+    variant_translations: HashMap<ast::NodeId, types::FieldIdx>,
     lowering_ctxt: LoweringCtxt<'tcx>,
-    associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
-    locals: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
+    associations: HashMap<ast::NodeId, Ty<'tcx>>,
+    locals: HashMap<ast::NodeId, Ty<'tcx>>,
 }
 
 impl<'tcx> TypecheckCtxt<'tcx> {
@@ -943,7 +945,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             Ty(TyKind::Adt(atd_def)) => match atd_def.kind {
                 types::AdtKind::Struct => {
-                    let fields: HashMap<_, _, ahash::RandomState> = atd_def.fields()
+                    let fields: HashMap<_, _> = atd_def.fields()
                         .map(|(idx, fdef)| (fdef.symbol, (idx, fdef)))
                         .collect();
                     for init in ty_init.initializers {
@@ -959,14 +961,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
                                 self.field_indices.insert(expr.node_id, *idx);
                             }
-                            ast::TypeInitKind::Direct(expr) if matches!(expr.kind, ast::ExprKind::Name(..)) => {
-                                let ident = match &expr.kind {
-                                    ast::ExprKind::Name(name) => &name.ident,
-                                    _ => unreachable!()
-                                };
-                                let Some((idx, fdef)) = fields.get(&ident.symbol) else {
-                                    Message::error(format!("can't find field `{}` on struct {ty}", ident.symbol.get()))
-                                        .at(ident.span)
+                            ast::TypeInitKind::Direct(expr) if let ast::ExprKind::Name(name) = &expr.kind => {
+                                let Some((idx, fdef)) = fields.get(&name.ident.symbol) else {
+                                    Message::error(format!("can't find field `{}` on struct {ty}", name.ident.symbol.get()))
+                                        .at(name.ident.span)
                                         .push(self.diagnostics());
                                     continue;
                                 };
@@ -1268,8 +1266,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = self.check_expr(&expr, Some(ret_ty), true);
         self.maybe_emit_type_error(ty, ret_ty, ret_ty_span);
 
-        if matches!(ret_ty, Ty(types::TyKind::Primitive(types::Primitive::Void))) &&
-            matches!(ty, Ty(types::TyKind::Never)) {
+        if let Ty(types::TyKind::Primitive(types::Primitive::Void)) = ret_ty && let Ty(types::TyKind::Never) = ty {
             Message::warning("unnecessarry return in void function")
                 .at(expr.span)
                 .push(self.diagnostics());
@@ -1441,10 +1438,10 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 }
 
 pub struct TypecheckResults<'tcx> {
-    pub field_indices: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
-    pub variant_translations: HashMap<ast::NodeId, types::FieldIdx, ahash::RandomState>,
-    pub associations: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
-    pub locals: HashMap<ast::NodeId, Ty<'tcx>, ahash::RandomState>,
+    pub field_indices: HashMap<ast::NodeId, types::FieldIdx>,
+    pub variant_translations: HashMap<ast::NodeId, types::FieldIdx>,
+    pub associations: HashMap<ast::NodeId, Ty<'tcx>>,
+    pub locals: HashMap<ast::NodeId, Ty<'tcx>>,
 }
 
 pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {

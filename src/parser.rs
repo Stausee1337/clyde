@@ -1260,7 +1260,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     self.parse_subscript_expr(expr),
                 Token![.] =>
                     self.parse_field_expr(expr),
-                Token![<] if matches!(expr.kind, ast::ExprKind::Name(..)) => {
+                Token![<] if let ast::ExprKind::Name(..) = expr.kind => {
                     match self.maybe_parse_generic_args() {
                         ParseTry::Sure(generic_args) =>
                             self.parse_call_expr(expr, generic_args),
@@ -1597,13 +1597,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 origin: ast::YeetOrigin::Implicit,
                 owner: OnceCell::new()
             })
-        } else if !matches!(expr.kind, ast::ExprKind::Block(..)) {
+        } else if let ast::ExprKind::Block(..) = expr.kind {
+            end = self.cursor.span();
+            ast::StmtKind::Expr(expr)
+        } else {
             TRY!(self.expect_one(Token![;]));
             end = self.cursor.span();
             self.cursor.advance();
-            ast::StmtKind::Expr(expr)
-        } else {
-            end = self.cursor.span();
             ast::StmtKind::Expr(expr)
         };
 

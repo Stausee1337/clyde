@@ -65,7 +65,7 @@ pub struct FieldDef {
 }
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
-pub struct AdtDef<'tcx>(&'tcx AdtDefInner);
+pub struct AdtDef<'tcx>(pub &'tcx AdtDefInner);
 
 impl<'tcx> Deref for AdtDef<'tcx> {
     type Target = AdtDefInner;

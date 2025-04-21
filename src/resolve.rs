@@ -1,5 +1,5 @@
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use crate::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
 
@@ -61,9 +61,9 @@ pub struct Definition {
 struct ResolutionState<'tcx> {
     items: Vec<ast::DefId>,
     diagnostics: &'tcx DiagnosticsCtxt,
-    types: HashMap<Symbol, Declaration, ahash::RandomState>,
-    functions: HashMap<Symbol, Declaration, ahash::RandomState>,
-    globals: HashMap<Symbol, Declaration, ahash::RandomState>,
+    types: HashMap<Symbol, Declaration>,
+    functions: HashMap<Symbol, Declaration>,
+    globals: HashMap<Symbol, Declaration>,
     declarations: index_vec::IndexVec<ast::DefId, Definition>
 }
 
@@ -436,10 +436,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                     ast::TypeExprKind::Err => ()
                 }
             }
-            ast::ExprKind::FunctionCall(call) if matches!(&call.callable.kind, ast::ExprKind::Name(..)) => {
-                let ast::ExprKind::Name(name) = &call.callable.kind else {
-                    unreachable!();
-                };
+            ast::ExprKind::FunctionCall(call) if let ast::ExprKind::Name(name) = &call.callable.kind => {
                 if call.generic_args.len() > 0 {
                     Message::fatal("generic function calls are not supported yet")
                         .at(expr.span)
