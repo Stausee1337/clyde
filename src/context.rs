@@ -1,6 +1,6 @@
-use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher}, ops::Deref};
+use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHasher}, ops::Deref};
 
-use ahash::AHasher;
+use foldhash::quality::FixedState;
 use hashbrown::{hash_map::{HashMap, Entry as MapEntry}, hash_table::{HashTable, Entry as TableEntry}};
 
 use crate::{ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
@@ -235,8 +235,10 @@ impl<T: Borrow<V> + Hash + Copy, V: Hash + Eq> InternerExt<T, V> for RefCell<Has
     }
 }
 
+const HASH_STATE: FixedState = FixedState::with_seed(0x082efa98ec4e6c89);
+
 fn make_hash<H: Hash>(hashable: &H) -> u64 {
-    let mut hasher = AHasher::default();
+    let mut hasher = HASH_STATE.build_hasher();
     hashable.hash(&mut hasher);
     hasher.finish()
 }

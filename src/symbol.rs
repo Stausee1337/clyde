@@ -5,7 +5,7 @@ use std::{
 };
 
 use bumpalo::Bump;
-use ahash::RandomState;
+use foldhash::quality::RandomState;
 
 type StringSet = indexmap::IndexSet<&'static str, RandomState>;
 
