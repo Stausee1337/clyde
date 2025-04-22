@@ -52,7 +52,8 @@ impl Session {
             type_of: typecheck::type_of,
             typecheck: typecheck::typecheck,
             fn_sig: typecheck::fn_sig,
-            build_ir: intermediate::build_ir
+            build_ir: intermediate::build_ir,
+            layout_of: |tcx, def_id| tcx.layout_of(def_id)
         };
         let arena = bumpalo::Bump::new();
 

@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHasher}, ops::Deref};
 
 use foldhash::quality::FixedState;
-use hashbrown::{hash_map::{HashMap, Entry as MapEntry}, hash_table::{HashTable, Entry as TableEntry}};
+use hashbrown::hash_table::{HashTable, Entry as TableEntry, VacantEntry, OccupiedEntry};
 
 use crate::{ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
 
@@ -110,10 +110,10 @@ impl<'tcx> TyCtxt<'tcx> {
 }
 
 macro_rules! define_queries {
-    ($(fn $name:ident($key:ident: $pat:ty) -> $rty:ty;)*) => {
+    ($($(#[$outer:tt])* fn $name:ident($key:ident: $pat:ty) -> $rty:ty;)*) => {
         macro_rules! for_every_query {
             ( $callback:ident! ) => {
-                $callback!($($name, $key, $pat, $rty)*);
+                $callback!($([$($outer)*], $name, $key, $pat, $rty)*);
             }
         }
     }
@@ -124,18 +124,22 @@ define_queries! {
     fn typecheck(key: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
     fn fn_sig(key: ast::DefId) -> types::Signature<'tcx>;
     fn build_ir(key: ast::DefId) -> &'tcx intermediate::Body<'tcx>;
+
+    #[handle_cycle_error]
+    fn layout_of(key: ast::DefId) -> ();
 }
 
+
 macro_rules! define_query_caches {
-    ($($name:ident, $key:ident, $pat:ty, $rty:ty)*) => {
+    ($([$($outer:meta)*], $name:ident, $key:ident, $pat:ty, $rty:ty)*) => {
         pub struct QueryCaches<'tcx> {
-            $(pub $name: RefCell<HashMap<$pat, $rty>>,)*
+            $($name: RefCell<Storage<$pat, $rty>>,)*
         }
 
         impl<'tcx> Default for QueryCaches<'tcx> {
             fn default() -> Self {
                 Self {
-                    $($name: RefCell::new(HashMap::<$pat, $rty>::default()),)*
+                    $($name: RefCell::new(Storage::<$pat, $rty>::default()),)*
                 }
             }
         }
@@ -143,7 +147,7 @@ macro_rules! define_query_caches {
 }
 
 macro_rules! define_providers {
-    ($($name:ident, $key:ident, $pat:ty, $rty:ty)*) => { 
+    ($([$($outer:meta)*], $name:ident, $key:ident, $pat:ty, $rty:ty)*) => { 
         pub struct Providers {
             $(pub $name: for<'tcx> fn(tcx: TyCtxt<'tcx>, $key: $pat) -> $rty,)*
         }
@@ -151,26 +155,197 @@ macro_rules! define_providers {
 }
 
 macro_rules! define_tcx_impls {
-    ($($name:ident, $key:ident, $pat:ty, $rty:ty)*) => {$(
+    ($([$($outer:meta)*], $name:ident, $key:ident, $pat:ty, $rty:ty)*) => {$(
         impl<'tcx> TyCtxt<'tcx> {
             pub fn $name(&self, $key: $pat) -> $rty {
-                let mut cache = self.caches.$name.borrow_mut();
-                match cache.entry($key) {
-                    MapEntry::Occupied(entry) => *entry.get(),
-                    MapEntry::Vacant(entry) => {
-                        let value = (self.providers.$name)(*self, $key);
-                        entry.insert(value);
-                        value
-                    }
-                }
+                use queries::{Queries, Impl};
+                query_by_key::<Impl<{ Queries::$name as u32 }>>(
+                    *self,
+                    $key,
+                    self.providers.$name,
+                    &self.caches.$name,
+                )
             }
         })*
+    };
+}
+
+macro_rules! macro_if {
+    ([$($outer:tt)*] { $($then:tt)* } { $($else:tt)* }) => {
+        macro_if!(@munch [$($outer)*] { $($then)* } { $($else)* });
+    };
+
+    (@munch [handle_cycle_error $($outer:tt)*] { $($then:tt)* } { $($else:tt)* }) => {
+        $($then)*
+    };
+    (@munch [$_:tt $($outer:tt)*] { $($then:tt)* } { $($else:tt)* }) => {
+        macro_if!(@munch [$($outer)*] { $($then)* } { $($else)* }); 
+    };
+    (@munch [] { $($then:tt)* } { $($else:tt)* }) => {
+        $($else)* 
+    };
+}
+
+macro_rules! define_oop {
+    ($([$($outer:tt)*], $name:ident, $key:ident, $pat:ty, $rty:ty)*) => {
+        #[doc(hidden)]
+        mod queries {
+            use super::*;
+
+            #[allow(non_camel_case_types)]
+            #[repr(u32)]
+            pub(super) enum Queries {
+                $($name),*
+            }
+
+            pub(super) struct Impl<const KEY: u32>;
+
+            $(
+                impl Query for Impl<{ Queries::$name as u32 }> {
+                    const NAME: &'static str = stringify!($name);
+
+                    type Key<'tcx> = $pat;
+                    type Value<'tcx> = $rty;
+
+                    fn from_cycle_error<'tcx>(_tcx: TyCtxt<'tcx>) -> Self::Value<'tcx> {
+                        macro_if! {
+                            [$($outer)*] {
+                                return <Self::Value<'tcx> as FromCycleError<'tcx>>::from_cycle_error(_tcx);
+                            } {
+                                // TODO: give better error message as the compiler is crashing
+                                panic!("query `{}` went into a cycle", Self::NAME);
+                            }
+                        }
+                    }
+                }
+            )*
+        }
     };
 }
 
 for_every_query! { define_query_caches! }
 for_every_query! { define_providers! }
 for_every_query! { define_tcx_impls! }
+for_every_query! { define_oop! }
+
+pub trait FromCycleError<'tcx> {
+    fn from_cycle_error(tcx: TyCtxt<'tcx>) -> Self;
+}
+
+impl<'tcx> FromCycleError<'tcx> for () {
+    fn from_cycle_error(_tcx: TyCtxt<'tcx>) -> Self {
+        println!("Handle cycle error");
+    }
+}
+
+pub trait Query {
+    const NAME: &'static str;
+
+    type Key<'a>: Hash + Eq + Copy;
+    type Value<'a>: Copy;
+
+    fn from_cycle_error<'tcx>(tcx: TyCtxt<'tcx>) -> Self::Value<'tcx>;
+}
+
+fn query_by_key<'tcx, Q: Query>(
+    tcx: TyCtxt<'tcx>,
+    key: Q::Key<'tcx>,
+    execute: fn(TyCtxt<'tcx>, Q::Key<'tcx>) -> Q::Value<'tcx>,
+    cache: &RefCell<Storage<Q::Key<'tcx>, Q::Value<'tcx>>>
+) -> Q::Value<'tcx> {
+    let mut lock = cache.borrow_mut();
+
+    match lock.entry(&key) {
+        StorageEntry::Vacant { entry } => {
+            entry.started(key);
+            drop(lock);
+
+            execute_query::<Q>(tcx, key, execute, cache)
+        }
+        StorageEntry::Started { .. } => {
+            Q::from_cycle_error(tcx)
+        }
+        StorageEntry::Occupied { entry } => entry
+    }
+}
+
+fn execute_query<'tcx, Q: Query>(
+    tcx: TyCtxt<'tcx>,
+    key: Q::Key<'tcx>,
+    execute: fn(TyCtxt<'tcx>, Q::Key<'tcx>) -> Q::Value<'tcx>,
+    cache: &RefCell<Storage<Q::Key<'tcx>, Q::Value<'tcx>>>
+) -> Q::Value<'tcx> {
+    let value = execute(tcx, key);
+
+    let mut lock = cache.borrow_mut();
+    match lock.entry(&key) {
+        StorageEntry::Started { mut entry } => {
+            entry.complete(value);
+        },
+        _ => unreachable!("query {} needs to be in Started state", Q::NAME)
+    }
+
+    value
+}
+
+struct Storage<K, V> {
+    table: HashTable<(K, Option<V>)>
+}
+
+impl<K, V> Default for Storage<K, V> {
+    fn default() -> Self {
+        Self {
+            table: HashTable::new()
+        }
+    }
+}
+
+impl<K: Hash + Eq, V: Copy> Storage<K, V> {
+    fn entry(&mut self, key: &K) -> StorageEntry<'_, K, V> {
+        let hash = make_hash(key);
+        match self.table.entry(hash, |(k, _)| k == key, |(k, _)| make_hash(k)) {
+            TableEntry::Vacant(entry) => StorageEntry::Vacant { entry },
+            TableEntry::Occupied(entry) => {
+                match entry.get() {
+                    (_, None) => StorageEntry::Started { entry },
+                    (_, Some(v)) => StorageEntry::Occupied { entry: *v }
+                }
+            }
+        }
+    }
+}
+
+enum StorageEntry<'a, K, V> {
+    Vacant {
+        entry: VacantEntry<'a, (K, Option<V>)>
+    },
+    Started {
+        entry: OccupiedEntry<'a, (K, Option<V>)>
+    },
+    Occupied {
+        entry: V
+    }
+}
+
+trait StorageStartedExt<K> {
+    fn started(self, key: K);
+}
+
+trait StorageCompleteExt<V> {
+    fn complete(&mut self, value: V);
+}
+
+impl<'a, K, V> StorageStartedExt<K> for VacantEntry<'a, (K, Option<V>)> {
+    fn started(self, key: K) {
+        self.insert((key, None));
+    }
+}
+
+impl<'a, K, V> StorageCompleteExt<V> for OccupiedEntry<'a, (K, Option<V>)> {
+    fn complete(&mut self, value: V) {
+        self.get_mut().1 = Some(value);
+    }
+}
 
 macro_rules! define_internables {
     ($(into $pool:ident intern $name:ident ($in:ty) -> $($out:ident)::+ <'tcx>;)*) => {
