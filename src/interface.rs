@@ -54,8 +54,9 @@ impl Session {
             fn_sig: typecheck::fn_sig,
             build_ir: intermediate::build_ir
         };
+        let arena = bumpalo::Bump::new();
 
-        let gcx = GlobalCtxt::new(&self, providers, resolutions);
+        let gcx = GlobalCtxt::new(&self, &arena, providers, resolutions);
         gcx.enter(f)
     }
 }

@@ -207,8 +207,8 @@ impl Parsable for Literal {
 
                 // FIXME: the lexer finds underscores to be valid in number literals, while
                 // this rust function does not
-                let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
-                Some(Literal::Integer(int as i64))
+                let value = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
+                Some(Literal::Integer(ast::Integer { value, signed: false }))
             }
             TokenKind::Literal(repr, LiteralKind::String) => {
                 let mut parser = StringParser::new(StringKind::String);
@@ -272,15 +272,15 @@ impl Parsable for AssociotiveOp {
 }
 
 enum NumberLiteral {
-    Integer(i64),
+    Integer(ast::Integer),
     Floating(f64),
 }
 
 impl NumberLiteral {
     fn neg(self) -> NumberLiteral {
         match self {
-            NumberLiteral::Integer(i) =>
-                NumberLiteral::Integer(-i),
+            NumberLiteral::Integer(ast::Integer { value, signed }) =>
+                NumberLiteral::Integer(ast::Integer { value, signed: !signed }),
             NumberLiteral::Floating(f) =>
                 NumberLiteral::Floating(-f)
         }
@@ -313,8 +313,8 @@ impl Parsable for NumberLiteral {
 
                 // FIXME: the lexer finds underscores to be valid in number literals, while
                 // this rust function does not
-                let int = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
-                Some(NumberLiteral::Integer(int as i64))
+                let value = u64::from_str_radix(repr, radix).expect("unexpected invalid int at parsing stage");
+                Some(NumberLiteral::Integer(ast::Integer { value, signed: false }))
             }
             _ => None
         }

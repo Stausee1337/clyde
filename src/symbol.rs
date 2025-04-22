@@ -41,16 +41,69 @@ impl StringInterner {
     }
 }
 
-const PRIMITIVES: &[&'static str] = &[
-    "bool", "void",
-    "sbyte", "byte", "short", "ushort", "int", "uint", "long", "ulong", "nint", "nuint",
-    "float",
-    "char", "str",
-    "tuple"
-];
+macro_rules! Symbols {
+    ($($symbol:ident),*) => {
+        macro_rules! for_every_sym {
+            ( $callback:ident! ) => {
+                $callback!($($symbol),*);
+            }
+        }
+    }
+}
+
+Symbols! {
+    bool,
+    void,
+    sbyte,
+    byte,
+    short,
+    ushort,
+    int,
+    uint,
+    long,
+    ulong,
+    nint,
+    nuint,
+    float,
+    double,
+    char,
+    string,
+    tuple
+}
+
+macro_rules! define_symbols {
+    ($($symbol:ident),*) => {
+        const SYMBOLS: &[&'static str] = &[$(stringify![$symbol]),*];
+    }
+}
+
+macro_rules! define_mod {
+    ($($symbol:ident),*) => {
+    #[allow(non_upper_case_globals)]
+    #[allow(dead_code)]
+    pub mod sym {
+        use super::Symbol;
+
+        #[doc(hidden)]
+        #[repr(u32)]
+        #[allow(non_camel_case_types)]
+        enum Symbols {
+            $($symbol),*
+        }
+
+
+        $(
+            pub const $symbol: Symbol = Symbol(Symbols::$symbol as u32);
+        )*
+    }
+    }
+}
+
+for_every_sym! { define_symbols! }
+for_every_sym! { define_mod! }
 
 thread_local! {
-    static INTERNED_STRINGS: RefCell<StringInterner> = RefCell::new(StringInterner::prefill(PRIMITIVES));
+    static INTERNED_STRINGS: RefCell<StringInterner> = RefCell::new(StringInterner::prefill(SYMBOLS));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -71,9 +124,5 @@ impl Symbol {
         INTERNED_STRINGS.with(|interner| unsafe {
             transmute(interner.borrow().get(self.0))
         })
-    }
-
-    pub fn is_primtive(&self) -> bool {
-        return self.0 < PRIMITIVES.len() as u32
     }
 }

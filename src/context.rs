@@ -12,21 +12,26 @@ pub struct GlobalCtxt<'tcx> {
     pub interners: Interners<'tcx>,
     pub providers: Providers,
     pub caches: QueryCaches<'tcx>,
+    pub basic_types: types::BasicTypes<'tcx>
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
     pub fn new(
         session: &'tcx Session,
+        arena: &'tcx bumpalo::Bump,
         providers: Providers,
         resolutions: ResolutionResults<'tcx>,
     ) -> GlobalCtxt<'tcx> {
+        let interners = Interners::new(&arena);
+        let basic_types = types::BasicTypes::alloc(&interners);
         Self {
             resolutions,
-            session,
             arena: bumpalo::Bump::new(),
-            interners: Interners::default(),
+            session,
+            interners,
             providers,
             caches: QueryCaches::default(),
+            basic_types
         }
     }
 
@@ -186,12 +191,14 @@ define_internables! {
 macro_rules! define_interners {
     ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {
         pub struct Interners<'tcx> {
-            $($pool: RefCell<HashTable<&'tcx $in>>,)*
+            pub arena: &'tcx bumpalo::Bump,
+            $(pub $pool: RefCell<HashTable<&'tcx $in>>,)*
         }
 
-        impl<'tcx> Default for Interners<'tcx> {
-            fn default() -> Self {
+        impl<'tcx> Interners<'tcx> {
+            fn new(arena: &'tcx bumpalo::Bump) -> Self {
                 Self {
+                    arena,
                     $($pool: Default::default(),)*
                 }
             }
@@ -205,7 +212,7 @@ macro_rules! define_intern_fns {
             pub fn $fn(&self, input: $in) -> $($out)::+ <'tcx> {
                 let interner = &self.interners.$pool;
                 $($out)::+ (interner.intern(input, |kind| {
-                    self.arena.alloc(kind)
+                    self.interners.arena.alloc(kind)
                 }))
             }
         })*
@@ -215,7 +222,7 @@ macro_rules! define_intern_fns {
 for_every_internable! { define_interners! }
 for_every_internable! { define_intern_fns! }
 
-trait InternerExt<T: Borrow<V> + Hash + Copy, V: Hash + Eq> {
+pub trait InternerExt<T: Borrow<V> + Hash + Copy, V: Hash + Eq> {
     fn intern(&self, value: V, f: impl FnOnce(V) -> T) -> T;
 }
 

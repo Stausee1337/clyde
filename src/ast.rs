@@ -536,11 +536,17 @@ pub enum ArrayCapacity<'ast> {
 #[derive(Debug, Clone)]
 pub enum Literal {
     Null,
-    Integer(i64),
+    Integer(Integer),
     Floating(f64),
     Boolean(bool),
     Char(char),
     String(String)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Integer {
+    pub value: u64,
+    pub signed: bool
 }
 
 #[derive(Debug, Clone)]

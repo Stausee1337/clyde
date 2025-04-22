@@ -3,7 +3,7 @@ use std::cell::Cell;
 
 use hashbrown::HashMap;
 
-use crate::{context::TyCtxt, types::{Ty, ConstInner, Primitive, self}, ast::{DefId, self, DefinitionKind, NodeId}, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}};
+use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}, types::{self, ConstInner, Integer, Ty}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -163,7 +163,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_stmt_if(&mut self, if_stmt: &'tcx ast::If<'tcx>) -> Ty<'tcx> {
         self.check_expr_with_expectation(
-            if_stmt.condition, Expectation::Coerce(Ty::new_primitive(self.tcx, types::Primitive::Bool)));
+            if_stmt.condition, Expectation::Coerce(self.tcx.basic_types.bool));
 
         self.maybe_warn_unreachable(if_stmt.body.span, "block");
 
@@ -181,7 +181,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             self.diverges.set(std::cmp::max(cond_diverges, std::cmp::min(body_diverges, else_diverges)));
         } else {
             self.diverges.set(cond_diverges);
-            body_ty = Ty::new_primitive(self.tcx, types::Primitive::Void);
+            body_ty = self.tcx.basic_types.void;
         }
 
         // self.diverges.set(std::cmp::max(self.diverges.get(), prev_diverge));
@@ -191,8 +191,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_stmt_while(&mut self, while_loop: &'tcx ast::While<'tcx>, node_id: NodeId) -> Ty<'tcx> {
 
-        let bool = Ty::new_primitive(self.tcx, types::Primitive::Bool);
-        let res = self.check_expr_with_expectation(while_loop.condition, Expectation::Coerce(bool));
+        let res = self.check_expr_with_expectation(while_loop.condition, Expectation::Coerce(self.tcx.basic_types.bool));
 
         self.maybe_warn_unreachable(while_loop.body.span, "block");
 
@@ -200,7 +199,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         let mut endless = false;
         // TODO: replace with propper compile time constant evaluation
-        if res == bool && matches!(while_loop.condition.kind, ast::ExprKind::Literal(ast::Literal::Boolean(true))) {
+        if res == self.tcx.basic_types.bool && matches!(while_loop.condition.kind, ast::ExprKind::Literal(ast::Literal::Boolean(true))) {
             endless = true;
         }
 
@@ -208,17 +207,16 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             owner: node_id, may_break: false
         };
 
-        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
         let (ctxt, ()) = self.enter_loop_ctxt(ctxt, |this| {
-            this.check_block(&while_loop.body, Expectation::Coerce(void));
+            this.check_block(&while_loop.body, Expectation::Coerce(this.tcx.basic_types.void));
         });
 
         if !endless || ctxt.may_break {
             self.diverges.set(std::cmp::max(cond_diverges, Diverges::Maybe));
-            return Ty::new_primitive(self.tcx, types::Primitive::Void);
+            return self.tcx.basic_types.void;
         }
 
-        Ty::new_never(self.tcx)
+        self.tcx.basic_types.never
     }
 
     fn check_stmt_for(&mut self, for_loop: &'tcx ast::For<'tcx>, node_id: NodeId) -> Ty<'tcx> {
@@ -254,15 +252,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             owner: node_id, may_break: false
         };
 
-        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
         let (_, ()) = self.enter_loop_ctxt(ctxt, |this| {
-            this.check_block(&for_loop.body, Expectation::Coerce(void));
+            this.check_block(&for_loop.body, Expectation::Coerce(this.tcx.basic_types.void));
         });
 
         self.diverges.set(std::cmp::max(iter_diverges, Diverges::Maybe));
 
-        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
-        void
+        self.tcx.basic_types.void
     }
 
     fn check_stmt_local(&mut self, stmt: &'tcx ast::Stmt<'tcx>, local: &'tcx ast::Local<'tcx>) -> Ty<'tcx> {
@@ -277,23 +273,22 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
         }
 
-        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
         if expected.is_none() && local.init.is_none() {
             Message::error("type-anonymous variable declarations require an init expresssion")
                 .at(stmt.span)
                 .push(self.diagnostics());
             self.ty_local(stmt.node_id, Ty::new_error(self.tcx));
-            void
+            self.tcx.basic_types.void
         } else if let Some(expr) = local.init {
             let ty = self.check_expr_with_expectation(expr, expected.into());
             self.ty_local(stmt.node_id, expected.unwrap_or(ty));
             if let Ty(types::TyKind::Never) = ty {
                 return ty;
             }
-            void
+            self.tcx.basic_types.void
         } else if let Some(expected) = expected {
             self.ty_local(stmt.node_id, expected);
-            void
+            self.tcx.basic_types.void
         } else {
             unreachable!()
         }
@@ -329,10 +324,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .as_ref()
                     .map(|expr| self.check_expr_with_expectation(expr, Expectation::Coerce(return_ty)));
                 if let None = ty {
-                    let ty = Ty::new_primitive(self.tcx, types::Primitive::Void);
+                    let ty = self.tcx.basic_types.void;
                     self.maybe_emit_type_error(ty, return_ty, stmt.span);
                 }
-                return Ty::new_never(self.tcx);
+                return self.tcx.basic_types.never;
             }
             ast::StmtKind::ControlFlow(flow) => {
                 if let Ok(owner) = flow.destination.get().expect("owner or error resolved during resolution phase") {
@@ -340,7 +335,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         let ctxt = self.loop_ctxt(*owner).expect("loop destination for break;");
                         ctxt.may_break = true;
                     }
-                    return Ty::new_never(self.tcx);
+                    return self.tcx.basic_types.never;
                 } else {
                     return Ty::new_error(self.tcx);
                 }
@@ -363,39 +358,63 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
                 match (ty, expected) {
                     (None, Some(expected)) => {
-                        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
-                        self.maybe_emit_type_error(void, expected, stmt.span);
+                        self.maybe_emit_type_error(self.tcx.basic_types.void, expected, stmt.span);
                     }
                     (Some(found), None) => {
                         let block_ctxt = self.block_ctxt().unwrap();
                         block_ctxt.result_ty = Some(found);
                     }
                     (None, None) => {
-                        let void = Ty::new_primitive(self.tcx, types::Primitive::Void);
+                        let void = self.tcx.basic_types.void;
                         let block_ctxt = self.block_ctxt().unwrap();
                         block_ctxt.result_ty = Some(void);
                     },
                     (Some(..), Some(..)) => (), // expression already typechecked
                 }
-                return Ty::new_never(self.tcx);
+                return self.tcx.basic_types.never;
             }
             ast::StmtKind::Err => (),
         }
-        Ty::new_primitive(self.tcx, types::Primitive::Void)
+        self.tcx.basic_types.void
     }
 
-    fn check_expr_integer(&mut self, int: i64, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
-        if let Some(expected @ Ty(types::TyKind::Primitive(primitive))) = expected {
-            if primitive.integer_fit(int) {
+    fn check_expr_integer(&mut self, int: ast::Integer, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
+        let mut min_int = if int.signed {
+            let Some(int) = Integer::fit_signed(-(int.value as i128)) else {
+                Message::error(format!("{} does not fit into signed long", int.value))
+                    .at(span)
+                    .push(self.diagnostics());
+                return Ty::new_error(self.tcx);
+            };
+            int
+        } else {
+            Integer::fit_unsigned(int.value)
+        };
+
+        // check if there is an expectation and that the singed requirements hold, which are:
+        //      - the integers are the same signedness
+        //      - or a signed value as expected, but an unsigned value was provided
+        if let Some(expected @ Ty(types::TyKind::Int(integer, signed))) = expected && *signed | !int.signed {
+            let min_int = if *signed {
+                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size())
+            } else {
+                Integer::fit_unsigned(int.value).size()
+            };
+            if integer.size() >= min_int {
                 return expected;
             }
         }
-        for primitive in [Primitive::Int, Primitive::Long, Primitive::ULong] {
-            if primitive.integer_fit(int) {
-                return Ty::new_primitive(self.tcx, primitive);
-            }
+
+        if min_int.size() < Integer::I32.size() {
+            min_int = Integer::I32;
         }
-        panic!("u64 to big for ulong ???")
+
+        let mut signed = int.signed;
+        if !int.signed && Integer::fit_signed(int.value as i128).is_some() {
+            signed = true;
+        }
+
+        Ty::new_int(self.tcx, min_int, signed)
     }
 
     fn check_block(&mut self, block: &'tcx ast::Block, expectation: Expectation<'tcx>) -> Ty<'tcx> {
@@ -414,9 +433,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
 
         let ty = if let Diverges::Maybe = self.diverges.get() {
-            Ty::new_primitive(self.tcx, types::Primitive::Void)
+            self.tcx.basic_types.void
         } else {
-            Ty::new_never(self.tcx)
+            self.tcx.basic_types.never
         };
 
 
@@ -461,16 +480,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_op_between(&self, op: lexer::BinaryOp, lhs: Ty<'tcx>, rhs: Ty<'tcx>) -> Option<Ty<'tcx>> {
-        const OPERATOR_SIZES: [types::Primitive; 10] = {
-            use types::Primitive::*;
-            [SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint]
-        };
-
         macro_rules! boolop {
             ($ret:expr) => {{
                 use lexer::BinaryOp::*;
                 if let GreaterThan | GreaterEqual | LessThan | LessEqual = op {
-                    return Some(Ty::new_primitive(self.tcx, types::Primitive::Bool));
+                    return Some(self.tcx.basic_types.bool);
                 }
                 return Some($ret);
             }};
@@ -484,13 +498,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 panic!("check_op_between used on invalid operator {op:?}");
             };
         }
-        fn get_int(ty: Ty<'_>) -> Option<types::Primitive> {
-            use types::Primitive::*;
-
+        fn get_int(ty: Ty<'_>) -> Option<Ty<'_>> {
             match ty { 
-                Ty(types::TyKind::Primitive(p @
-                        (SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint))) =>
-                    Some(*p),
+                Ty(types::TyKind::Int(..)) => Some(ty),
                 _ => None,
             }
         }
@@ -505,26 +515,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         // Simple case
         if lhs_int == rhs_int {
-            boolop!(Ty::new_primitive(self.tcx, lhs_int));
-        }
-
-        // TODO: cosider operator symmetry (Plus, Mul, BitwiseAnd, BitwiseOr, BitwiseXor)
-        // TODO: for non symmetrical operators, if lhs.size() < rhs.size(), try to coerce lhs
-        // upwards 
-
-        // For now, we assume lhs.size() > rhs.size()
-        let lhs_signed = lhs_int.signed().unwrap();
-        for int in OPERATOR_SIZES.iter().rev() {
-            if int.size() >= lhs_int.size() {
-                continue;
-            }
-            let int_signed = int.signed().unwrap();
-            if !lhs_signed && int_signed {
-                continue;
-            }
-            if *int == rhs_int {
-                boolop!(Ty::new_primitive(self.tcx, lhs_int));
-            }
+            boolop!(lhs_int);
         }
 
         return None;
@@ -587,7 +578,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
                 let ty = self.check_expr_with_expectation(lhs, Expectation::None);
                 self.check_expr_with_expectation(rhs, Expectation::Coerce(ty));
-                return Ty::new_primitive(self.tcx, types::Primitive::Bool);
+                return self.tcx.basic_types.bool;
             }
             GreaterThan | GreaterEqual | LessThan | LessEqual => {
                 {
@@ -614,21 +605,21 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     return Ty::new_error(self.tcx);
                 };
                 {
-                    use types::TyKind::{Primitive, Err, Never};
+                    use types::TyKind::{Bool, Err, Never};
                     assert!(
-                        matches!(ret_ty, Ty(Primitive(types::Primitive::Bool) | Err | Never)),
+                        matches!(ret_ty, Ty(Bool | Err | Never)),
                         "some equality comparison does not produce boolean");
                 }
-                return Ty::new_primitive(self.tcx, types::Primitive::Bool);
+                return self.tcx.basic_types.bool;
             }
             BooleanAnd | BooleanOr => {
                 self.check_expr_with_expectation(
-                    &binop.lhs, Expectation::Coerce(Ty::new_primitive(self.tcx, types::Primitive::Bool)));
+                    &binop.lhs, Expectation::Coerce(self.tcx.basic_types.bool));
 
                 self.check_expr_with_expectation(
-                    &binop.rhs, Expectation::Coerce(Ty::new_primitive(self.tcx, types::Primitive::Bool)));
+                    &binop.rhs, Expectation::Coerce(self.tcx.basic_types.bool));
 
-                return Ty::new_primitive(self.tcx, types::Primitive::Bool);
+                return self.tcx.basic_types.bool;
             }
         }
     }
@@ -636,15 +627,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     fn check_expr_unary(&mut self, unary: &'tcx ast::UnaryOp<'tcx>, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         match unary.operator {
             lexer::UnaryOp::Minus => {
-                use types::TyKind::{Err, Never, Primitive};
-                use types::Primitive::{SByte, Short, Int, Long, Nint};
+                use types::TyKind::{Err, Never, Int};
 
                 let expectation = match expected {
                     Some(expected) => Expectation::Guide(expected),
                     None => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(unary.expr, expectation);
-                let Ty(Primitive(SByte | Short | Int | Long | Nint) | Err | Never) = ty else {
+                let Ty(Int(_, /* signed */ true) | Err | Never) = ty else {
                     Message::error(format!("negation `-` is not defined for type {ty}"))
                         .at(unary.expr.span)
                         .push(self.diagnostics());
@@ -653,15 +643,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ty
             }
             lexer::UnaryOp::BitwiseNot => {
-                use types::TyKind::{Err, Never, Primitive};
-                use types::Primitive::{SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint};
+                use types::TyKind::{Err, Never, Int};
 
                 let expectation = match expected {
                     Some(expected) => Expectation::Guide(expected),
                     None => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(unary.expr, expectation);
-                let Ty(Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint) | Err | Never) = ty else {
+                let Ty(Int(_, _) | Err | Never) = ty else {
                     Message::error(format!("invert `~` is not defined for type {ty}"))
                         .at(unary.expr.span)
                         .push(self.diagnostics());
@@ -670,8 +659,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ty
             }
             lexer::UnaryOp::Not => {
-                let bool = Ty::new_primitive(self.tcx, types::Primitive::Bool);
-                self.check_expr_with_expectation(unary.expr, Expectation::Coerce(bool))
+                self.check_expr_with_expectation(unary.expr, Expectation::Coerce(self.tcx.basic_types.bool))
             }
             lexer::UnaryOp::Ref => {
                 let expectation = match expected {
@@ -756,14 +744,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 .at(index_span)
                 .push(self.diagnostics());
         }
-        let nuint = Ty::new_primitive(self.tcx, types::Primitive::NUint);
-        let arg = self.check_expr_with_expectation(subscript.args.first().unwrap(), Expectation::Guide(nuint));
+        let arg = self.check_expr_with_expectation(subscript.args.first().unwrap(), Expectation::Guide(self.tcx.basic_types.nuint));
         if let Ty(types::TyKind::Err | types::TyKind::Never) = arg {
             return arg;
         }
 
-        if let Ty(types::TyKind::Primitive(prim)) = arg {
-            if !prim.signed().unwrap_or(true) {
+        if let Ty(types::TyKind::Int(_, signed)) = arg {
+            if !signed {
                 return base;
             }
         }
@@ -889,9 +876,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return Ty::new_error(self.tcx);
         };*/
 
-        use types::TyKind;
+        use types::TyKind::{self, Int, Float, Char, Bool, Void, String};
         match ty {
-            Ty(TyKind::Primitive(..)) => {
+            Ty(Int(..) | Float(..) | Char | Bool | Void | String) => {
                 Message::error(format!("expected struct, found primitive {ty}"))
                     .at(span)
                     .note("initialze primitive directly")
@@ -945,6 +932,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             Ty(TyKind::Adt(atd_def)) => match atd_def.kind {
                 types::AdtKind::Struct => {
+                    // FIXME: Don't build reverse field lookup every time
+                    // we need to lookup fields
                     let fields: HashMap<_, _> = atd_def.fields()
                         .map(|(idx, fdef)| (fdef.symbol, (idx, fdef)))
                         .collect();
@@ -998,7 +987,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_valid_cast(&self, from: Ty<'tcx>, to: Ty<'tcx>) -> bool {
-        use types::TyKind::{Err, Never, Primitive};
+        use types::TyKind::{Err, Never, Int, Float, Char, Bool};
         if let Ty(Err | Never) = from {
             return true;
         }
@@ -1006,24 +995,18 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return true;
         }
 
-        let Ty(Primitive(from)) = from else {
-            return false;
-        };
-
-        let Ty(Primitive(to)) = to else {
-            return false;
-        };
-
-        if from.signed().is_some() && to.signed().is_some() {
-            // both are numbers
-            // which are always castable between each other
+        if let (Ty(Int(..) | Float(..)), Ty(Int(..) | Float(..))) = (to, from) {
             return true;
-        }
+        } 
 
-        // u32 <-> char conversions are also valid
+        // int <-> bool conversions +
+        // u32 <-> char conversions
         return match (from, to) {
-            (types::Primitive::Uint, types::Primitive::Char) => true,
-            (types::Primitive::Char, types::Primitive::Uint) => true,
+            (Ty(Int(..)), Ty(Bool)) => true,
+            (Ty(Bool), Ty(Int(..))) => true,
+
+            (Ty(Int(Integer::I32, false)), Ty(Char)) => true,
+            (Ty(Char), Ty(Int(Integer::I32, false))) => true,
             _ => false
         };
     }
@@ -1082,32 +1065,39 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         Ty::new_tuple(self.tcx, tys)
     }
 
-    fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>, is_body: bool) -> Ty<'tcx> {
-        match &expr.kind {
-            ast::ExprKind::Literal(ast::Literal::String(..)) => 
-                Ty::new_primitive(self.tcx, Primitive::String),
-            ast::ExprKind::Literal(ast::Literal::Boolean(..)) =>
-                Ty::new_primitive(self.tcx, Primitive::Bool),
-            ast::ExprKind::Literal(ast::Literal::Char(..)) =>
-                Ty::new_primitive(self.tcx, Primitive::Char),
-            ast::ExprKind::Literal(ast::Literal::Integer(int)) =>
-                self.check_expr_integer(*int, expected),
-            ast::ExprKind::Literal(ast::Literal::Floating(..)) => todo!(),
-            ast::ExprKind::Literal(ast::Literal::Null) => {
+    fn check_expr_literal(&mut self, literal: &'tcx ast::Literal, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
+        match literal {
+            ast::Literal::String(..) => 
+                self.tcx.basic_types.string,
+            ast::Literal::Boolean(..) =>
+                self.tcx.basic_types.bool,
+            ast::Literal::Char(..) =>
+                self.tcx.basic_types.char,
+            ast::Literal::Integer(int) =>
+                self.check_expr_integer(*int, expected, span),
+            ast::Literal::Floating(..) => todo!(),
+            ast::Literal::Null => {
                 let Some(expected) = expected else {
                     Message::error("can't infer type of anonymous null")
-                        .at(expr.span)
+                        .at(span)
                         .push(self.diagnostics());
                     return Ty::new_error(self.tcx);
                 };
                 let Ty(types::TyKind::Never | types::TyKind::Err | types::TyKind::Refrence(..)) = expected else {
                     Message::error(format!("non refrence-type {expected} cannot be null"))
-                        .at(expr.span)
+                        .at(span)
                         .push(self.diagnostics());
                     return expected
                 };
                 expected
             }
+        }
+    }
+
+    fn check_expr(&mut self, expr: &'tcx ast::Expr, expected: Option<Ty<'tcx>>, is_body: bool) -> Ty<'tcx> {
+        match &expr.kind {
+            ast::ExprKind::Literal(literal) =>
+                self.check_expr_literal(literal, expected, expr.span),
             ast::ExprKind::BinaryOp(binop) =>
                 self.check_expr_binop(binop, expr.span, expected),
             ast::ExprKind::AssignOp(assign) =>
@@ -1161,15 +1151,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         (start, end) = (end, start);
                     }
 
-                    let nuint = Ty::new_primitive(self.tcx, types::Primitive::NUint);
-                    let expectation = Expectation::Guide(nuint);
+                    let expectation = Expectation::Guide(self.tcx.basic_types.nuint);
                     let start_ty = self.check_expr_with_expectation(start, expectation);
                     self.check_expr_with_expectation(end, Expectation::Guide(start_ty));
                 }
-                use types::{
-                    TyKind::{Never, Err, Primitive},
-                    Primitive::{SByte, Byte, Short, UShort, Int, Uint, Long, ULong, Nint, NUint, Char}
-                };
+                use types::TyKind::{Never, Err, Int};
 
                 let start_ty = self.associations[&range.start.node_id];
                 let end_ty = self.associations[&range.end.node_id];
@@ -1178,24 +1164,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     self.maybe_emit_type_error(end_ty, start_ty, expr.span);
                     has_error = true;
                 }
-                if !matches!(
-                    start_ty, 
-                    Ty(Never | Err | 
-                       Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
-                    Message::error(
-                        format!("type {start_ty} is not steppable")
-                    )
+                if !matches!(start_ty, Ty(Never | Err | Int(..))) {
+                    Message::error(format!("type {start_ty} is not steppable"))
                         .at(range.start.span)
                         .push(self.diagnostics());
                     has_error = true;
                 }
-                if !matches!(
-                    end_ty, 
-                    Ty(Never | Err | 
-                       Primitive(SByte | Byte | Short | UShort | Int | Uint | Long | ULong | Nint | NUint | Char))) {
-                    Message::error(
-                        format!("type {end_ty} is not steppable")
-                    )
+                if !matches!(end_ty, Ty(Never | Err | Int(..))) {
+                    Message::error(format!("type {end_ty} is not steppable"))
                         .at(range.end.span)
                         .push(self.diagnostics());
                     has_error = true;
@@ -1266,7 +1242,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = self.check_expr(&expr, Some(ret_ty), true);
         self.maybe_emit_type_error(ty, ret_ty, ret_ty_span);
 
-        if let Ty(types::TyKind::Primitive(types::Primitive::Void)) = ret_ty && let Ty(types::TyKind::Never) = ty {
+        if let Ty(types::TyKind::Void) = ret_ty && let Ty(types::TyKind::Never) = ty {
             Message::warning("unnecessarry return in void function")
                 .at(expr.span)
                 .push(self.diagnostics());
@@ -1326,9 +1302,8 @@ impl<'tcx> LoweringCtxt<'tcx> {
         };
         match resolution {
             ast::Resolution::Primitive => {
-                let primitive = Primitive::try_from(name.ident.symbol)
-                    .expect("non-primitive Ident for primitive name resolution");
-                Ty::new_primitive(self.tcx, primitive)
+               name.ident.symbol.get_primitive_ty(self.tcx)
+                   .expect("non-primitive Ident for primitive name resolution")
             }
             ast::Resolution::Def(def_id, DefinitionKind::Enum | DefinitionKind::Struct) =>
                 self.tcx.type_of(*def_id),
@@ -1431,7 +1406,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             // FIXME: GenericArgs aren't supported at all currently,
             // making the only other place for a NestedConst ArrayCap,
             // which is always nuint
-            Ty::new_primitive(tcx, types::Primitive::NUint)
+            tcx.basic_types.nuint
         }
         _ => panic!("only items can be declarations")
     }

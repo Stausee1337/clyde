@@ -263,7 +263,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             name.resolve(Resolution::Def(decl.site, decl.kind));
         } else if let Some(local) = self.resolve_local(name.ident.symbol) {
             name.resolve(Resolution::Local(local.site));
-        } else if name.ident.symbol.is_primtive() && space == NameSpace::Type {
+        } else if name.ident.symbol.is_primitive_ty() && space == NameSpace::Type {
             name.resolve(Resolution::Primitive);
         } else {
             if report_error {
