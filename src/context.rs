@@ -129,7 +129,6 @@ define_queries! {
     fn layout_of(key: ast::DefId) -> ();
 }
 
-
 macro_rules! define_query_caches {
     ($([$($outer:meta)*], $name:ident, $key:ident, $pat:ty, $rty:ty)*) => {
         pub struct QueryCaches<'tcx> {
@@ -262,9 +261,7 @@ fn query_by_key<'tcx, Q: Query>(
 
             execute_query::<Q>(tcx, key, execute, cache)
         }
-        StorageEntry::Started { .. } => {
-            Q::from_cycle_error(tcx)
-        }
+        StorageEntry::Started { .. } => Q::from_cycle_error(tcx),
         StorageEntry::Occupied { entry } => entry
     }
 }
@@ -279,10 +276,8 @@ fn execute_query<'tcx, Q: Query>(
 
     let mut lock = cache.borrow_mut();
     match lock.entry(&key) {
-        StorageEntry::Started { mut entry } => {
-            entry.complete(value);
-        },
-        _ => unreachable!("query {} needs to be in Started state", Q::NAME)
+        StorageEntry::Started { mut entry } => entry.complete(value),
+        _ => unreachable!("query {} expected in Started state", Q::NAME)
     }
 
     value
@@ -358,7 +353,7 @@ macro_rules! define_internables {
 }
 
 define_internables! {
-    into adt_defs intern intern_adt(types::AdtDefInner) -> types::AdtDef<'tcx>;
+    into adt_defs intern intern_adt(types::AdtKind) -> types::AdtDef<'tcx>;
     into tys      intern intern_ty(types::TyKind<'tcx>) -> types::Ty<'tcx>;
     into consts   intern intern_const(types::ConstInner<'tcx>) -> types::Const<'tcx>;
 }

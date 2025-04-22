@@ -175,7 +175,7 @@ impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
     }
 
     fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
-        node_visitor::visit_option(variant_def.sset, |sset| self.visit_expr(sset));
+        node_visitor::visit_option(variant_def.sset, |sset| self.visit_nested_const(sset));
         variant_def.def_id.set(self.declare(variant_def.node_id, DefinitionKind::Variant))
             .unwrap();
     }

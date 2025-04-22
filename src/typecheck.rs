@@ -1,9 +1,8 @@
-use core::panic;
 use std::cell::Cell;
 
 use hashbrown::HashMap;
 
-use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}, types::{self, ConstInner, Integer, Ty}};
+use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}, types::{self, AdtDef, AdtKind, ConstInner, Integer, Ty}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -62,7 +61,7 @@ struct TypecheckCtxt<'tcx> {
     loop_stack: Vec<LoopCtxt>,
     block_stack: Vec<BlockCtxt<'tcx>>,
     field_indices: HashMap<ast::NodeId, types::FieldIdx>,
-    variant_translations: HashMap<ast::NodeId, types::FieldIdx>,
+    variant_translations: HashMap<ast::NodeId, types::VariantIdx>,
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>>,
     locals: HashMap<ast::NodeId, Ty<'tcx>>,
@@ -789,93 +788,41 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::FieldIdent::Tuple { value, span } =>
                 return self.check_expr_ftuple(ty, *value as usize, *span),
         };
-        let Ty(types::TyKind::Adt(adt_def)) = self.autoderef(ty, -1).unwrap_or(ty) else {
-            Message::error(format!("fields are only found on structs {ty}"))
+        let Ty(types::TyKind::Adt(adt)) = self.autoderef(ty, -1).unwrap_or(ty) else {
+            Message::error(format!("fields are only found on structs, not {ty}"))
                 .at(field.expr.span)
                 .push(self.diagnostics());
             return Ty::new_error(self.tcx);
         };
 
-        // types::AdtKind::Enum => {
-        //     self.diagnostics.error(format!("can't find variant `{}` on enum {ty}", field.symbol.get()))
-        //         .at(field.span);
-        // }
-
-        let Some((idx, fdef)) = adt_def.fields()
-            .find(|(_, fdef)| fdef.symbol == field_ident.symbol) else {
-            match adt_def.kind {
-                types::AdtKind::Enum =>
-                    unreachable!("Enum shouldn't apear here"),
-                types::AdtKind::Struct => {
-                    Message::error(format!("can't find field `{}` on struct {ty}", field_ident.symbol.get()))
-                        .at(field_ident.span)
-                        .push(self.diagnostics());
-                }
-                types::AdtKind::Union =>
-                    panic!("unions are not even parsable with this parser")
+        let field = match adt {
+            AdtDef(AdtKind::Struct(strct)) =>
+                strct
+                .fields()
+                .find(|(_, def)| def.symbol == field_ident.symbol),
+            _ => {
+                Message::error(format!("fields are only found on structs, not on {}s", adt.kind()))
+                    .at(field.expr.span)
+                    .push(self.diagnostics());
+                return Ty::new_error(self.tcx);
             }
+        };
+
+        let Some((idx, field)) = field else {
+            Message::error(format!("can't find field `{}` on struct {ty}", field_ident.symbol.get()))
+                .at(field_ident.span)
+                .push(self.diagnostics());
             return Ty::new_error(self.tcx);
         };
 
         self.field_indices.insert(node_id, idx);
-        self.tcx.type_of(fdef.def)
+        self.tcx.type_of(field.def)
     }
  
-    fn check_expr_variant(
-        &mut self, ty_expr: Option<&'tcx ast::TypeExpr>,
-        variant: &'tcx ast::Ident, node_id: ast::NodeId, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
-        let ty = ty_expr.map(|expr| self.lowering_ctxt.lower_ty(expr));
-        
-        let Some(ty) = ty.or(expected) else {
-            Message::error(format!("can't infer enum of shortand variant"))
-                .at(span)
-                .push(self.diagnostics());
-            return Ty::new_error(self.tcx);
-        };
-
-        if let Ty(types::TyKind::Never | types::TyKind::Err) = ty {
-            return ty;
-        }
-
-        let Ty(types::TyKind::Adt(adt_def)) = ty else {
-            Message::error(format!("variants are only found on enums {ty}"))
-                .at(span)
-                .push(self.diagnostics());
-            return Ty::new_error(self.tcx);
-        };
-
-
-        match adt_def.kind {
-            types::AdtKind::Enum => (),
-            types::AdtKind::Union =>
-                panic!("unions are not even parsable with this parser"),
-            types::AdtKind::Struct =>
-                unreachable!("its an ENUM variant")
-        }
-
-        let Some((idx, _)) = adt_def.fields()
-            .find(|(_, vriant)| vriant.symbol == variant.symbol) else {
-            Message::error(format!("can't find variant `{}` on enum {ty}", variant.symbol.get()))
-                .at(variant.span)
-                .push(self.diagnostics());
-            return Ty::new_error(self.tcx);
-        };
-
-        self.variant_translations.insert(node_id, idx);
-        ty
-    }
-
     fn check_expr_init(
-        &mut self, ty_init: &'tcx ast::TypeInit<'tcx>, _expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
+        &mut self, ty_init: &'tcx ast::TypeInit<'tcx>, span: Span) -> Ty<'tcx> {
         let ty = self.lowering_ctxt.lower_ty(ty_init.ty);
         
-        /*let Some(ty) = ty.or(expected) else {
-            Message::error("can't infer type of anonymous init expresssion")
-                .at(span)
-                .push(self.diagnostics());
-            return Ty::new_error(self.tcx);
-        };*/
-
         use types::TyKind::{self, Int, Float, Char, Bool, Void, String};
         match ty {
             Ty(Int(..) | Float(..) | Char | Bool | Void | String) => {
@@ -930,13 +877,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     _ => ()
                 }
             }
-            Ty(TyKind::Adt(atd_def)) => match atd_def.kind {
-                types::AdtKind::Struct => {
+            Ty(TyKind::Adt(adt)) => match adt {
+                AdtDef(types::AdtKind::Struct(strct)) => {
                     // FIXME: Don't build reverse field lookup every time
                     // we need to lookup fields
-                    let fields: HashMap<_, _> = atd_def.fields()
+                    // TODO: refactor into ctxt function
+                    let fields: HashMap<_, _> = strct.fields()
                         .map(|(idx, fdef)| (fdef.symbol, (idx, fdef)))
                         .collect();
+
                     for init in ty_init.initializers {
                         match init {
                             ast::TypeInitKind::Field(ident, expr) => {
@@ -969,14 +918,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         }
                     }
                 }
-                types::AdtKind::Enum => {
+                AdtDef(types::AdtKind::Enum(..)) => {
                     Message::error(format!("expected struct, found enum {ty}"))
                         .at(span)
-                        .note(format!("initialize an enum with {}.<variant> syntax", atd_def.name.get()))
+                        .note(format!("initialize an enum with {}::<Variant> syntax", adt.name().get()))
                         .push(self.diagnostics());
                 }
-                types::AdtKind::Union =>
-                    panic!("unions are not even parsable with this parser"),
+                AdtDef(types::AdtKind::Union) => todo!()
             }
             Ty(TyKind::Function(..)) => unreachable!(),
             Ty(TyKind::Range(..)) => unreachable!(),
@@ -1140,7 +1088,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Field(field) =>
                 self.check_expr_field(field, expr.node_id),
             ast::ExprKind::TypeInit(ty_init) =>
-                self.check_expr_init(ty_init, expected, expr.span),
+                self.check_expr_init(ty_init, expr.span),
             ast::ExprKind::Cast(cast) =>
                 self.check_expr_cast(cast, expected, expr.span),
             ast::ExprKind::Range(range) => {
@@ -1183,10 +1131,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             ast::ExprKind::Tuple(exprs) =>
                 self.check_expr_tuple(*exprs, expected),
-            /*ast::ExprKind::EnumVariant(ty, variant) =>
-                self.check_expr_variant(Some(ty), variant, expr.node_id, expected, expr.span),
-            ast::ExprKind::ShorthandEnum(variant) =>
-                self.check_expr_variant(None, variant, expr.node_id, expected, expr.span),*/
         }
     }
 
@@ -1370,25 +1314,19 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             ast::ItemKind::Function(_) =>
                 Ty::new_function(tcx, def_id),
             ast::ItemKind::Enum(enm) => {
-                let fields = enm.variants.iter().map(|variant| {
+                let variants = enm.variants.iter().map(|variant| {
                     let def_id = *variant.def_id.get().unwrap();
-                    assert_ne!(def_id, ast::DEF_ID_UNDEF,
-                               "variant {:?} of enum {:?} is undefined", variant.name.symbol, enm.ident.symbol);
-                    types::FieldDef { def: def_id, symbol: variant.name.symbol }
+                    types::VariantDef { def: def_id, symbol: variant.name.symbol }
                 }).collect();
-                let adt_def = tcx.intern_adt(
-                    types::AdtDefInner::new(def_id, enm.ident.symbol, fields, types::AdtKind::Enum));
+                let adt_def = tcx.intern_adt(AdtKind::Enum(types::Enum::new(def_id, enm.ident.symbol, variants)));
                 Ty::new_adt(tcx, adt_def)
             }
             ast::ItemKind::Struct(stc) => {
                 let fields = stc.fields.iter().map(|fdef| {
                     let def_id = *fdef.def_id.get().unwrap();
-                    assert_ne!(def_id, ast::DEF_ID_UNDEF,
-                               "field {:?} of struct {:?} is undefined", fdef.name.symbol, stc.ident.symbol);
                     types::FieldDef { def: def_id, symbol: fdef.name.symbol }
                 }).collect();
-                let adt_def = tcx.intern_adt(
-                    types::AdtDefInner::new(def_id, stc.ident.symbol, fields, types::AdtKind::Struct));
+                let adt_def = tcx.intern_adt(AdtKind::Struct(types::Struct::new(def_id, stc.ident.symbol, fields)));
                 Ty::new_adt(tcx, adt_def)
             },
             ast::ItemKind::GlobalVar(global) => {
@@ -1414,7 +1352,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 
 pub struct TypecheckResults<'tcx> {
     pub field_indices: HashMap<ast::NodeId, types::FieldIdx>,
-    pub variant_translations: HashMap<ast::NodeId, types::FieldIdx>,
+    pub variant_translations: HashMap<ast::NodeId, types::VariantIdx>,
     pub associations: HashMap<ast::NodeId, Ty<'tcx>>,
     pub locals: HashMap<ast::NodeId, Ty<'tcx>>,
 }

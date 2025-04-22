@@ -126,9 +126,6 @@ impl index_vec::Idx for DefId {
     }
 }
 
-
-pub const DEF_ID_UNDEF: DefId = DefId(u32::MAX);
-
 #[derive(Debug, Clone, Copy)]
 pub enum DefinitionKind {
     Static,
@@ -261,7 +258,7 @@ pub struct Enum<'ast> {
 #[derive(Debug)]
 pub struct VariantDef<'ast> {
     pub name: Ident,
-    pub sset: Option<&'ast Expr<'ast>>,
+    pub sset: Option<&'ast NestedConst<'ast>>,
     pub span: Span,
     pub node_id: NodeId,
     pub def_id: OnceCell<DefId>

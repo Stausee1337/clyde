@@ -1,48 +1,105 @@
 use std::ops::Deref;
 
+use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
 use crate::{ast::{self, DefId, NodeId}, context::{Interners, TyCtxt}, lexer::Span, symbol::{sym, Symbol}};
 
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
+
+impl<'tcx> Deref for AdtDef<'tcx> {
+    type Target = AdtKind;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
 #[derive(Debug, Hash)]
 #[repr(u32)]
 pub enum AdtKind {
-    Enum,
-    Struct,
+    Struct(Struct),
+    Enum(Enum),
     Union,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FieldIdx(pub u32);
-
-impl index_vec::Idx for FieldIdx {
-    fn index(self) -> usize {
-        return self.0 as usize
+impl AdtKind {
+    pub fn def(&self) -> DefId {
+        match self {
+            AdtKind::Struct(strct) => strct.def,
+            AdtKind::Enum(enm) => enm.def,
+            AdtKind::Union => todo!()
+        }
     }
 
-    fn from_usize(idx: usize) -> Self {
-        Self(idx as u32)
+    pub fn name(&self) -> Symbol {
+        match self {
+            AdtKind::Struct(strct) => strct.name,
+            AdtKind::Enum(enm) => enm.name,
+            AdtKind::Union => todo!()
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            AdtKind::Struct(..) => "struct",
+            AdtKind::Enum(..) => "enum",
+            AdtKind::Union => "union"
+        }
+    }
+}
+
+impl PartialEq for AdtKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.def() == other.def()
+    }
+}
+
+impl Eq for AdtKind {}
+
+#[derive(Debug, Hash)]
+pub struct Enum {
+    pub def: DefId,
+    pub name: Symbol,
+    variants: IndexVec<VariantIdx, VariantDef>,
+}
+
+impl Enum {
+    pub fn new(
+        def: DefId,
+        name: Symbol,
+        variants: IndexVec<VariantIdx, VariantDef>,
+    ) -> Self {
+        Self { def, name, variants }
     }
 }
 
 #[derive(Debug, Hash)]
-pub struct AdtDefInner {
+pub struct VariantDef {
     pub def: DefId,
-    pub name: Symbol,
-    fields: index_vec::IndexVec<FieldIdx, FieldDef>,
-    pub kind: AdtKind,
+    pub symbol: Symbol
 }
 
-impl AdtDefInner {
+index_vec::define_index_type! {
+    pub struct VariantIdx = u32;
+    IMPL_RAW_CONVERSIONS = true;
+}
+
+#[derive(Debug, Hash)]
+pub struct Struct {
+    pub def: DefId,
+    pub name: Symbol,
+    fields: IndexVec<FieldIdx, FieldDef>,
+}
+
+impl Struct {
     pub fn new(
         def: DefId,
         name: Symbol,
-        fields: index_vec::IndexVec<FieldIdx, FieldDef>,
-        kind: AdtKind
+        fields: IndexVec<FieldIdx, FieldDef>,
     ) -> Self {
-        Self {
-            def, name, fields, kind
-        }
+        Self { def, name, fields }
     }
 
     pub fn fields(&self) -> impl Iterator<Item = (FieldIdx, &FieldDef)> {
@@ -50,29 +107,15 @@ impl AdtDefInner {
     }
 }
 
-impl PartialEq for AdtDefInner {
-    fn eq(&self, other: &Self) -> bool {
-        self.def == other.def
-    }
-}
-
-impl Eq for AdtDefInner {}
-
 #[derive(Debug, Hash)]
 pub struct FieldDef {
     pub def: DefId,
     pub symbol: Symbol
 }
 
-#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
-pub struct AdtDef<'tcx>(pub &'tcx AdtDefInner);
-
-impl<'tcx> Deref for AdtDef<'tcx> {
-    type Target = AdtDefInner;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
+index_vec::define_index_type! {
+    pub struct FieldIdx = u32;
+    IMPL_RAW_CONVERSIONS = true;
 }
 
 #[derive(Clone, Copy)]
@@ -333,7 +376,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::String => f.write_str("string"),
             TyKind::Float(Float::F32) => f.write_str("float"),
             TyKind::Float(Float::F64) => f.write_str("double"),
-            TyKind::Adt(adt) => f.write_str(adt.name.get()),
+            TyKind::Adt(adt) => f.write_str(adt.name().get()),
             TyKind::Refrence(ty) => write!(f, "{ty}*"),
             TyKind::Slice(ty) => write!(f, "{ty}[]"),
             TyKind::Array(ty, _) => write!(f, "{ty}[_]"),

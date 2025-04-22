@@ -25,7 +25,7 @@ pub trait Visitor: Sized {
     }
     
     fn visit_variant_def(&mut self, variant_def: &VariantDef) {
-        visit_option(variant_def.sset, |sset| self.visit_expr(sset));
+        visit_option(variant_def.sset, |sset| self.visit_nested_const(sset));
     }
 
     fn visit_expr(&mut self, expr: &Expr) {

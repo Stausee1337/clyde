@@ -4,8 +4,10 @@ Ordered (by priority):
     √ Common types interning
     √ Ctxt Macros
 - Calculate structure data layout
-    - Recursive Query Support
-    - Query Cycle Detection
+    √ Recursive Query Support
+    √ Query Cycle Detection
+    - Adt Type IR overhaul
+    - Layout and ABI
 - Codegen
 - Directives (`#if`, `#include`, etc ...)
     - Files and Imports -> Namespaces

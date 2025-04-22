@@ -2,7 +2,7 @@
 use std::{cell::OnceCell, fmt::Write};
 
 use hashbrown::HashMap;
-use index_vec::{Idx, IndexVec};
+use index_vec::IndexVec;
 
 use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::{self, TyCtxt}, lexer::{self, Span}, typecheck::TypecheckResults, types::{Const, FieldIdx, Ty, TyKind}};
 
@@ -118,7 +118,7 @@ impl<'tcx> std::fmt::Debug for Place<'tcx> {
             Place::None => Ok(()),
             Place::Register(reg) => write!(f, "{reg:?}"),
             Place::Deref(reg) => write!(f, "*{reg:?}"),
-            Place::Field { target, field, ty: _ty } => write!(f, "({target:?}).{}", field.0),
+            Place::Field { target, field, ty: _ty } => write!(f, "({target:?}).{}", field.raw()),
             Place::Index { target, idx } => write!(f, "{target:?}[{idx:?}]"),
         }
     }
@@ -237,7 +237,7 @@ impl<'tcx> std::fmt::Debug for RValue<'tcx> {
             RValue::ExplicitInit { ty, initializers } => {
                 let mut args = vec![];
                 for (idx, operand) in initializers {
-                    args.push(format!(".{} = {:?}", idx.0, operand.operand));
+                    args.push(format!(".{} = {:?}", idx.raw(), operand.operand));
                 }
                 let args = args.join(", ");
                 write!(f, "{ty} {{ {args} }}")
