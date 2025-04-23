@@ -8,7 +8,7 @@ use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
 #[cfg(target_family = "windows")]
 use windows::Win32::System::Memory::{VirtualAlloc, /*VirtualFree, MEM_RELEASE,*/ MEM_COMMIT, MEM_RESERVE,  PAGE_READWRITE};
 
-use crate::{ast::AstInfo, context::Providers, diagnostics::DiagnosticsCtxt, intermediate, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck, context::{GlobalCtxt, TyCtxt}};
+use crate::{ast::AstInfo, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, intermediate, lexer::Span, parser, resolve, string_internals::{next_code_point, run_utf8_validation}, typecheck, types};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -53,7 +53,7 @@ impl Session {
             typecheck: typecheck::typecheck,
             fn_sig: typecheck::fn_sig,
             build_ir: intermediate::build_ir,
-            layout_of: |tcx, def_id| tcx.layout_of(def_id)
+            layout_of: types::layout_of
         };
         let arena = bumpalo::Bump::new();
 

@@ -6,16 +6,21 @@ Ordered (by priority):
 - Calculate structure data layout
     √ Recursive Query Support
     √ Query Cycle Detection
-    - Adt Type IR overhaul
+    √ Adt Type IR overhaul
     - Layout and ABI
 - Codegen
+    - Refactor Consts
+    - Don't generate IR on typecheck errors
+      (make the ir_build(..) query return Result, as the build phase will be able to emit errs in the future)
+    - Make sure to check every item
+      (wether it has a body or not, as an unused struct could still be cyclic)
 - Directives (`#if`, `#include`, etc ...)
     - Files and Imports -> Namespaces
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
     - Enums
 - Generic Functions and Adts
-    - Nullabilties (Optional<T> modeled as T? and null == None)
     - Monomorphization
+    - Nullabilties (Optional<T> modeled as T? and null == None)
 - Methods
 - Overloaded Functions
 - Operator Overloading

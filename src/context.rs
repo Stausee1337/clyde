@@ -126,7 +126,7 @@ define_queries! {
     fn build_ir(key: ast::DefId) -> &'tcx intermediate::Body<'tcx>;
 
     #[handle_cycle_error]
-    fn layout_of(key: ast::DefId) -> ();
+    fn layout_of(key: ast::DefId) -> Result<&'tcx types::TypeLayout<'tcx>, types::LayoutError>;
 }
 
 macro_rules! define_query_caches {
@@ -229,12 +229,6 @@ for_every_query! { define_oop! }
 
 pub trait FromCycleError<'tcx> {
     fn from_cycle_error(tcx: TyCtxt<'tcx>) -> Self;
-}
-
-impl<'tcx> FromCycleError<'tcx> for () {
-    fn from_cycle_error(_tcx: TyCtxt<'tcx>) -> Self {
-        println!("Handle cycle error");
-    }
 }
 
 pub trait Query {

@@ -3,7 +3,7 @@ use std::ops::Deref;
 use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{self, DefId, NodeId}, context::{Interners, TyCtxt}, lexer::Span, symbol::{sym, Symbol}};
+use crate::{ast::{self, DefId, NodeId}, context::{FromCycleError, Interners, TyCtxt}, lexer::Span, symbol::{sym, Symbol}};
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
@@ -653,4 +653,43 @@ impl<'tcx> Interners<'tcx> {
         }))
     }
 }
+
+#[derive(Clone, Copy)]
+pub struct Align {
+    pow2: usize
+}
+
+pub enum Fields {
+    None,
+    Array {
+        stride: u64,
+        count: u64
+    },
+    Struct {
+        fields: IndexVec<FieldIdx, u64>
+    }
+}
+
+pub struct TypeLayout<'tcx> {
+    pub ty: Ty<'tcx>,
+    pub size: u64,
+    pub align: Align,
+    pub fields: Fields
+}
+
+#[derive(Clone, Copy)]
+pub enum LayoutError {
+    Cyclic
+}
+
+impl<'tcx> FromCycleError<'tcx> for Result<&'tcx TypeLayout<'tcx>, LayoutError> {
+    fn from_cycle_error(_tcx: TyCtxt<'tcx>) -> Self {
+        Result::Err(LayoutError::Cyclic)
+    }
+}
+
+pub fn layout_of<'tcx>(tcx: TyCtxt<'tcx>, def: DefId) -> Result<&'tcx TypeLayout<'tcx>, LayoutError> {
+    todo!()
+}
+
 
