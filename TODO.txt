@@ -7,6 +7,7 @@ Ordered (by priority):
     √ Recursive Query Support
     √ Query Cycle Detection
     √ Adt Type IR overhaul
+    - LLVM Target and TargetMachine information
     - Layout and ABI
 - Codegen
     - Refactor Consts
