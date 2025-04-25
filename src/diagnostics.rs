@@ -1,8 +1,7 @@
 use std::cell::OnceCell;
 use std::{cell::RefCell, rc::Rc};
 
-use crate::interface::{File, RelativePosition};
-use crate::{interface::FileCacher, lexer::Span};
+use crate::{files::{File, RelativePosition, FileCacher}, syntax::lexer::Span};
 
 pub struct InternalMessage {
     kind: MessageKind,

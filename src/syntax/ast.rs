@@ -5,8 +5,7 @@ use std::hash::Hash;
 
 use index_vec::IndexVec;
 
-use crate::lexer::{self, Span};
-use crate::symbol::Symbol;
+use super::{lexer::{self, Span}, symbol::Symbol};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]

@@ -3,7 +3,7 @@ use std::ops::Deref;
 use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{ast::{self, DefId, NodeId}, context::{FromCycleError, Interners, TyCtxt}, lexer::Span, symbol::{sym, Symbol}};
+use crate::{syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, context::{FromCycleError, Interners, TyCtxt}};
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);

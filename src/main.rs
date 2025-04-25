@@ -4,22 +4,18 @@
 
 use std::{env, process::ExitCode};
 
-mod ast;
-mod lexer;
-mod parser;
-mod symbol;
-mod node_visitor;
+mod syntax;
+mod analysis;
+
 mod diagnostics;
-mod interface;
-mod resolve;
-mod types;
+mod session;
+mod type_ir;
+mod files;
 mod context;
-mod typecheck;
 mod string_internals;
-mod intermediate;
 
 fn main() -> ExitCode {
-    let options = match interface::parse_argv_options(env::args()) {
+    let options = match session::parse_argv_options(env::args()) {
         Err(code) =>
             return code,
         Ok(options) => options
@@ -31,7 +27,7 @@ fn main() -> ExitCode {
             if let Some(..) = tcx.node_by_def_id(def_id).body() {
                 let body = tcx.build_ir(def_id);
                 let mut buffer = String::new();
-                intermediate::display_ir_body(tcx, body, &mut buffer)
+                analysis::intermediate::display_ir_body(tcx, body, &mut buffer)
                     .unwrap();
                 println!("{buffer}");
             }

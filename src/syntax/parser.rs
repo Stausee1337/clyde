@@ -2,9 +2,11 @@ use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 
 use index_vec::IndexVec;
 
-use crate::{
-    ast::{self, Literal, LocalId, NodeId, Owner, OwnerId}, diagnostics::{DiagnosticsCtxt, Message}, interface::Session, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol, Token
+use super::{
+    ast::{self, Literal, LocalId, NodeId, Owner, OwnerId}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol
 };
+
+use crate::{diagnostics::{DiagnosticsCtxt, Message}, session::Session, Token};
 
 enum ParseTry<'src, T> {
     Sure(T),

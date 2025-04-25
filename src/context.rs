@@ -3,7 +3,7 @@ use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHashe
 use foldhash::quality::FixedState;
 use hashbrown::hash_table::{HashTable, Entry as TableEntry, VacantEntry, OccupiedEntry};
 
-use crate::{ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, interface::Session, intermediate, resolve::ResolutionResults, typecheck, types};
+use crate::{syntax::ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, session::Session, analysis::{intermediate, resolve::ResolutionResults, typecheck}, type_ir};
 
 pub struct GlobalCtxt<'tcx> {
     pub resolutions: ResolutionResults<'tcx>,
@@ -12,7 +12,7 @@ pub struct GlobalCtxt<'tcx> {
     pub interners: Interners<'tcx>,
     pub providers: Providers,
     pub caches: QueryCaches<'tcx>,
-    pub basic_types: types::BasicTypes<'tcx>
+    pub basic_types: type_ir::BasicTypes<'tcx>
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
@@ -23,7 +23,7 @@ impl<'tcx> GlobalCtxt<'tcx> {
         resolutions: ResolutionResults<'tcx>,
     ) -> GlobalCtxt<'tcx> {
         let interners = Interners::new(&arena);
-        let basic_types = types::BasicTypes::alloc(&interners);
+        let basic_types = type_ir::BasicTypes::alloc(&interners);
         Self {
             resolutions,
             arena: bumpalo::Bump::new(),
@@ -120,13 +120,13 @@ macro_rules! define_queries {
 }
 
 define_queries! {
-    fn type_of(key: ast::DefId) -> types::Ty<'tcx>;
+    fn type_of(key: ast::DefId) -> type_ir::Ty<'tcx>;
     fn typecheck(key: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
-    fn fn_sig(key: ast::DefId) -> types::Signature<'tcx>;
+    fn fn_sig(key: ast::DefId) -> type_ir::Signature<'tcx>;
     fn build_ir(key: ast::DefId) -> &'tcx intermediate::Body<'tcx>;
 
     #[handle_cycle_error]
-    fn layout_of(key: ast::DefId) -> Result<&'tcx types::TypeLayout<'tcx>, types::LayoutError>;
+    fn layout_of(key: ast::DefId) -> Result<&'tcx type_ir::TypeLayout<'tcx>, type_ir::LayoutError>;
 }
 
 macro_rules! define_query_caches {
@@ -347,9 +347,9 @@ macro_rules! define_internables {
 }
 
 define_internables! {
-    into adt_defs intern intern_adt(types::AdtKind) -> types::AdtDef<'tcx>;
-    into tys      intern intern_ty(types::TyKind<'tcx>) -> types::Ty<'tcx>;
-    into consts   intern intern_const(types::ConstInner<'tcx>) -> types::Const<'tcx>;
+    into adt_defs intern intern_adt(type_ir::AdtKind) -> type_ir::AdtDef<'tcx>;
+    into tys      intern intern_ty(type_ir::TyKind<'tcx>) -> type_ir::Ty<'tcx>;
+    into consts   intern intern_const(type_ir::ConstInner<'tcx>) -> type_ir::Const<'tcx>;
 }
 
 macro_rules! define_interners {

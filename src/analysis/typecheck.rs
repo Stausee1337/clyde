@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use hashbrown::HashMap;
 
-use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, lexer::{self, Span}, types::{self, AdtDef, AdtKind, ConstInner, Integer, Ty}};
+use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, type_ir::{self, AdtDef, AdtKind, ConstInner, Integer, Ty}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -60,8 +60,8 @@ struct TypecheckCtxt<'tcx> {
     diverges: Cell<Diverges>,
     loop_stack: Vec<LoopCtxt>,
     block_stack: Vec<BlockCtxt<'tcx>>,
-    field_indices: HashMap<ast::NodeId, types::FieldIdx>,
-    variant_translations: HashMap<ast::NodeId, types::VariantIdx>,
+    field_indices: HashMap<ast::NodeId, type_ir::FieldIdx>,
+    variant_translations: HashMap<ast::NodeId, type_ir::VariantIdx>,
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>>,
     locals: HashMap<ast::NodeId, Ty<'tcx>>,
@@ -132,13 +132,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let mut idx = 0;
         while idx != level {
             match ty {
-                Ty(types::TyKind::Refrence(base)) => {
+                Ty(type_ir::TyKind::Refrence(base)) => {
                     if idx == level - 1 {
                         return Some(*base);
                     }
                     ty = *base;
                 },
-                Ty(types::TyKind::Err | types::TyKind::Never) =>
+                Ty(type_ir::TyKind::Err | type_ir::TyKind::Never) =>
                     return Some(ty),
                 _ => break
             }
@@ -227,7 +227,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let iter_diverges = self.diverges.replace(Diverges::Maybe);
 
         let base = {
-            use types::TyKind::{Never, Err, Slice, Array, DynamicArray, Range, Refrence};
+            use type_ir::TyKind::{Never, Err, Slice, Array, DynamicArray, Range, Refrence};
 
             if let Ty(Never | Err) = iter_ty {
                 iter_ty
@@ -281,7 +281,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         } else if let Some(expr) = local.init {
             let ty = self.check_expr_with_expectation(expr, expected.into());
             self.ty_local(stmt.node_id, expected.unwrap_or(ty));
-            if let Ty(types::TyKind::Never) = ty {
+            if let Ty(type_ir::TyKind::Never) = ty {
                 return ty;
             }
             self.tcx.basic_types.void
@@ -297,7 +297,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         match &stmt.kind {
             ast::StmtKind::Expr(expr) => {
                 let ty = self.check_expr_with_expectation(expr, Expectation::None);
-                if let Ty(types::TyKind::Never) = ty {
+                if let Ty(type_ir::TyKind::Never) = ty {
                     return ty;
                 }
             }
@@ -393,7 +393,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         // check if there is an expectation and that the singed requirements hold, which are:
         //      - the integers are the same signedness
         //      - or a signed value as expected, but an unsigned value was provided
-        if let Some(expected @ Ty(types::TyKind::Int(integer, signed))) = expected && *signed | !int.signed {
+        if let Some(expected @ Ty(type_ir::TyKind::Int(integer, signed))) = expected && *signed | !int.signed {
             let min_int = if *signed {
                 Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size())
             } else {
@@ -424,7 +424,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             let ty = self.check_stmt(stmt);
             self.ty_assoc(stmt.node_id, ty);
 
-            if let Ty(types::TyKind::Never) = ty {
+            if let Ty(type_ir::TyKind::Never) = ty {
                 self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::Always(stmt.span)));
             }
             let current_diverge = self.diverges.get();
@@ -499,7 +499,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
         fn get_int(ty: Ty<'_>) -> Option<Ty<'_>> {
             match ty { 
-                Ty(types::TyKind::Int(..)) => Some(ty),
+                Ty(type_ir::TyKind::Int(..)) => Some(ty),
                 _ => None,
             }
         }
@@ -532,7 +532,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
         // FIXME: handle different assignment operators
         let lhs_ty = self.check_expr_with_expectation(assign.lhs, expected.into());
-        if let Ty(types::TyKind::Never) = self.check_expr_with_expectation(assign.rhs, Expectation::Coerce(lhs_ty)) {
+        if let Ty(type_ir::TyKind::Never) = self.check_expr_with_expectation(assign.rhs, Expectation::Coerce(lhs_ty)) {
             self.diverges.set(Diverges::Always(assign.rhs.span));
         }
         lhs_ty
@@ -604,7 +604,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     return Ty::new_error(self.tcx);
                 };
                 {
-                    use types::TyKind::{Bool, Err, Never};
+                    use type_ir::TyKind::{Bool, Err, Never};
                     assert!(
                         matches!(ret_ty, Ty(Bool | Err | Never)),
                         "some equality comparison does not produce boolean");
@@ -626,7 +626,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     fn check_expr_unary(&mut self, unary: &'tcx ast::UnaryOp<'tcx>, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         match unary.operator {
             lexer::UnaryOp::Minus => {
-                use types::TyKind::{Err, Never, Int};
+                use type_ir::TyKind::{Err, Never, Int};
 
                 let expectation = match expected {
                     Some(expected) => Expectation::Guide(expected),
@@ -642,7 +642,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ty
             }
             lexer::UnaryOp::BitwiseNot => {
-                use types::TyKind::{Err, Never, Int};
+                use type_ir::TyKind::{Err, Never, Int};
 
                 let expectation = match expected {
                     Some(expected) => Expectation::Guide(expected),
@@ -662,11 +662,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }
             lexer::UnaryOp::Ref => {
                 let expectation = match expected {
-                    Some(Ty(types::TyKind::Refrence(ty))) => Expectation::Guide(*ty),
+                    Some(Ty(type_ir::TyKind::Refrence(ty))) => Expectation::Guide(*ty),
                     _ => Expectation::None
                 };
                 let ty = self.check_expr_with_expectation(unary.expr, expectation);
-                if let Ty(types::TyKind::Err | types::TyKind::Never) = ty {
+                if let Ty(type_ir::TyKind::Err | type_ir::TyKind::Never) = ty {
                     return ty;
                 }
                 Ty::new_refrence(self.tcx, ty)
@@ -676,10 +676,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_call(&mut self, call: &'tcx ast::FunctionCall<'tcx>, span: Span) -> Ty<'tcx> {
         let ty = self.check_expr_with_expectation(call.callable, Expectation::None);
-        if let Ty(types::TyKind::Never | types::TyKind::Err) = ty {
+        if let Ty(type_ir::TyKind::Never | type_ir::TyKind::Err) = ty {
             return ty;
         }
-        let Ty(types::TyKind::Function(fn_def)) = ty else {
+        let Ty(type_ir::TyKind::Function(fn_def)) = ty else {
             Message::error(format!("expected function, found {ty}"))
                 .at(call.callable.span)
                 .push(self.diagnostics());
@@ -721,7 +721,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             Span { start, end }
         };
         let base = {
-            use types::TyKind::{Err, Never, Array, DynamicArray, Slice};
+            use type_ir::TyKind::{Err, Never, Array, DynamicArray, Slice};
             if let Ty(Err | Never) = ty {
                 return ty;
             }
@@ -744,11 +744,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 .push(self.diagnostics());
         }
         let arg = self.check_expr_with_expectation(subscript.args.first().unwrap(), Expectation::Guide(self.tcx.basic_types.nuint));
-        if let Ty(types::TyKind::Err | types::TyKind::Never) = arg {
+        if let Ty(type_ir::TyKind::Err | type_ir::TyKind::Never) = arg {
             return arg;
         }
 
-        if let Ty(types::TyKind::Int(_, signed)) = arg {
+        if let Ty(type_ir::TyKind::Int(_, signed)) = arg {
             if !signed {
                 return base;
             }
@@ -761,7 +761,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_expr_ftuple(&mut self, ty: Ty<'tcx>, idx: usize, span: Span) -> Ty<'tcx> {
-        let Ty(types::TyKind::Tuple(tys)) = self.autoderef(ty, -1).unwrap_or(ty) else {
+        let Ty(type_ir::TyKind::Tuple(tys)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             Message::error(format!("unnamed fields are only found on tuples {ty}"))
                 .at(span)
                 .push(self.diagnostics());
@@ -780,7 +780,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_field(&mut self, field: &'tcx ast::Field<'tcx>, node_id: ast::NodeId) -> Ty<'tcx> {
         let ty = self.check_expr_with_expectation(field.expr, Expectation::None); 
-        if let Ty(types::TyKind::Never | types::TyKind::Err) = ty {
+        if let Ty(type_ir::TyKind::Never | type_ir::TyKind::Err) = ty {
             return ty;
         }
         let field_ident = match &field.field {
@@ -788,7 +788,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::FieldIdent::Tuple { value, span } =>
                 return self.check_expr_ftuple(ty, *value as usize, *span),
         };
-        let Ty(types::TyKind::Adt(adt)) = self.autoderef(ty, -1).unwrap_or(ty) else {
+        let Ty(type_ir::TyKind::Adt(adt)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             Message::error(format!("fields are only found on structs, not {ty}"))
                 .at(field.expr.span)
                 .push(self.diagnostics());
@@ -823,7 +823,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         &mut self, ty_init: &'tcx ast::TypeInit<'tcx>, span: Span) -> Ty<'tcx> {
         let ty = self.lowering_ctxt.lower_ty(ty_init.ty);
         
-        use types::TyKind::{self, Int, Float, Char, Bool, Void, String};
+        use type_ir::TyKind::{self, Int, Float, Char, Bool, Void, String};
         match ty {
             Ty(Int(..) | Float(..) | Char | Bool | Void | String) => {
                 Message::error(format!("expected struct, found primitive {ty}"))
@@ -865,7 +865,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 
                 let count = ty_init.initializers.len();
                 match kind {
-                    types::TyKind::Array(_, capcity) => {
+                    type_ir::TyKind::Array(_, capcity) => {
                         let capacity = capcity.try_as_usize()
                             .expect("array has capacity of usize");
                         if count != 0 && count != 1 && count != capacity {
@@ -878,7 +878,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
             }
             Ty(TyKind::Adt(adt)) => match adt {
-                AdtDef(types::AdtKind::Struct(strct)) => {
+                AdtDef(type_ir::AdtKind::Struct(strct)) => {
                     // FIXME: Don't build reverse field lookup every time
                     // we need to lookup fields
                     // TODO: refactor into ctxt function
@@ -918,13 +918,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         }
                     }
                 }
-                AdtDef(types::AdtKind::Enum(..)) => {
+                AdtDef(type_ir::AdtKind::Enum(..)) => {
                     Message::error(format!("expected struct, found enum {ty}"))
                         .at(span)
                         .note(format!("initialize an enum with {}::<Variant> syntax", adt.name().get()))
                         .push(self.diagnostics());
                 }
-                AdtDef(types::AdtKind::Union) => todo!()
+                AdtDef(type_ir::AdtKind::Union) => todo!()
             }
             Ty(TyKind::Function(..)) => unreachable!(),
             Ty(TyKind::Range(..)) => unreachable!(),
@@ -935,7 +935,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_valid_cast(&self, from: Ty<'tcx>, to: Ty<'tcx>) -> bool {
-        use types::TyKind::{Err, Never, Int, Float, Char, Bool};
+        use type_ir::TyKind::{Err, Never, Int, Float, Char, Bool};
         if let Ty(Err | Never) = from {
             return true;
         }
@@ -995,7 +995,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_tuple(&mut self, exprs: &'tcx [&'tcx ast::Expr<'tcx>], expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         let expected_list = match expected {
-            Some(Ty(types::TyKind::Tuple(tys))) => Some(tys),
+            Some(Ty(type_ir::TyKind::Tuple(tys))) => Some(tys),
             _ => None,
         };
         let mut tys = Vec::new();
@@ -1031,7 +1031,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         .push(self.diagnostics());
                     return Ty::new_error(self.tcx);
                 };
-                let Ty(types::TyKind::Never | types::TyKind::Err | types::TyKind::Refrence(..)) = expected else {
+                let Ty(type_ir::TyKind::Never | type_ir::TyKind::Err | type_ir::TyKind::Refrence(..)) = expected else {
                     Message::error(format!("non refrence-type {expected} cannot be null"))
                         .at(span)
                         .push(self.diagnostics());
@@ -1103,7 +1103,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     let start_ty = self.check_expr_with_expectation(start, expectation);
                     self.check_expr_with_expectation(end, Expectation::Guide(start_ty));
                 }
-                use types::TyKind::{Never, Err, Int};
+                use type_ir::TyKind::{Never, Err, Int};
 
                 let start_ty = self.associations[&range.start.node_id];
                 let end_ty = self.associations[&range.end.node_id];
@@ -1169,7 +1169,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         self.maybe_warn_unreachable(expr.span, "expression");
 
-        if let Ty(types::TyKind::Never) = ty {
+        if let Ty(type_ir::TyKind::Never) = ty {
             self.diverges.set(std::cmp::max(self.diverges.get(), Diverges::Always(expr.span)));
         }
 
@@ -1186,7 +1186,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         let ty = self.check_expr(&expr, Some(ret_ty), true);
         self.maybe_emit_type_error(ty, ret_ty, ret_ty_span);
 
-        if let Ty(types::TyKind::Void) = ret_ty && let Ty(types::TyKind::Never) = ty {
+        if let Ty(type_ir::TyKind::Void) = ret_ty && let Ty(type_ir::TyKind::Never) = ty {
             Message::warning("unnecessarry return in void function")
                 .at(expr.span)
                 .push(self.diagnostics());
@@ -1268,17 +1268,17 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 match array.cap {
                     ast::ArrayCapacity::Discrete(..) | ast::ArrayCapacity::Infer => {
                         let ty = self.lower_ty(ty);
-                        if let Ty(types::TyKind::Err) = ty {
+                        if let Ty(type_ir::TyKind::Err) = ty {
                             return ty;
                         }
 
                         let cap = if let ast::ArrayCapacity::Discrete(expr) = &array.cap {
-                            types::Const::from_definition(self.tcx, *expr.def_id.get().unwrap())
+                            type_ir::Const::from_definition(self.tcx, *expr.def_id.get().unwrap())
                         } else {
                             self.tcx.intern_const(ConstInner::Placeholder)
                         };
 
-                        if let types::Const(types::ConstInner::Err { msg, span }) = &cap {
+                        if let type_ir::Const(type_ir::ConstInner::Err { msg, span }) = &cap {
                             Message::error(msg)
                                 .at(*span)
                                 .push(self.diagnostics());
@@ -1295,7 +1295,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
             }
             ast::TypeExprKind::Slice(ty) => {
                 let ty = self.lower_ty(ty);
-                if let Ty(types::TyKind::Err) = ty {
+                if let Ty(type_ir::TyKind::Err) = ty {
                     return ty;
                 }
                 Ty::new_slice(self.tcx, ty)
@@ -1316,17 +1316,17 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             ast::ItemKind::Enum(enm) => {
                 let variants = enm.variants.iter().map(|variant| {
                     let def_id = *variant.def_id.get().unwrap();
-                    types::VariantDef { def: def_id, symbol: variant.name.symbol }
+                    type_ir::VariantDef { def: def_id, symbol: variant.name.symbol }
                 }).collect();
-                let adt_def = tcx.intern_adt(AdtKind::Enum(types::Enum::new(def_id, enm.ident.symbol, variants)));
+                let adt_def = tcx.intern_adt(AdtKind::Enum(type_ir::Enum::new(def_id, enm.ident.symbol, variants)));
                 Ty::new_adt(tcx, adt_def)
             }
             ast::ItemKind::Struct(stc) => {
                 let fields = stc.fields.iter().map(|fdef| {
                     let def_id = *fdef.def_id.get().unwrap();
-                    types::FieldDef { def: def_id, symbol: fdef.name.symbol }
+                    type_ir::FieldDef { def: def_id, symbol: fdef.name.symbol }
                 }).collect();
-                let adt_def = tcx.intern_adt(AdtKind::Struct(types::Struct::new(def_id, stc.ident.symbol, fields)));
+                let adt_def = tcx.intern_adt(AdtKind::Struct(type_ir::Struct::new(def_id, stc.ident.symbol, fields)));
                 Ty::new_adt(tcx, adt_def)
             },
             ast::ItemKind::GlobalVar(global) => {
@@ -1351,8 +1351,8 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 }
 
 pub struct TypecheckResults<'tcx> {
-    pub field_indices: HashMap<ast::NodeId, types::FieldIdx>,
-    pub variant_translations: HashMap<ast::NodeId, types::VariantIdx>,
+    pub field_indices: HashMap<ast::NodeId, type_ir::FieldIdx>,
+    pub variant_translations: HashMap<ast::NodeId, type_ir::VariantIdx>,
     pub associations: HashMap<ast::NodeId, Ty<'tcx>>,
     pub locals: HashMap<ast::NodeId, Ty<'tcx>>,
 }
@@ -1379,7 +1379,7 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {
     tcx.arena.alloc(ctxt.results())
 }
 
-pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
+pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx);
 
@@ -1407,16 +1407,16 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> types::Signature {
                 }
 
 
-                params.push(types::Param {
+                params.push(type_ir::Param {
                     name,
                     ty,
                     node_id: param.node_id
                 });
             }
-            let params: Box<[types::Param]> = params.into_boxed_slice();
-            let params: &'_ [types::Param] = tcx.arena.alloc(params);
+            let params: Box<[type_ir::Param]> = params.into_boxed_slice();
+            let params: &'_ [type_ir::Param] = tcx.arena.alloc(params);
 
-            types::Signature { returns, params, name: func.ident.symbol }
+            type_ir::Signature { returns, params, name: func.ident.symbol }
         }
         _ => {
             panic!("non-function definition in fn_sig")

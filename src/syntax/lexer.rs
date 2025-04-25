@@ -1,6 +1,7 @@
 use std::{fmt::Write, marker::PhantomData, ops::{Deref, DerefMut}};
 
-use crate::{diagnostics::{DiagnosticsCtxt, Message}, interface::{self, File}, string_internals, symbol::Symbol};
+use crate::{diagnostics::{DiagnosticsCtxt, Message}, files::{File, Utf8Error}, string_internals};
+use super::symbol::Symbol;
 use clyde_macros::{LexFromString, Operator};
 
 use tinyvec::ArrayVec;
@@ -11,92 +12,92 @@ pub(crate) trait Operator: Sized {
 
 #[macro_export]
 macro_rules! Token {
-    [_] => { crate::lexer::Punctuator::Underscore };
-    [.] => { crate::lexer::Punctuator::Dot };
-    [,] => { crate::lexer::Punctuator::Comma };
-    [:] => { crate::lexer::Punctuator::Colon };
-    [::] => { crate::lexer::Punctuator::DoubleColon };
-    [;] => { crate::lexer::Punctuator::Semicolon };
-    [=] => { crate::lexer::Punctuator::Assign };
-    [..] => { crate::lexer::Punctuator::DotDot };
-    [->] => { crate::lexer::Punctuator::Arrow };
-    [^] => { crate::lexer::Punctuator::Circumflex };
-    [?] => { crate::lexer::Punctuator::Question };
+    [_] => { crate::syntax::lexer::Punctuator::Underscore };
+    [.] => { crate::syntax::lexer::Punctuator::Dot };
+    [,] => { crate::syntax::lexer::Punctuator::Comma };
+    [:] => { crate::syntax::lexer::Punctuator::Colon };
+    [::] => { crate::syntax::lexer::Punctuator::DoubleColon };
+    [;] => { crate::syntax::lexer::Punctuator::Semicolon };
+    [=] => { crate::syntax::lexer::Punctuator::Assign };
+    [..] => { crate::syntax::lexer::Punctuator::DotDot };
+    [->] => { crate::syntax::lexer::Punctuator::Arrow };
+    [^] => { crate::syntax::lexer::Punctuator::Circumflex };
+    [?] => { crate::syntax::lexer::Punctuator::Question };
 
-    [&] => { crate::lexer::Punctuator::Ampersand };
-    [|] => { crate::lexer::Punctuator::VBar };
-    [~] => { crate::lexer::Punctuator::Tilde };
+    [&] => { crate::syntax::lexer::Punctuator::Ampersand };
+    [|] => { crate::syntax::lexer::Punctuator::VBar };
+    [~] => { crate::syntax::lexer::Punctuator::Tilde };
 
-    [<<] => { crate::lexer::Punctuator::LDoubleChevron };
-    [>>] => { crate::lexer::Punctuator::RDoubleChevron };
+    [<<] => { crate::syntax::lexer::Punctuator::LDoubleChevron };
+    [>>] => { crate::syntax::lexer::Punctuator::RDoubleChevron };
 
-    [+] => { crate::lexer::Punctuator::Plus };
-    [-] => { crate::lexer::Punctuator::Minus };
-    [*] => { crate::lexer::Punctuator::Star };
-    [/] => { crate::lexer::Punctuator::Slash };
-    [%] => { crate::lexer::Punctuator::Percent };
+    [+] => { crate::syntax::lexer::Punctuator::Plus };
+    [-] => { crate::syntax::lexer::Punctuator::Minus };
+    [*] => { crate::syntax::lexer::Punctuator::Star };
+    [/] => { crate::syntax::lexer::Punctuator::Slash };
+    [%] => { crate::syntax::lexer::Punctuator::Percent };
 
-    [<] => { crate::lexer::Punctuator::LChevron };
-    [<=] => { crate::lexer::Punctuator::LChevronEq };
-    [>] => { crate::lexer::Punctuator::RChevron };
-    [>=] => { crate::lexer::Punctuator::RChevronEq };
-    [==] => { crate::lexer::Punctuator::DoubleEq };
-    [!=] => { crate::lexer::Punctuator::BangEq };
+    [<] => { crate::syntax::lexer::Punctuator::LChevron };
+    [<=] => { crate::syntax::lexer::Punctuator::LChevronEq };
+    [>] => { crate::syntax::lexer::Punctuator::RChevron };
+    [>=] => { crate::syntax::lexer::Punctuator::RChevronEq };
+    [==] => { crate::syntax::lexer::Punctuator::DoubleEq };
+    [!=] => { crate::syntax::lexer::Punctuator::BangEq };
 
-    [&&] => { crate::lexer::Punctuator::DoubleAmpersand };
-    [||] => { crate::lexer::Punctuator::DoubleVBar };
-    [!] => { crate::lexer::Punctuator::Bang };
+    [&&] => { crate::syntax::lexer::Punctuator::DoubleAmpersand };
+    [||] => { crate::syntax::lexer::Punctuator::DoubleVBar };
+    [!] => { crate::syntax::lexer::Punctuator::Bang };
 
-    [:=] => { crate::lexer::Punctuator::ColonAssign };
+    [:=] => { crate::syntax::lexer::Punctuator::ColonAssign };
 
-    [+=] => { crate::lexer::Punctuator::PlusAssign };
-    [-=] => { crate::lexer::Punctuator::MinusAssing };
-    [*=] => { crate::lexer::Punctuator::StarAssign };
-    [/=] => { crate::lexer::Punctuator::SlashAssign };
-    [%=] => { crate::lexer::Punctuator::PercentAssign };
+    [+=] => { crate::syntax::lexer::Punctuator::PlusAssign };
+    [-=] => { crate::syntax::lexer::Punctuator::MinusAssing };
+    [*=] => { crate::syntax::lexer::Punctuator::StarAssign };
+    [/=] => { crate::syntax::lexer::Punctuator::SlashAssign };
+    [%=] => { crate::syntax::lexer::Punctuator::PercentAssign };
 
-    [||=] => { crate::lexer::Punctuator::DoubleVBarAssign };
-    [&&=] => { crate::lexer::Punctuator::DoubleAnpersandAssign };
-    [^=] => { crate::lexer::Punctuator::CircumflexAssign };
+    [||=] => { crate::syntax::lexer::Punctuator::DoubleVBarAssign };
+    [&&=] => { crate::syntax::lexer::Punctuator::DoubleAnpersandAssign };
+    [^=] => { crate::syntax::lexer::Punctuator::CircumflexAssign };
 
-    [<<=] => { crate::lexer::Punctuator::LDoubleChevronAssign };
-    [>>=] => { crate::lexer::Punctuator::RDoubleChevronAssign };
+    [<<=] => { crate::syntax::lexer::Punctuator::LDoubleChevronAssign };
+    [>>=] => { crate::syntax::lexer::Punctuator::RDoubleChevronAssign };
 
-    [&=] => { crate::lexer::Punctuator::AnpersandAssign };
-    [|=] => { crate::lexer::Punctuator::VBarAssign };
+    [&=] => { crate::syntax::lexer::Punctuator::AnpersandAssign };
+    [|=] => { crate::syntax::lexer::Punctuator::VBarAssign };
 
-    [++] => { crate::lexer::Punctuator::DoublePlus };
-    [--] => { crate::lexer::Punctuator::DoubleMinus };
+    [++] => { crate::syntax::lexer::Punctuator::DoublePlus };
+    [--] => { crate::syntax::lexer::Punctuator::DoubleMinus };
 
 
 
-    [const] => { crate::lexer::Keyword::Const };
-    [use] => { crate::lexer::Keyword::Use };
-    [with] => { crate::lexer::Keyword::With };
-    [var] => { crate::lexer::Keyword::Var };
-    [static] => { crate::lexer::Keyword::Static };
-    [cast] => { crate::lexer::Keyword::Cast };
-    [transmute] => { crate::lexer::Keyword::Transmute };
-    [out] => { crate::lexer::Keyword::Out };
-    [is] => { crate::lexer::Keyword::Is };
-    [extern] => { crate::lexer::Keyword::Extern };
-    [while] => { crate::lexer::Keyword::While };
-    [for] => { crate::lexer::Keyword::For };
-    [in] => { crate::lexer::Keyword::In };
-    [if] => { crate::lexer::Keyword::If };
-    [else] => { crate::lexer::Keyword::Else };
-    [struct] => { crate::lexer::Keyword::Struct };
-    [enum] => { crate::lexer::Keyword::Enum };
-    [return] => { crate::lexer::Keyword::Return };
-    [break] => { crate::lexer::Keyword::Break };
-    [continue] => { crate::lexer::Keyword::Continue };
-    [yeet] => { crate::lexer::Keyword::Yeet };
-    [template] => { crate::lexer::Keyword::Template };
-    [interface] => { crate::lexer::Keyword::Interface };
-    [closure] => { crate::lexer::Keyword::Closure };
-    [true] => { crate::lexer::Keyword::True };
-    [false] => { crate::lexer::Keyword::False };
-    [null] => { crate::lexer::Keyword::Null };
+    [const] => { crate::syntax::lexer::Keyword::Const };
+    [use] => { crate::syntax::lexer::Keyword::Use };
+    [with] => { crate::syntax::lexer::Keyword::With };
+    [var] => { crate::syntax::lexer::Keyword::Var };
+    [static] => { crate::syntax::lexer::Keyword::Static };
+    [cast] => { crate::syntax::lexer::Keyword::Cast };
+    [transmute] => { crate::syntax::lexer::Keyword::Transmute };
+    [out] => { crate::syntax::lexer::Keyword::Out };
+    [is] => { crate::syntax::lexer::Keyword::Is };
+    [extern] => { crate::syntax::lexer::Keyword::Extern };
+    [while] => { crate::syntax::lexer::Keyword::While };
+    [for] => { crate::syntax::lexer::Keyword::For };
+    [in] => { crate::syntax::lexer::Keyword::In };
+    [if] => { crate::syntax::lexer::Keyword::If };
+    [else] => { crate::syntax::lexer::Keyword::Else };
+    [struct] => { crate::syntax::lexer::Keyword::Struct };
+    [enum] => { crate::syntax::lexer::Keyword::Enum };
+    [return] => { crate::syntax::lexer::Keyword::Return };
+    [break] => { crate::syntax::lexer::Keyword::Break };
+    [continue] => { crate::syntax::lexer::Keyword::Continue };
+    [yeet] => { crate::syntax::lexer::Keyword::Yeet };
+    [template] => { crate::syntax::lexer::Keyword::Template };
+    [interface] => { crate::syntax::lexer::Keyword::Interface };
+    [closure] => { crate::syntax::lexer::Keyword::Closure };
+    [true] => { crate::syntax::lexer::Keyword::True };
+    [false] => { crate::syntax::lexer::Keyword::False };
+    [null] => { crate::syntax::lexer::Keyword::Null };
 }
 
 macro_rules! must {
@@ -972,7 +973,7 @@ impl<'a> DerefMut for Tokenizer<'a> {
 pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Result<TokenStream<'a>, ()> {
     let contents = match source_file.contents() {
         Ok(contents) => contents,
-        Err(interface::Utf8Error) => {
+        Err(Utf8Error) => {
             eprintln!("ERROR: couldn't read {}: stream contains invalid UTF-8", source_file.path());
             return Err(());
         }

@@ -4,8 +4,8 @@ use std::{cell::OnceCell, fmt::Write};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{ast::{self, DefId, DefinitionKind, NodeId}, context::{self, TyCtxt}, lexer::{self, Span}, typecheck::TypecheckResults, types::{Const, FieldIdx, Ty, TyKind}};
-
+use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::{self, TyCtxt}, type_ir::{Const, FieldIdx, Ty, TyKind}};
+use super::typecheck::TypecheckResults;
 
 pub struct Body<'tcx> {
     pub origin: DefId,

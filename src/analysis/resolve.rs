@@ -1,7 +1,8 @@
 
 use hashbrown::HashMap;
 
-use crate::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, diagnostics::{DiagnosticsCtxt, Message}, lexer::Span, node_visitor::{self, Visitor}, symbol::Symbol};
+use crate::{syntax::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, lexer::Span, symbol::Symbol}, diagnostics::{DiagnosticsCtxt, Message}};
+use super::node_visitor::{self, Visitor};
 
 /// AST (&tree) 
 ///     |          |
