@@ -1,4 +1,9 @@
-workspace = { members = ["clyde_macros"] }
+[workspace]
+resolver = "2"
+members = [
+    "crates/clyde_macros"
+]
+
 [package]
 name = "clyde"
 version = "0.1.0"
@@ -17,9 +22,9 @@ index_vec = "0.1.3"
 foldhash = "0.1.5"
 num-traits = "0.2.19"
 hashbrown = { version = "0.15.2", features = ["nightly"] }
-clyde_macros = { path = "./clyde_macros" }
+clyde_macros = { path = "crates/clyde_macros" }
 phf = { version = "0.11.2", features = ["macros"] }
-inkwell = { version = "0.5.0", features = ["llvm18-0"] }
+inkwell = { path = "crates/inkwell", version = "0.6.0", default-features = false, features = ["llvm18-1", "target-x86"] }
 tinyvec = "1.8.0"
 
 [target.'cfg(unix)'.dependencies]

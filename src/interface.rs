@@ -73,6 +73,16 @@ pub struct Options {
 
 impl Options {
     pub fn create_compile_session(self) -> Session {
+        inkwell::targets::Target::initialize_x86(&inkwell::targets::InitializationConfig::default());
+        let triple = inkwell::targets::TargetMachine::get_default_triple();
+        eprintln!("compiling for: {:?}", triple.as_str());
+
+        let target = inkwell::targets::Target::from_triple(&triple).unwrap();
+        let machine = target.create_target_machine_from_options(&triple, inkwell::targets::TargetMachineOptions::default()).unwrap();
+        let data_layout = machine.get_target_data().get_data_layout();
+        let layout_string = data_layout.as_str();
+        println!("{:?}", layout_string);
+
         let file_cacher: Rc<FileCacher> = FILE_CACHER.with(|cacher| cacher.clone());
         Session {
             input: self.input,
