@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ffi::OsStr, fs, io::Read, path::{Path, PathBuf}, process::abort, rc::Rc};
+use std::{cell::RefCell, fs, io::Read, path::{Path, PathBuf}, process::abort, rc::Rc};
 
 #[cfg(target_family = "unix")]
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
@@ -164,7 +164,7 @@ pub struct FileCacher {
 }
 
 impl FileCacher {
-    fn new() -> Self {
+    pub fn create() -> Self {
         Self {
             files: RefCell::new(Default::default()),
             storage: RefCell::new(ContinuousSourceStorage::allocate()),
@@ -333,14 +333,4 @@ impl ContinuousSourceStorage {
     }
 }
 
-thread_local! {
-    pub static FILE_CACHER: Rc<FileCacher> = Rc::new(FileCacher::new());
-}
-
-
-unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
-    // let bytes = osstr.as_bytes();
-    let bytes = osstr.as_encoded_bytes();
-    std::str::from_utf8_unchecked(bytes)
-}
 

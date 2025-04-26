@@ -395,16 +395,16 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         //      - or a signed value as expected, but an unsigned value was provided
         if let Some(expected @ Ty(type_ir::TyKind::Int(integer, signed))) = expected && *signed | !int.signed {
             let min_int = if *signed {
-                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size())
+                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size(&self.tcx))
             } else {
-                Integer::fit_unsigned(int.value).size()
+                Integer::fit_unsigned(int.value).size(&self.tcx)
             };
-            if integer.size() >= min_int {
+            if integer.size(&self.tcx) >= min_int {
                 return expected;
             }
         }
 
-        if min_int.size() < Integer::I32.size() {
+        if min_int.size(&self.tcx) < Integer::I32.size(&self.tcx) {
             min_int = Integer::I32;
         }
 

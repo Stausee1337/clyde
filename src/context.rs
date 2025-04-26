@@ -3,7 +3,7 @@ use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHashe
 use foldhash::quality::FixedState;
 use hashbrown::hash_table::{HashTable, Entry as TableEntry, VacantEntry, OccupiedEntry};
 
-use crate::{syntax::ast::{self, DefId, NodeId}, diagnostics::DiagnosticsCtxt, session::Session, analysis::{intermediate, resolve::ResolutionResults, typecheck}, type_ir};
+use crate::{analysis::{intermediate, resolve::ResolutionResults, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::ast::{self, DefId, NodeId}, target, type_ir};
 
 pub struct GlobalCtxt<'tcx> {
     pub resolutions: ResolutionResults<'tcx>,
@@ -106,6 +106,12 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn def_kind(self, id: DefId) -> ast::DefinitionKind {
         let def = &self.resolutions.declarations[id];
         def.kind
+    }
+}
+
+impl<'tcx> target::DataLayoutExt for TyCtxt<'tcx> {
+    fn data_layout(&self) -> &target::TargetDataLayout {
+        self.session.target.data_layout()
     }
 }
 

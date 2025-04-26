@@ -9,6 +9,7 @@ mod analysis;
 
 mod diagnostics;
 mod session;
+mod target;
 mod type_ir;
 mod files;
 mod context;
@@ -20,7 +21,10 @@ fn main() -> ExitCode {
             return code,
         Ok(options) => options
     };
-    let sess = options.create_compile_session();
+    let sess = match options.create_compile_session() {
+        Ok(sess) => sess,
+        Err(()) => return ExitCode::FAILURE
+    };
 
     let res = sess.global_ctxt(|tcx| {
         tcx.resolutions.items.iter().for_each(|&def_id| {

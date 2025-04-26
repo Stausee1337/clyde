@@ -1,9 +1,9 @@
 use std::ops::Deref;
 
 use index_vec::IndexVec;
-use num_traits::{Num, ToPrimitive};
+use num_traits::{Num, PrimInt, ToPrimitive};
 
-use crate::{syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, context::{FromCycleError, Interners, TyCtxt}};
+use crate::{syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, context::{FromCycleError, Interners, TyCtxt}, target::DataLayoutExt};
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
@@ -199,14 +199,14 @@ impl<'tcx> Const<'tcx> {
 
         if let Ty(TyKind::Int(integer, signed)) = ty && *signed | !int.signed {
             let min_int = if *signed {
-                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size())
+                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size(&tcx))
             } else {
-                Integer::fit_unsigned(int.value).size()
+                Integer::fit_unsigned(int.value).size(&tcx)
             };
 
-            if integer.size() >= min_int {
+            if integer.size(&tcx) >= min_int {
                 let scalar = Scalar {
-                    size: integer.size(),
+                    size: integer.size(&tcx),
                     data: int.value as u128
                 };
                 return Ok(ConstInner::Value(ty, ValTree::Scalar(scalar)));
@@ -558,14 +558,15 @@ impl Integer {
         }
     }
 
-    pub fn size(&self) -> usize {
+    pub fn size(&self, provider: &impl DataLayoutExt) -> usize {
+        let data_layout = provider.data_layout();
         use Integer::*;
         match self {
             I8 => 1,
             I16 => 2,
             I32 => 4,
             I64 => 8,
-            ISize => 8, // FIXME: use backend info to fill this gap
+            ISize => data_layout.ptr_size.in_bytes as usize,
         }
     }
 
@@ -654,9 +655,71 @@ impl<'tcx> Interners<'tcx> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Endianness {
+    Little, Big
+}
+
 #[derive(Clone, Copy)]
 pub struct Align {
-    pow2: usize
+    pow2: u8
+}
+
+impl Align {
+    const LLVM_MAX_ALIGN: u32 = 29;
+
+    pub const fn from_bits(bits: u64) -> Self {
+        Self::from_bytes((bits + 7) / 8)
+    }
+
+    pub const fn from_bytes(size: u64) -> Self {
+        // TODO: make this function fallible when users can request specific type alignment
+        let zeros = size.trailing_zeros();
+        if size != (1 << zeros) {
+            panic!("non power of 2 alignment");
+        }
+        if zeros > Self::LLVM_MAX_ALIGN {
+            panic!("to big alignment: > 536870912");
+        }
+        Self { pow2: zeros as u8 }
+    }
+
+    pub const fn in_bytes(&self) -> u64 {
+        1 << (self.pow2 as u64)
+    }
+}
+
+impl std::fmt::Debug for Align {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Align({})", 1 << self.pow2)
+    }
+}
+
+/// A special LLVM version of an `Align` containing one `abi` and one `pref` alignment
+#[derive(Debug, Clone, Copy)]
+pub struct LLVMAlign {
+    pub abi: Align,
+    pub pref: Align
+}
+
+impl LLVMAlign {
+    pub const fn from_bits(bits: u64) -> Self {
+        Self {
+            abi: Align::from_bits(bits),
+            pref: Align::from_bits(bits),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Size {
+    pub in_bytes: u64
+}
+
+impl Size {
+    pub const fn from_bits(bits: u64) -> Self {
+        Size { in_bytes: (bits + 7) / 8 }
+    }
 }
 
 pub enum Fields {
@@ -672,8 +735,8 @@ pub enum Fields {
 
 pub struct TypeLayout<'tcx> {
     pub ty: Ty<'tcx>,
-    pub size: u64,
-    pub align: Align,
+    pub size: Size,
+    pub align: LLVMAlign,
     pub fields: Fields
 }
 

@@ -2,7 +2,7 @@
 use std::{cell::RefCell, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
 
 use index_vec::IndexVec;
-use crate::{syntax::{ast::AstInfo, parser}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, analysis::{intermediate, resolve, typecheck}, type_ir, files};
+use crate::{syntax::{ast::AstInfo, parser}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, analysis::{intermediate, resolve, typecheck}, type_ir, files, target::Target};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -12,6 +12,7 @@ pub struct Cfg {
 
 pub struct Session {
     input: PathBuf,
+    pub target: Target,
 
     output_dir: PathBuf,
     output_file: PathBuf,
@@ -19,7 +20,7 @@ pub struct Session {
 
     config: Cfg,
     diagnostics: DiagnosticsCtxt,
-    file_cacher: Rc<files::FileCacher>
+    file_cacher: Rc<files::FileCacher>,
 }
 
 impl Session {
@@ -66,19 +67,12 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn create_compile_session(self) -> Session {
-        inkwell::targets::Target::initialize_x86(&inkwell::targets::InitializationConfig::default());
-        let triple = inkwell::targets::TargetMachine::get_default_triple();
-        eprintln!("compiling for: {:?}", triple.as_str());
+    pub fn create_compile_session(self) -> Result<Session, ()> {
+        let target = Target::host().ok_or(())?;
 
-        let target = inkwell::targets::Target::from_triple(&triple).unwrap();
-        let machine = target.create_target_machine_from_options(&triple, inkwell::targets::TargetMachineOptions::default()).unwrap();
-        let data_layout = machine.get_target_data().get_data_layout();
-        let layout_string = data_layout.as_str();
-        println!("{:?}", layout_string);
-
-        let file_cacher: Rc<files::FileCacher> = files::FILE_CACHER.with(|cacher| cacher.clone());
-        Session {
+        let file_cacher: Rc<files::FileCacher> = FILE_CACHER.with(|cacher| cacher.clone());
+        Ok(Session {
+            target,
             input: self.input,
             output_dir: self.output_dir.unwrap_or_else(|| self.working_dir.clone()),
             output_file: self.output_file.unwrap_or_else(|| self.working_dir.clone()),
@@ -87,7 +81,7 @@ impl Options {
             config: self.config,
             diagnostics: DiagnosticsCtxt::new(file_cacher.clone()),
             file_cacher
-        }
+        })
     }
 }
 
@@ -195,4 +189,8 @@ unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
 
 fn get_filename(path: &Path) -> Option<&str> {
     Some(unsafe { osstr_as_str(path.file_name()?) })
+}
+
+thread_local! {
+    static FILE_CACHER: Rc<files::FileCacher> = Rc::new(files::FileCacher::create());
 }
