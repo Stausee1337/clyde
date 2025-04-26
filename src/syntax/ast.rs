@@ -52,6 +52,21 @@ impl<'ast> Node<'ast> {
             _ => None
         }
     }
+
+    /*pub fn span(self) -> Span {
+        match self {
+            Node::Expr(expr) => expr.span,
+            Node::NestedConst(nconst) => nconst.span,
+            Node::Item(item) => item.span,
+            Node::SourceFile(file) => file.span,
+            Node::Stmt(stmt) => stmt.span,
+            Node::TypeExpr(expr) => expr.span,
+            Node::FieldDef(field) => field.span,
+            Node::Variant(variant) => variant.span,
+            Node::Param(param) => param.span,
+            Node::GenericParam(param) => param.span,
+        }
+    }*/
 }
 
 #[derive(Debug)]

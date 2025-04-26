@@ -3,7 +3,7 @@ use std::ops::Deref;
 use index_vec::IndexVec;
 use num_traits::{Num, PrimInt, ToPrimitive};
 
-use crate::{syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, context::{FromCycleError, Interners, TyCtxt}, target::DataLayoutExt};
+use crate::{context::{FromCycleError, Interners, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
@@ -338,7 +338,7 @@ pub enum TyKind<'tcx> {
     Range(Ty<'tcx>, bool),
     Slice(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
-    Tuple(Vec<Ty<'tcx>>),
+    Tuple(&'tcx [Ty<'tcx>]),
     DynamicArray(Ty<'tcx>),
     Function(DefId),
     Never,
@@ -436,7 +436,7 @@ impl<'tcx> Ty<'tcx> {
         tcx.intern_ty(TyKind::Range(ty, inclusive))
     }
 
-    pub fn new_tuple(tcx: TyCtxt<'tcx>, tys: Vec<Ty<'tcx>>) -> Ty<'tcx> {
+    pub fn new_tuple(tcx: TyCtxt<'tcx>, tys: &'tcx [Ty<'tcx>]) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Tuple(tys))
     }
 
@@ -570,6 +570,32 @@ impl Integer {
         }
     }
 
+    pub fn align(&self, provider: &impl DataLayoutExt) -> LLVMAlign {
+        let data_layout = provider.data_layout();
+        use Integer::*;
+        match self {
+            I8 => data_layout.i8_align,
+            I16 => data_layout.i16_align,
+            I32 => data_layout.i32_align,
+            I64 => data_layout.i64_align,
+            ISize => data_layout.ptr_align
+        }
+    }
+
+    pub fn normalize(&self, provider: &impl DataLayoutExt) -> Self {
+        let Integer::ISize = self else {
+            return *self;
+        };
+        let data_layout = provider.data_layout();
+        match data_layout.ptr_size.in_bytes {
+            1 => Integer::I8,
+            2 => Integer::I16,
+            4 => Integer::I32,
+            8 => Integer::I64,
+            _ => unreachable!("target has invalid ISize")
+        }
+    }
+
     pub fn to_symbol(&self, signedness: bool) -> Symbol {
         use Integer::*;
         match (self, signedness) {
@@ -592,6 +618,23 @@ impl Integer {
 pub enum Float {
     F32,
     F64
+}
+
+impl Float {
+    pub fn size(&self) -> usize {
+        match self {
+            Float::F32 => 4,
+            Float::F64 => 8,
+        }
+    }
+
+    pub fn align(&self, provider: &impl DataLayoutExt) -> LLVMAlign {
+        let data_layout = provider.data_layout();
+        match self {
+            Float::F32 => data_layout.f32_align,
+            Float::F64 => data_layout.f64_align,
+        }
+    }
 }
 
 pub struct BasicTypes<'tcx> {
@@ -660,12 +703,13 @@ pub enum Endianness {
     Little, Big
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Align {
     pow2: u8
 }
 
 impl Align {
+    const ONE: Align = Align::from_bytes(1);
     const LLVM_MAX_ALIGN: u32 = 29;
 
     pub const fn from_bits(bits: u64) -> Self {
@@ -696,7 +740,7 @@ impl std::fmt::Debug for Align {
 }
 
 /// A special LLVM version of an `Align` containing one `abi` and one `pref` alignment
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LLVMAlign {
     pub abi: Align,
     pub pref: Align
@@ -709,9 +753,16 @@ impl LLVMAlign {
             pref: Align::from_bits(bits),
         }
     }
+
+    pub const fn from_align(align: Align) -> Self {
+        Self {
+            abi: align,
+            pref: align,
+        } 
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Size {
     pub in_bytes: u64
 }
@@ -720,9 +771,15 @@ impl Size {
     pub const fn from_bits(bits: u64) -> Self {
         Size { in_bytes: (bits + 7) / 8 }
     }
+
+    pub fn from_bytes(bytes: impl TryInto<u64>) -> Self {
+        Size { in_bytes: bytes.try_into().map_err(|_| "u64 conversion failure in Size::from_bytes").unwrap() }
+    }
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Fields {
+    /// For scalar or zero-sized types
     None,
     Array {
         stride: u64,
@@ -733,26 +790,299 @@ pub enum Fields {
     }
 }
 
-pub struct TypeLayout<'tcx> {
-    pub ty: Ty<'tcx>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendScalar {
+    Int(Integer, bool),
+    Float(Float),
+    Pointer
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendRepr {
+    Scalar(BackendScalar),
+    ScalarPair(BackendScalar, BackendScalar),
+    Memory
+}
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+pub struct LayoutData {
     pub size: Size,
     pub align: LLVMAlign,
-    pub fields: Fields
+    pub fields: Fields,
+    pub repr: BackendRepr
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TypeLayout<'tcx>(pub &'tcx LayoutData);
+
+impl<'tcx> std::ops::Deref for TypeLayout<'tcx> {
+    type Target = LayoutData;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl<'tcx> TypeLayout<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>, size: Size, align: LLVMAlign, fields: Fields, repr: BackendRepr) -> Self {
+        tcx.intern_layout(LayoutData { size, align, fields, repr })
+    }
 }
 
 #[derive(Clone, Copy)]
 pub enum LayoutError {
+    /// The Ty was erroneous to begin with (TyKind::Error), no sensible layout can be computed
+    Erroneous,
+    /// The Ty's layout is cyclic: Ty contains itself without any indirection
     Cyclic
 }
 
-impl<'tcx> FromCycleError<'tcx> for Result<&'tcx TypeLayout<'tcx>, LayoutError> {
+impl<'tcx> FromCycleError<'tcx> for Result<TypeLayout<'tcx>, LayoutError> {
     fn from_cycle_error(_tcx: TyCtxt<'tcx>) -> Self {
         Result::Err(LayoutError::Cyclic)
     }
 }
 
-pub fn layout_of<'tcx>(tcx: TyCtxt<'tcx>, def: DefId) -> Result<&'tcx TypeLayout<'tcx>, LayoutError> {
-    todo!()
+struct LayoutCtxt<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    data_layout: TargetDataLayout
 }
 
+impl<'tcx> LayoutCtxt<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>) -> Self {
+        Self {
+            tcx,
+            data_layout: *tcx.data_layout()
+        }
+    }
 
+    fn layout_for_array_like(&self, dynamic_sized: bool) -> TypeLayout<'tcx> {
+        let data_layout = self.data_layout();
+        let align = data_layout.ptr_align;
+        let ptr_size = data_layout.ptr_size;
+
+        let nuint = BackendScalar::Int(Integer::ISize.normalize(self), false);
+
+        let mut fields = IndexVec::new();
+        fields.push(0);
+        fields.push(ptr_size.in_bytes);
+        if dynamic_sized {
+            fields.push(ptr_size.in_bytes * 2);
+        }
+
+
+        TypeLayout::new(
+            self.tcx,
+            Size::from_bytes(ptr_size.in_bytes * (2 + dynamic_sized as u64)),
+            align,
+            Fields::Struct { fields },
+            if !dynamic_sized {
+                BackendRepr::ScalarPair(BackendScalar::Pointer, nuint)
+            } else {
+                BackendRepr::Memory
+            }
+        )
+    }
+
+    fn layout_for_integer(&self, integer: Integer, signedness: bool) -> TypeLayout<'tcx> {
+        let size = integer.size(self);
+        let align = integer.align(self);
+        TypeLayout::new(
+            self.tcx,
+            Size::from_bytes(size),
+            align,
+            Fields::None,
+            BackendRepr::Scalar(BackendScalar::Int(integer, signedness))
+        )
+    }
+
+    fn layout_for_float(&self, float: Float) -> TypeLayout<'tcx> {
+        let size = float.size();
+        let align = float.align(self);
+        TypeLayout::new(
+            self.tcx,
+            Size::from_bytes(size),
+            align,
+            Fields::None,
+            BackendRepr::Scalar(BackendScalar::Float(float))
+        )
+    }
+
+    fn layout_for_struct(&self, fields: IndexVec<FieldIdx, TypeLayout<'tcx>>) -> TypeLayout<'tcx> {
+        let mut abi = Align::ONE;
+        let mut offset = 0;
+        let mut offsets = IndexVec::new();
+        let mut size = 0;
+        for field in &fields {
+            size += field.size.in_bytes;
+            abi = std::cmp::max(abi, field.align.abi);
+            if offset % field.align.abi.in_bytes() != 0 {
+                offset = align_up(offset, field.align.abi);
+            }
+            offsets.push(offset);
+        }
+
+        let mut repr = BackendRepr::Memory;
+
+        let mut fiter = fields.iter();
+        match (fiter.next(), fiter.next(), fiter.next()) {
+            (Some(field), None, None) => {
+                match field.repr {
+                    frepr @ BackendRepr::Scalar(..) => repr = frepr,
+                    frepr @ BackendRepr::ScalarPair(..) => repr = frepr,
+                    _ => ()
+                }
+            }
+            (Some(field1), Some(field2), None) if let BackendRepr::Scalar(scalar1) = field1.repr && let BackendRepr::Scalar(scalar2) = field2.repr =>
+                repr = BackendRepr::ScalarPair(scalar1, scalar2),
+            _ => ()
+        }
+
+
+        TypeLayout::new(
+            self.tcx,
+            Size::from_bytes(size),
+            LLVMAlign::from_align(abi),
+            Fields::Struct { fields: offsets },
+            repr
+        )
+    }
+
+    fn layout_for_array(&self, ty: Ty<'tcx>, count: u64) -> Result<TypeLayout<'tcx>, LayoutError> {
+        let layout = match self.tcx.layout_of(ty) {
+            Ok(layout) => layout,
+            Err(LayoutError::Cyclic) => {
+                // A type refrencing itself like this should only be possible using type aliases 
+                // (NOTE: in the future maybe through compile-time meta programming)
+                // TODO: once type aliases become a thing: unintern the Ty IR into it's AST Node
+                todo!("type alias cyclic types");
+            }
+            err @ Err(_) => return err
+        };
+        let align = layout.align;
+        Ok(TypeLayout::new(
+            self.tcx,
+            Size { in_bytes: count * layout.size.in_bytes },
+            align,
+            Fields::None,
+            BackendRepr::Memory
+        ))
+    }
+
+    fn calculate_layout_for_ty(&self, ty: Ty<'tcx>) -> Result<TypeLayout<'tcx>, LayoutError> {
+        let layout = match ty {
+            Ty(TyKind::Void) | Ty(TyKind::Never) =>
+                TypeLayout::new(
+                    self.tcx,
+                    Size::from_bytes(0),
+                    LLVMAlign::from_align(Align::ONE),
+                    Fields::None,
+                    BackendRepr::Memory
+                ),
+            Ty(TyKind::Bool) =>
+                self.tcx.layout_of(self.tcx.basic_types.byte)?,
+            Ty(TyKind::Char) =>
+                self.tcx.layout_of(self.tcx.basic_types.uint)?,
+            Ty(TyKind::String) =>
+                self.layout_for_array_like(false),
+
+            Ty(TyKind::Int(integer, signedness)) =>
+                self.layout_for_integer(*integer, *signedness),
+            Ty(TyKind::Float(float)) =>
+                self.layout_for_float(*float),
+            Ty(TyKind::Adt(adt)) => {
+                match adt {
+                    AdtDef(AdtKind::Struct(strct)) => {
+                        let mut fields = IndexVec::new();
+                        for field in strct.fields.iter() {
+                            let layout = match self.tcx.layout_of(self.tcx.type_of(field.def)) {
+                                Ok(layout) => layout,
+                                err @ Err(LayoutError::Cyclic) => {
+                                    let ast::Node::Item(item) = self.tcx.node_by_def_id(strct.def) else { unreachable!() };
+                                    let ast::Node::FieldDef(def) = self.tcx.node_by_def_id(field.def) else { unreachable!() };
+                                    self.report_cycle_error(item.ident().span, def.ty.span, format_args!("struct `{}`", strct.name.get()));
+                                    return err;
+                                }
+                                err @ Err(_) => return err
+                            };
+                            fields.push(layout); 
+                        }
+                        self.layout_for_struct(fields)
+                    }
+                    AdtDef(AdtKind::Enum(_enm)) => todo!(),
+                    AdtDef(AdtKind::Union) => todo!(),
+                }
+            }
+            Ty(TyKind::Refrence(..)) => {
+                let data_layout = self.data_layout();
+                TypeLayout::new(
+                    self.tcx,
+                    data_layout.ptr_size,
+                    data_layout.ptr_align,
+                    Fields::None,
+                    BackendRepr::Scalar(BackendScalar::Pointer)
+                )
+            }
+            Ty(TyKind::Range(..)) => todo!(),
+            Ty(TyKind::Slice(_)) =>
+                self.layout_for_array_like(false),
+            Ty(TyKind::Array(base, count)) =>
+                self.layout_for_array(*base, count.try_as_usize().unwrap() as u64)?,
+            Ty(TyKind::Tuple(tys)) => {
+                let mut fields = IndexVec::new();
+                for ty in tys.iter() {
+                    let layout = match self.tcx.layout_of(*ty) {
+                        Ok(layout) => layout,
+                        Err(LayoutError::Cyclic) => {
+                            // A type refrencing itself like this should only be possible using type aliases 
+                            // (NOTE: in the future maybe through compile-time meta programming)
+                            // TODO: once type aliases become a thing: unintern the Ty IR into it's AST Node
+                            todo!("type alias cyclic types");
+                        }
+                        err @ Err(_) => return err
+                    };
+                    fields.push(layout); 
+                }
+                self.layout_for_struct(fields)
+            },
+            Ty(TyKind::DynamicArray(_)) =>
+                self.layout_for_array_like(true),
+            Ty(TyKind::Function(..)) => todo!(), // What is TBD here? Is this a FnPtr?
+            Ty(TyKind::Err) => return Err(LayoutError::Erroneous),
+        };
+        Ok(layout)
+    }
+
+    fn report_cycle_error(&self, item_span: Span, recursion_span: Span, kind: std::fmt::Arguments) {
+        Message::error(format!("infinite size {} contains itself without indirection", kind))
+            .at(item_span)
+            .hint(format!("recursion without indirection"), recursion_span)
+            .push(self.tcx.diagnostics());
+    }
+}
+
+impl<'tcx> DataLayoutExt for LayoutCtxt<'tcx> {
+    fn data_layout(&self) -> &TargetDataLayout {
+        &self.data_layout
+    }
+}
+
+pub fn layout_of<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Result<TypeLayout<'tcx>, LayoutError> {
+    let ctxt = LayoutCtxt::new(tcx);
+    ctxt.calculate_layout_for_ty(ty)
+}
+
+#[inline]
+const fn align_up(addr: u64, align: Align) -> u64 {
+    let align_mask = align.in_bytes() - 1;
+    if addr & align_mask == 0 {
+        addr // already aligned
+    } else {
+        // FIXME: Replace with .expect, once `Option::expect` is const.
+        if let Some(aligned) = (addr | align_mask).checked_add(1) {
+            aligned
+        } else {
+            panic!("attempt to add with overflow")
+        }
+    }
+}

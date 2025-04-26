@@ -1000,7 +1000,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         };
         let mut tys = Vec::new();
         if let Some(expected_list) = expected_list {
-            for (expr, exp) in exprs.iter().zip(expected_list) {
+            for (expr, exp) in exprs.iter().zip(*expected_list) {
                 let ty = self.check_expr_with_expectation(expr, Expectation::Guide(*exp));
                 tys.push(ty);
             }
@@ -1010,7 +1010,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 tys.push(ty);
             }
         }
-        Ty::new_tuple(self.tcx, tys)
+        Ty::new_tuple(self.tcx, self.tcx.arena.alloc(tys))
     }
 
     fn check_expr_literal(&mut self, literal: &'tcx ast::Literal, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {

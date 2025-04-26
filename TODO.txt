@@ -7,7 +7,7 @@ Ordered (by priority):
     √ Recursive Query Support
     √ Query Cycle Detection
     √ Adt Type IR overhaul
-    - LLVM Target and TargetMachine information
+    √ LLVM Target and TargetMachine information
     - Layout and ABI
 - Codegen
     - Refactor Consts
@@ -22,6 +22,8 @@ Ordered (by priority):
 - Generic Functions and Adts
     - Monomorphization
     - Nullabilties (Optional<T> modeled as T? and null == None)
+    - Default initialization and Discriminats
+    - Item checking (is struct, enum healthy? maybe catch cyclic layout beforehand)
 - Methods
 - Overloaded Functions
 - Operator Overloading
@@ -33,7 +35,7 @@ Unodered (Ideas for implementations):
 - Parser hardening (better error handling + recovery)
 - Mutabilities (const/mutable variables, ptrs, etc ...)
 - Complex Syntax Extensions 
-    - Macros (calls to `#expand fns` in all sorts of places)
+    - Macros (calls to `#expand` fns in all sorts of places)
     - Nesting of Items (inner functions, structures, etc)
     - `#if` in Items, at source scope, etc
     - Type alliases, new syntax for consts (maybe parsing clash)
@@ -42,5 +44,6 @@ Unodered (Ideas for implementations):
 - Duck-Typing polymorphism `fnname<T: ~LooksLike>(T similar)`
 - Error handling `int mayerror(...) !MyError`
 - Moving values (Borrowck), Refrences, RAII (Destructors)
+- Dead Code dectection and warnings
 
 

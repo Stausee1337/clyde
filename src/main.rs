@@ -33,8 +33,8 @@ fn main() -> ExitCode {
                 let mut buffer = String::new();
                 analysis::intermediate::display_ir_body(tcx, body, &mut buffer)
                     .unwrap();
-                println!("{buffer}");
             }
+            
         });
 
         Ok(())
