@@ -123,6 +123,7 @@ pub struct Signature<'tcx> {
     pub returns: Ty<'tcx>,
     pub params: &'tcx [Param<'tcx>],
     pub name: Symbol,
+    pub has_errors: bool
 }
 
 #[derive(Clone, Copy)]
@@ -779,12 +780,14 @@ impl Size {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Fields {
-    /// For scalar or zero-sized types
-    None,
+    /// For Scalar types being backed exclusively BackendRepr::Scalar
+    Scalar,
+    /// For fix-size Array types
     Array {
         stride: u64,
         count: u64
     },
+    /// Including but not limited to structure types, zst types, functions, etc
     Struct {
         fields: IndexVec<FieldIdx, u64>
     }
@@ -891,7 +894,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             self.tcx,
             Size::from_bytes(size),
             align,
-            Fields::None,
+            Fields::Scalar,
             BackendRepr::Scalar(BackendScalar::Int(integer, signedness))
         )
     }
@@ -903,7 +906,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             self.tcx,
             Size::from_bytes(size),
             align,
-            Fields::None,
+            Fields::Scalar,
             BackendRepr::Scalar(BackendScalar::Float(float))
         )
     }
@@ -964,7 +967,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             self.tcx,
             Size { in_bytes: count * layout.size.in_bytes },
             align,
-            Fields::None,
+            Fields::Array { stride: layout.size.in_bytes, count },
             BackendRepr::Memory
         ))
     }
@@ -976,7 +979,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     self.tcx,
                     Size::from_bytes(0),
                     LLVMAlign::from_align(Align::ONE),
-                    Fields::None,
+                    Fields::Struct { fields: IndexVec::new() },
                     BackendRepr::Memory
                 ),
             Ty(TyKind::Bool) =>
@@ -1019,7 +1022,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     self.tcx,
                     data_layout.ptr_size,
                     data_layout.ptr_align,
-                    Fields::None,
+                    Fields::Scalar,
                     BackendRepr::Scalar(BackendScalar::Pointer)
                 )
             }
@@ -1047,7 +1050,14 @@ impl<'tcx> LayoutCtxt<'tcx> {
             },
             Ty(TyKind::DynamicArray(_)) =>
                 self.layout_for_array_like(true),
-            Ty(TyKind::Function(..)) => todo!(), // What is TBD here? Is this a FnPtr?
+            Ty(TyKind::Function(..)) => 
+                TypeLayout::new(
+                    self.tcx,
+                    Size::from_bytes(0),
+                    LLVMAlign::from_align(Align::ONE),
+                    Fields::Struct { fields: IndexVec::new() },
+                    BackendRepr::Memory
+                ),
             Ty(TyKind::Err) => return Err(LayoutError::Erroneous),
         };
         Ok(layout)

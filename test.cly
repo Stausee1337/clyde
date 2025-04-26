@@ -61,7 +61,7 @@ struct Hello {
     int x;
 }
 
-const Hello TEST = 12;
+const Hello TEST = Hello { x = 12 };
 
 void close(int a, int b, int c) {
     /*int xxx = {

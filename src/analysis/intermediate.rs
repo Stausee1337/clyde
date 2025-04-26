@@ -1110,7 +1110,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 }
 
-pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
+pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
 
     let node = tcx.node_by_def_id(def_id);
 
@@ -1118,6 +1118,9 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
         .expect("build ir for node without a body");
 
     let typecheck_results = tcx.typecheck(def_id);
+    if typecheck_results.has_errors {
+        return Err(());
+    }
 
     let mut ctxt = TranslationCtxt::new(tcx, def_id, typecheck_results, body.params);
 
@@ -1136,7 +1139,6 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
                         .with_span(Span::NULL)
                 );
             }
-            println!("block {:?}", block);
 
             let sig = tcx.fn_sig(def_id);
             sig.returns
@@ -1152,7 +1154,7 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ Body<'_> {
         _ => unreachable!()
     };
 
-    ctxt.build(result_ty)
+    Ok(ctxt.build(result_ty))
 }
 
 const INDENT: &'static str = "    ";

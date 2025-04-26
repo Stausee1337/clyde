@@ -129,7 +129,7 @@ define_queries! {
     fn type_of(key: ast::DefId) -> type_ir::Ty<'tcx>;
     fn typecheck(key: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
     fn fn_sig(key: ast::DefId) -> type_ir::Signature<'tcx>;
-    fn build_ir(key: ast::DefId) -> &'tcx intermediate::Body<'tcx>;
+    fn build_ir(key: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
 
     #[handle_cycle_error]
     fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TypeLayout<'tcx>, type_ir::LayoutError>;

@@ -65,6 +65,7 @@ struct TypecheckCtxt<'tcx> {
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>>,
     locals: HashMap<ast::NodeId, Ty<'tcx>>,
+    last_error: Cell<Option<Ty<'tcx>>>
 }
 
 impl<'tcx> TypecheckCtxt<'tcx> {
@@ -79,7 +80,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             variant_translations: Default::default(),
             lowering_ctxt: LoweringCtxt::new(tcx),
             associations: Default::default(),
-            locals: Default::default()
+            locals: Default::default(),
+            last_error: Cell::new(None)
         }
     }
 
@@ -119,12 +121,18 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             assert_eq!(ty, prev, "tried to assoicate {node_id:?} twice with different types; First {prev:?} then {ty:?}");
             eprintln!("[WARNING] unwanted attempt to associate {node_id:?} with {ty:?} twice")
         }
+        if let Ty(type_ir::TyKind::Err) = ty {
+            self.last_error.set(Some(ty));
+        }
     }
 
     fn ty_local(&mut self, node_id: NodeId, ty: Ty<'tcx>) {
         if let Some(prev) = self.locals.insert(node_id, ty) {
             assert_eq!(ty, prev, "tried to create local {node_id:?} twice with different types; First {prev:?} then {ty:?}");
             eprintln!("[WARNING] unwanted attempt to create local {node_id:?} with {ty:?} twice")
+        }
+        if let Ty(type_ir::TyKind::Err) = ty {
+            self.last_error.set(Some(ty));
         }
     }
 
@@ -1220,7 +1228,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             field_indices: self.field_indices,
             variant_translations: self.variant_translations,
             associations: self.associations,
-            locals: self.locals
+            locals: self.locals,
+            has_errors: self.last_error.get().is_some()
         }
     }
 }
@@ -1267,7 +1276,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
             ast::TypeExprKind::Array(array) => {
                 match array.cap {
                     ast::ArrayCapacity::Discrete(..) | ast::ArrayCapacity::Infer => {
-                        let ty = self.lower_ty(ty);
+                        let ty = self.lower_ty(array.ty);
                         if let Ty(type_ir::TyKind::Err) = ty {
                             return ty;
                         }
@@ -1355,6 +1364,7 @@ pub struct TypecheckResults<'tcx> {
     pub variant_translations: HashMap<ast::NodeId, type_ir::VariantIdx>,
     pub associations: HashMap<ast::NodeId, Ty<'tcx>>,
     pub locals: HashMap<ast::NodeId, Ty<'tcx>>,
+    pub has_errors: bool
 }
 
 pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {
@@ -1386,12 +1396,14 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
     match node {
         ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) => {
             let mut returns = ctxt.lower_ty(&func.sig.returns);
+            let mut has_errors = false;
             if returns.is_incomplete() {
                 Message::error(
                     format!("type {returns} is incomplete, incomplete types are not allowed in function signatures"))
                     .at(func.sig.returns.span)
                     .push(tcx.diagnostics());
                 returns = Ty::new_error(tcx);
+                has_errors = true;
             }
 
             let mut params = Vec::new();
@@ -1404,6 +1416,7 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
                         .at(param.ty.span)
                         .push(tcx.diagnostics());
                     ty = Ty::new_error(tcx);
+                    has_errors = true;
                 }
 
 
@@ -1416,7 +1429,12 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
             let params: Box<[type_ir::Param]> = params.into_boxed_slice();
             let params: &'_ [type_ir::Param] = tcx.arena.alloc(params);
 
-            type_ir::Signature { returns, params, name: func.ident.symbol }
+            type_ir::Signature {
+                name: func.ident.symbol,
+                params,
+                returns,
+                has_errors
+            }
         }
         _ => {
             panic!("non-function definition in fn_sig")
