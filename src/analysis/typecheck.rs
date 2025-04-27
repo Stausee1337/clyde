@@ -1,8 +1,9 @@
 use std::cell::Cell;
 
 use hashbrown::HashMap;
+use num_traits::ToPrimitive;
 
-use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, type_ir::{self, AdtDef, AdtKind, ConstInner, Integer, Ty}};
+use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, type_ir::{self, AdtDef, AdtKind, ConstKind, Integer, Ty}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -871,10 +872,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     }
                 }
                 
-                let count = ty_init.initializers.len();
+                let count = ty_init.initializers.len() as u64;
                 match kind {
                     type_ir::TyKind::Array(_, capcity) => {
-                        let capacity = capcity.try_as_usize()
+                        let capacity = capcity.downcast_unsized::<dyn ToPrimitive>()
+                            .map(|p| p.to_u64())
+                            .flatten()
                             .expect("array has capacity of usize");
                         if count != 0 && count != 1 && count != capacity {
                             Message::error(format!("expected array with {capacity} elements, found {count} elements"))
@@ -1284,13 +1287,10 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         let cap = if let ast::ArrayCapacity::Discrete(expr) = &array.cap {
                             type_ir::Const::from_definition(self.tcx, *expr.def_id.get().unwrap())
                         } else {
-                            self.tcx.intern_const(ConstInner::Placeholder)
+                            self.tcx.intern_const(ConstKind::Infer)
                         };
 
-                        if let type_ir::Const(type_ir::ConstInner::Err { msg, span }) = &cap {
-                            Message::error(msg)
-                                .at(*span)
-                                .push(self.diagnostics());
+                        if let type_ir::Const(type_ir::ConstKind::Err) = &cap {
                             return Ty::new_error(self.tcx);
                         }
 

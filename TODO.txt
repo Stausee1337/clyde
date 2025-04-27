@@ -3,18 +3,18 @@ Ordered (by priority):
 √ Fix Integers (no inference, only fix integers, they're broken)
     √ Common types interning
     √ Ctxt Macros
-- Calculate structure data layout
+√ Calculate structure data layout
     √ Recursive Query Support
     √ Query Cycle Detection
     √ Adt Type IR overhaul
     √ LLVM Target and TargetMachine information
-    - Layout and ABI
+    √ Layout and ABI
+    √ Don't generate IR on typecheck errors
+      (make the ir_build(..) query return Result, as the build phase will be able to emit errs in the future)
+    √ Make sure to check every item
+      (wether it has a body or not, as an unused struct could still be cyclic)
 - Codegen
     - Refactor Consts
-    - Don't generate IR on typecheck errors
-      (make the ir_build(..) query return Result, as the build phase will be able to emit errs in the future)
-    - Make sure to check every item
-      (wether it has a body or not, as an unused struct could still be cyclic)
 - Directives (`#if`, `#include`, etc ...)
     - Files and Imports -> Namespaces
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
@@ -23,13 +23,12 @@ Ordered (by priority):
     - Monomorphization
     - Nullabilties (Optional<T> modeled as T? and null == None)
     - Default initialization and Discriminats
-    - Item checking (is struct, enum healthy? maybe catch cyclic layout beforehand)
 - Methods
 - Overloaded Functions
 - Operator Overloading
 
 Unodered (Ideas for implementations):
-- Switch stmts using `#if <expr> == {`
+- Switch stmts using `if <expr> == {`
 - Type Inference variables
     - enabling floating point types f32/f64
 - Parser hardening (better error handling + recovery)

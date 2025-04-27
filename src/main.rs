@@ -1,6 +1,8 @@
 #![feature(dropck_eyepatch)]
 #![feature(let_chains)]
 #![feature(if_let_guard)]
+#![feature(ptr_metadata)]
+#![feature(unsize)]
 
 use std::{env, process::ExitCode};
 
@@ -48,8 +50,15 @@ fn run_analylsis(tcx: context::TyCtxt) -> Result<(), ()> {
     for def in &tcx.resolutions.items {
         let node = tcx.node_by_def_id(*def);
         match node {
-            _ if node.body().is_some() =>
-                has_errors |= tcx.build_ir(*def).is_err(),
+            _ if node.body().is_some() => {
+                let body = tcx.build_ir(*def);
+                if let Ok(body) = body {
+                    let mut buffer = String::new();
+                    analysis::intermediate::display_ir_body(tcx, body, &mut buffer).unwrap();
+                    println!("{buffer}");
+                }
+                has_errors |= body.is_err();
+            }
             Node::Item(Item { kind: ItemKind::Function(..), .. }) =>
                 // check if signature is well-formed for bodyless (external) fns
                 has_errors |= tcx.fn_sig(*def).has_errors,

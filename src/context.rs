@@ -355,7 +355,7 @@ macro_rules! define_internables {
 define_internables! {
     into adt_defs intern intern_adt(type_ir::AdtKind) -> type_ir::AdtDef<'tcx>;
     into tys      intern intern_ty(type_ir::TyKind<'tcx>) -> type_ir::Ty<'tcx>;
-    into consts   intern intern_const(type_ir::ConstInner<'tcx>) -> type_ir::Const<'tcx>;
+    into consts   intern intern_const(type_ir::ConstKind<'tcx>) -> type_ir::Const<'tcx>;
     into layouts  intern intern_layout(type_ir::LayoutData) -> type_ir::TypeLayout<'tcx>;
 }
 

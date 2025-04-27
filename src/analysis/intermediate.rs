@@ -128,7 +128,6 @@ impl<'tcx> std::fmt::Debug for Place<'tcx> {
 pub enum Operand<'tcx> {
     Copy(RegisterId),
     Const(Const<'tcx>),
-    Definition(DefId),
 }
 
 impl<'tcx> std::fmt::Debug for Operand<'tcx> {
@@ -136,19 +135,7 @@ impl<'tcx> std::fmt::Debug for Operand<'tcx> {
         match self {
             Operand::Copy(reg) => write!(f, "copy {reg:?}"),
             Operand::Const(cnst) => write!(f, "const {cnst:?}"),
-            Operand::Definition(def_id) => {
-                let ident = context::with_tcx(|tcx| {
-                    let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(*def_id);
-                    if let ast::Node::Item(item) = node {
-                        return item.ident();
-                    } else {
-                        panic!("non-item in definition");
-                    };
-                });
-
-                write!(f, "{}", ident.symbol.get())
-            },
-        }
+       }
     }
 }
 
@@ -169,7 +156,6 @@ impl<'tcx> Operand<'tcx> {
 
 pub enum RValue<'tcx> {
     Const(Const<'tcx>),
-    Definition(DefId),
     Read(Place<'tcx>),
     Ref(Place<'tcx>),
     Invert(Operand<'tcx>),
@@ -198,7 +184,6 @@ impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
         match value {
             Operand::Copy(reg) => RValue::Read(Place::Register(reg)),
             Operand::Const(cnst) => RValue::Const(cnst),
-            Operand::Definition(def) => RValue::Definition(def)
         }
     }
 }
@@ -222,18 +207,6 @@ impl<'tcx> std::fmt::Debug for RValue<'tcx> {
                 write!(f, "{callee:?}({args})")
             },
             RValue::Const(cnst) => write!(f, "const {cnst:?}"),
-            RValue::Definition(def_id) => {
-                let ident = context::with_tcx(|tcx| {
-                    let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(*def_id);
-                    if let ast::Node::Item(item) = node {
-                        return item.ident();
-                    } else {
-                        panic!("non-item in definition");
-                    };
-                });
-
-                write!(f, "{}", ident.symbol.get())
-            },
             RValue::ExplicitInit { ty, initializers } => {
                 let mut args = vec![];
                 for (idx, operand) in initializers {
@@ -585,7 +558,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         join_block
     }
 
-    fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &ast::Expr<'tcx>) -> BlockId {
+    fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
         match &expr.kind {
             ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(..)) = name.resolution() => {
                 let place;
@@ -962,7 +935,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         }
     }
 
-    fn as_register(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> (BlockId, RegisterId) {
+    fn as_register(&mut self, block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> (BlockId, RegisterId) {
         if let ast::ExprKind::Name(name) = &expr.kind {
             if let Some(ast::Resolution::Local(local)) = name.resolution() {
                 return (block, self.register_lookup[local]);
@@ -1017,7 +990,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     fn expr_as_operand(
         &mut self,
         mut block: BlockId,
-        expr: &ast::Expr<'tcx>,
+        expr: &'tcx ast::Expr<'tcx>,
     ) -> (BlockId, Operand<'tcx>) {
         match &expr.kind {
             ast::ExprKind::Literal(literal) => {
@@ -1046,7 +1019,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             }
             ast::ExprKind::Name(name) => match name.resolution() {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::Function)) =>
-                    (block, Operand::Definition(*def_id)),
+                    (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
                 Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
                 Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
                 Some(ast::Resolution::Local(..)) => unreachable!(),

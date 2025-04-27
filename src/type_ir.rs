@@ -1,9 +1,9 @@
-use std::ops::Deref;
+use std::{any::TypeId, borrow::Borrow, marker::Unsize, ops::Deref};
 
 use index_vec::IndexVec;
-use num_traits::{Num, PrimInt, ToPrimitive};
+use num_traits::{Num, ToBytes, ToPrimitive};
 
-use crate::{context::{FromCycleError, Interners, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
+use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
@@ -133,62 +133,182 @@ pub struct Param<'tcx> {
     pub node_id: NodeId
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub struct Scalar {
-    size: usize,
-    data: u128
+
+#[derive(Hash, PartialEq, Eq)]
+pub struct Value<'tcx> {
+    ty: Ty<'tcx>,
+    // FIXME: the new value system is using loads of `unsafe {}` blocks when trying to unerase a
+    // value from the native bytes representation. We should try to come up with a safe mechanism
+    // for these
+    data: &'tcx [u8]
 }
 
-impl Scalar {
-    pub fn from_number<N: Num + ToPrimitive>(number: N) -> Self {
-        let size = std::mem::size_of::<N>();
-        Scalar { size, data: number.to_u128().unwrap() }
+/// Tries to turn `&S` into `&T` (`T` being `dyn Trt`), by checking if `T` is `U` and enforcing
+/// that `S` implements `U`
+#[inline]
+fn downcast_unsized_knowingly<'a, T, U, S>(f: impl FnOnce() -> &'a S) -> Option<&'a T>
+where 
+    T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static,
+    U: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<U>> + ?Sized + 'static,
+    S: StaticVtable<U> + Sized + 'a
+{
+
+    if TypeId::of::<U>() != TypeId::of::<T>() {
+        return None;
+    }
+
+    let val = f();
+
+    // SAFETY:
+    //  since T == U (through dynamic TypeId check),
+    //      <S as StaticVtable<U>> == <S as StaticVtable<T>>
+    //  &S -> &dyn T
+    unsafe {
+        let trait_ = std::ptr::from_raw_parts(val as *const _, <S as StaticVtable<U>>::VTABLE) as *const U;
+        let trait_ = &*trait_;
+        Some(std::mem::transmute(trait_))
     }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub enum ValTree<'tcx> {
-    Scalar(Scalar),
-    Branch(&'tcx [ValTree<'tcx>])
+impl<'tcx> Value<'tcx> {
+    pub fn from_string(tcx: TyCtxt<'tcx>, value: &str) -> Self {
+        let data = tcx.arena.alloc_slice_copy(value.as_bytes());
+        Self { ty: tcx.basic_types.string, data }
+    }
+
+    pub fn from_integer<T: Num + ToBytes + 'static>(tcx: TyCtxt<'tcx>, value: T) -> Self {
+        let ty = int_ty_from_id(tcx, std::any::TypeId::of::<T>());
+        let bytes = value.to_ne_bytes();
+        let data = tcx.arena.alloc_slice_clone(&bytes.borrow());
+        Value { ty, data }
+    }
+
+    pub fn from_integer_with_ty(tcx: TyCtxt<'tcx>, value: impl Num + ToPrimitive, ty: Ty<'tcx>) -> Self {
+        let (int, signed) = match ty {
+            Ty(TyKind::Int(int, signed)) => (*int, *signed),
+            Ty(TyKind::Bool) => (Integer::I8, false),
+            Ty(TyKind::Char) => (Integer::I32, false),
+            _ => {
+                panic!("from_integer_with_ty expects TyKind::Int, TyKind::Char or TyKind::Bool")
+            }
+        };
+        let mut buffer = [0u8; 8];
+        let data = int.convert(signed, &tcx, value, &mut buffer);
+        let data = tcx.arena.alloc_slice_copy(data);
+        Value { ty, data }
+    }
+
+    pub fn from_size(tcx: TyCtxt<'tcx>, size: u64) -> Self {
+        let int = Integer::ISize.normalize(&tcx);
+        let mut buffer = [0u8; 8];
+        let data = int.convert(false, &tcx, size, &mut buffer);
+        let data = tcx.arena.alloc_slice_clone(&data);
+        Value { ty: tcx.basic_types.nuint, data }
+    }
+
+    fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
+        // let type_id: u128 = type_id_to_u128(std::any::TypeId::of::<T>());
+        // NOTE: for Value this could be a query, allowing polymorphic data to be provided from
+        // much further than just rust itself, but including compile-time executions (e.g.
+        // generating vtables at runtime)
+
+        match self.ty {
+            Ty(TyKind::Int(int, signedness)) =>
+                int.downcast_unsized::<T>(*signedness, self.data),
+            Ty(TyKind::Bool) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
+                Integer::I8.downcast_unsized::<T>(false, self.data),
+            Ty(TyKind::Char) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
+                Integer::I32.downcast_unsized::<T>(false, self.data),
+            Ty(TyKind::String) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
+                downcast_unsized_knowingly::<T, dyn std::fmt::Debug, _>(|| unsafe { std::mem::transmute::<_, &&str>(&self.data) } ),
+            _ => None
+        }
+    }
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub enum ConstInner<'tcx> {
-    Value(Ty<'tcx>, ValTree<'tcx>),
-    Placeholder,
-    Err {
-        msg: String,
-        span: Span
+impl<'tcx> std::fmt::Debug for Value<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Some(d) = self.downcast_unsized::<dyn std::fmt::Debug>() else {
+            return write!(f, "<value> of {}", self.ty);
+        };
+        write!(f, "{d:?}_{}", self.ty)
     }
+}
+
+fn int_ty_from_id<'tcx>(tcx: TyCtxt<'tcx>, needle: std::any::TypeId) -> Ty<'tcx> {
+    macro_rules! define {
+        ($($prim:ident : $ty:ident),*) => {{
+            let ids = [$(std::any::TypeId::of::<$prim>()),*];
+            let tys = [$(tcx.basic_types.$ty),*];
+            (ids, tys)
+        }};
+    }
+    let (ids, tys) = define! {
+        u8: byte, i8: sbyte,
+        u16: ushort, i16: short,
+        u32: uint, i32: int,
+        u64: ulong, i64: long,
+        usize: nuint, isize: nint
+    };
+    for (id, ty) in ids.iter().zip(tys) {
+        if *id == needle {
+            return ty;
+        }
+    }
+    unreachable!("type doesn't seem to be integer")
+}
+
+trait StaticVtable<T: ?Sized> {
+    const VTABLE: std::ptr::DynMetadata<T>;
+}
+
+const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Pointee>::Metadata { 
+    let ptr: *const S = std::ptr::null();
+    let ptr: *const T = ptr;
+
+    let (_, b) = ptr.to_raw_parts();
+    b
+}
+
+#[derive(Hash, PartialEq, Eq)]
+pub enum ConstKind<'tcx> {
+    Value(Value<'tcx>),
+    Definition(DefId),
+    Infer,
+    Err
 }
 
 #[derive(Hash, Clone, Copy, PartialEq, Eq)]
-pub struct Const<'tcx>(pub &'tcx ConstInner<'tcx>);
+pub struct Const<'tcx>(pub &'tcx ConstKind<'tcx>);
 
 impl<'tcx> Const<'tcx> {
     pub fn void_value(tcx: TyCtxt<'tcx>) -> Const<'tcx> {
         let void = tcx.basic_types.void;
-        let value = ValTree::Branch(&[]);
-        tcx.intern_const(ConstInner::Value(void, value))
+        tcx.intern_const(ConstKind::Value(Value { ty: void, data: &[] }))
     }
 
     pub fn from_definition(tcx: TyCtxt<'tcx>, def_id: DefId) -> Const<'tcx> {
-        let node = tcx.node_by_def_id(def_id);
+        let ty = tcx.type_of(def_id);
+        if let Ty(TyKind::Function(..)) = ty {
+            return tcx.intern_const(ConstKind::Definition(def_id))
+        }
 
-        let body = node.body()
-            .expect("const should have a body");
+        let node = tcx.node_by_def_id(def_id);
+        let body = node.body().expect("const should have a body");
 
         let ty = tcx.type_of(def_id);
         match Self::try_val_from_simple_expr(tcx, ty, body.body) {
             Some(v) => v,
-            None => tcx.intern_const(ConstInner::Err {
-                msg: "Sry, propper const evaluation is not a priority".to_string(),
-                span: body.body.span
-            })
+            None => {
+                Message::error("Sry, propper const evaluation is not a priority".to_string())
+                    .at(body.body.span)
+                    .push(tcx.diagnostics());
+                tcx.intern_const(ConstKind::Err)
+            }
         }
     }
 
-    fn int_to_val(tcx: TyCtxt<'tcx>, int: ast::Integer, ty: Ty<'tcx>) -> Result<ConstInner<'tcx>, String> {
+    fn int_to_val(tcx: TyCtxt<'tcx>, int: ast::Integer, ty: Ty<'tcx>) -> Result<ConstKind<'tcx>, String> {
         let min_int = if int.signed {
             let Some(int) = Integer::fit_signed(-(int.value as i128)) else {
                 return Err(format!("{} does not fit into signed long", int.value));
@@ -206,11 +326,11 @@ impl<'tcx> Const<'tcx> {
             };
 
             if integer.size(&tcx) >= min_int {
-                let scalar = Scalar {
-                    size: integer.size(&tcx),
-                    data: int.value as u128
-                };
-                return Ok(ConstInner::Value(ty, ValTree::Scalar(scalar)));
+                if int.signed {
+                    return Ok(ConstKind::Value(Value::from_integer_with_ty(tcx, -(int.value as i64), ty)));
+                } else { 
+                    return Ok(ConstKind::Value(Value::from_integer_with_ty(tcx, int.value, ty)));
+                }
             }
         }
 
@@ -238,36 +358,30 @@ impl<'tcx> Const<'tcx> {
         };
         match Self::from_literal(tcx, ty, literal) {
             Ok(cnst) => Some(cnst),
-            Err(msg) => Some(tcx.intern_const(ConstInner::Err {
-                msg, span: expr.span
-            }))
+            Err(msg) => {
+                Message::error(msg)
+                    .at(expr.span)
+                    .push(tcx.diagnostics());
+                Some(tcx.intern_const(ConstKind::Err))
+            }
         }
     }
 
-    pub fn from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, literal: &ast::Literal) -> Result<Self, String> {
+    pub fn from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, literal: &'tcx ast::Literal) -> Result<Self, String> {
         let inner = match (ty.0, literal) {
-            (TyKind::String, ast::Literal::String(str)) =>  {
-                let mut slice = Vec::new();
-                for byte in str.as_bytes() {
-                    let val = Scalar::from_number(*byte);
-                    slice.push(ValTree::Scalar(val));
-                }
-
-                let slice = slice.into_boxed_slice();
-                let slice: &[ValTree] = tcx.arena.alloc(slice);
-
-                ConstInner::Value(ty, ValTree::Branch(slice))
+            (TyKind::String, ast::Literal::String(str)) => {
+                ConstKind::Value(Value::from_string(tcx, &str))
             }
             (TyKind::Bool, ast::Literal::Boolean(bool)) =>
-                ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*bool as u8))),
+                ConstKind::Value(Value::from_integer_with_ty(tcx, *bool as u8, tcx.basic_types.bool)),
             (TyKind::Char, ast::Literal::Char(char)) =>
-                ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(*char as u32))),
+                ConstKind::Value(Value::from_integer(tcx, *char as u32)),
             (TyKind::Int(..), ast::Literal::Integer(int)) =>
                 Self::int_to_val(tcx, *int, ty)?,
             (TyKind::Refrence(..), ast::Literal::Null) =>
                 // FIXME: `as usize` here will make the size of the scalar depend on the size
                 // of the architecture the compiler was compiled on, not the target usize
-                ConstInner::Value(ty, ValTree::Scalar(Scalar::from_number(0 as usize))),
+                ConstKind::Value(Value::from_size(tcx, 0)),
             (_, ast::Literal::Null) =>
                 return Err(format!("non refrence-type {ty} cannot be null")),
             _ =>
@@ -278,52 +392,50 @@ impl<'tcx> Const<'tcx> {
     }
 
     pub fn from_bool(tcx: TyCtxt<'tcx>, value: bool) -> Const<'tcx> {
-        tcx.intern_const(ConstInner::Value(tcx.basic_types.bool, ValTree::Scalar(Scalar::from_number(value as u8))))
+        tcx.intern_const(ConstKind::Value(Value::from_integer_with_ty(tcx, value as u8, tcx.basic_types.bool)))
     }
 
-    pub fn try_as_usize(&self) -> Option<usize> {
-        match self.0 {
-            ConstInner::Placeholder | ConstInner::Err { .. } => None,
-            ConstInner::Value(ty, val) => {
-                let Ty(TyKind::Int(Integer::ISize, false)) = ty else {
-                    return None;
-                };
-                let ValTree::Scalar(Scalar { size: 8, data }) = val else {
-                    unreachable!("const nuint is not stored as a scalar of size 8");
-                };
-                Some(*data as usize)
-            }
+    pub fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
+        match self {
+            Const(ConstKind::Value(value)) => value.downcast_unsized::<T>(),
+            Const(ConstKind::Definition(def)) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
+                downcast_unsized_knowingly::<T, dyn std::fmt::Debug, _>(|| unsafe { std::mem::transmute::<_, &DefinitionDebugWrapper>(def) }),
+            _ => todo!()
         }
     }
 }
 
 impl<'tcx> std::fmt::Debug for Const<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        /*let scalar = if let ValTree::Scalar(scalar) = value {
-            Some(scalar.data)
-        } else {
-            None
-        };*/
-        match self.0 {
-            ConstInner::Value(Ty(TyKind::Void), _) =>
-                f.write_str("<empty>"),
-            ConstInner::Value(Ty(TyKind::String), _) =>
-                f.write_str("<string>"),
-            ConstInner::Value(Ty(TyKind::Float(..)), _) =>
-                todo!(),
-            ConstInner::Value(Ty(TyKind::Bool), ValTree::Scalar(scalar)) =>
-                write!(f, "{}_bool", scalar.data != 0),
-            ConstInner::Value(Ty(TyKind::Char), ValTree::Scalar(scalar)) =>
-                write!(f, "{}_char", char::from_u32(scalar.data as u32).unwrap()),
-            ConstInner::Value(ty @ Ty(TyKind::Int(_, true)), ValTree::Scalar(scalar)) =>
-                write!(f, "{}_{ty}", scalar.data as i64),
-            ConstInner::Value(ty @ Ty(TyKind::Int(_, false)), ValTree::Scalar(scalar)) =>
-                write!(f, "{}_{ty}", scalar.data as u64),
-            ConstInner::Value(..) => f.write_str("<value>"),
-            ConstInner::Placeholder => f.write_str("_"),
-            ConstInner::Err { .. } => f.write_str("<err>"),
+        match self {
+            Const(ConstKind::Value(value)) => write!(f, "{value:?}"),
+            Const(ConstKind::Definition(def)) => write!(f, "{:?}", DefinitionDebugWrapper(*def)),
+            Const(ConstKind::Infer) => write!(f, "_"),
+            Const(ConstKind::Err) => write!(f, "<error>")
         }
     }
+}
+
+struct DefinitionDebugWrapper(DefId);
+
+impl std::fmt::Debug for DefinitionDebugWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
+        let ident = context::with_tcx(|tcx| {
+            let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(self.0);
+            if let ast::Node::Item(item) = node {
+                return item.ident();
+            } else {
+                panic!("non-item in definition");
+            };
+        });
+
+        write!(f, "{}", ident.symbol.get())
+    }
+}
+
+
+impl StaticVtable<dyn std::fmt::Debug> for DefinitionDebugWrapper {
+    const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, Self>();
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
@@ -474,7 +586,7 @@ impl<'tcx> Ty<'tcx> {
 
     pub fn is_incomplete(&self) -> bool {
         match self {
-            Ty(TyKind::Array(_, Const(ConstInner::Placeholder))) => true,
+            Ty(TyKind::Array(_, Const(ConstKind::Infer))) => true,
             _ => false
         }
     }
@@ -597,6 +709,83 @@ impl Integer {
         }
     }
 
+    pub fn convert<'a>(&self, signedness: bool, provider: &impl DataLayoutExt, value: impl Num + ToPrimitive, buffer: &'a mut [u8; 8]) -> &'a [u8] {
+        macro_rules! expect_and_convert {
+            ($expr:expr) => {{
+                let Some(number) = $expr else { panic!("expected this fits within type"); };
+                let bytes = number.to_ne_bytes();
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                return &buffer[..bytes.len()];
+            }};
+        }
+        match self {
+            Integer::I8 if signedness => expect_and_convert!(value.to_i8()),
+            Integer::I16 if signedness => expect_and_convert!(value.to_i16()),
+            Integer::I32 if signedness => expect_and_convert!(value.to_i32()),
+            Integer::I64 if signedness => expect_and_convert!(value.to_i64()),
+
+            Integer::I8 => expect_and_convert!(value.to_u8()),
+            Integer::I16 => expect_and_convert!(value.to_u16()),
+            Integer::I32 => expect_and_convert!(value.to_u32()),
+            Integer::I64 => expect_and_convert!(value.to_u64()),
+
+            Integer::ISize =>
+                self.normalize(provider)
+                    .convert(signedness, provider, value, buffer)
+        }
+
+    }
+
+    fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self, signedness: bool, data: &[u8]) -> Option<&T> {
+        macro_rules! convert {
+            ($ty:ty) => {{
+                assert_eq!(data.len(), std::mem::size_of::<$ty>());
+                unsafe { &*(data.as_ptr() as *const $ty) }
+            }};
+        }
+        // FIXME: here we once again run into problems with ISize types. We'd need a tcx to pass
+        // through the `downcast_unsized` system in order to obtain a TargetDataLayout here.
+        // Passing this tcx is not possible at the moment as the `downcast_unsized` is vital for
+        // `Debug` formatting and (`context::enter` does not work because of lifetime recstrictions).
+        // The problem with this bug, is that its actually dangerous once throug cross-compilation
+        // sizeof(TargetISize) != sizeof(HostISize), reading extra memory (though the `assert_eq`
+        // in `convert!` prevents this at the moment)
+        macro_rules! downcast_for_every_int {
+            ($trait:ty) => { 
+                match self {
+                    Integer::I8 if signedness =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i8)),
+                    Integer::I16 if signedness =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i16)),
+                    Integer::I32 if signedness =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i32)),
+                    Integer::I64 if signedness =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i64)),
+                    Integer::ISize if signedness =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(isize)),
+
+                    Integer::I8 =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u8)),
+                    Integer::I16 =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u16)),
+                    Integer::I32 =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u32)),
+                    Integer::I64 =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u64)),
+                    Integer::ISize =>
+                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(usize)),
+                }
+            };
+        }
+        let id = TypeId::of::<T>();
+        if id == TypeId::of::<dyn ToPrimitive>() {
+            return downcast_for_every_int!(dyn ToPrimitive);
+        } else if id == TypeId::of::<dyn std::fmt::Debug>() {
+            return downcast_for_every_int!(dyn std::fmt::Debug);
+        }
+        None
+    }
+
     pub fn to_symbol(&self, signedness: bool) -> Symbol {
         use Integer::*;
         match (self, signedness) {
@@ -613,6 +802,31 @@ impl Integer {
             (ISize, true) => sym::nint,
         }
     }
+
+}
+
+macro_rules! static_vtable_for_nums {
+    ($($p:ident),*) => {$(
+        impl StaticVtable<dyn ToPrimitive> for $p {
+            const VTABLE: std::ptr::DynMetadata<dyn ToPrimitive> = get_vtable::<dyn ToPrimitive, Self>();
+        }
+
+        impl StaticVtable<dyn std::fmt::Debug> for $p {
+            const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, Self>();
+        }
+    )*};
+}
+
+static_vtable_for_nums! {
+    u8, i8,
+    u16, i16,
+    u32, i32,
+    u64, i64,
+    usize, isize
+}
+
+impl<'a> StaticVtable<dyn std::fmt::Debug> for &'a str {
+    const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, &str>();
 }
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
@@ -1029,8 +1243,13 @@ impl<'tcx> LayoutCtxt<'tcx> {
             Ty(TyKind::Range(..)) => todo!(),
             Ty(TyKind::Slice(_)) =>
                 self.layout_for_array_like(false),
-            Ty(TyKind::Array(base, count)) =>
-                self.layout_for_array(*base, count.try_as_usize().unwrap() as u64)?,
+            Ty(TyKind::Array(base, count)) => {
+                let count = count.downcast_unsized::<dyn ToPrimitive>()
+                    .map(|val| val.to_u64())
+                    .flatten()
+                    .unwrap();
+                self.layout_for_array(*base, count)?
+            }
             Ty(TyKind::Tuple(tys)) => {
                 let mut fields = IndexVec::new();
                 for ty in tys.iter() {
