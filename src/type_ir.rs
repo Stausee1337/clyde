@@ -1,6 +1,8 @@
-use std::{any::TypeId, borrow::Borrow, marker::Unsize, ops::Deref};
+use std::{any::TypeId, marker::Unsize, ops::Deref, ptr::NonNull};
 
+use bytemuck::Pod;
 use index_vec::IndexVec;
+use inkwell::debug_info::DebugInfoBuilder;
 use num_traits::{Num, ToBytes, ToPrimitive};
 
 use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
@@ -133,38 +135,116 @@ pub struct Param<'tcx> {
     pub node_id: NodeId
 }
 
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+struct Erased<'a>(&'a [u8]);
+
+impl<'a> Erased<'a> {
+    fn from_ref<T: Pod>(r: &'a T) -> Self {
+        let slice = std::slice::from_ref(r);
+        let data: &[u8] = bytemuck::cast_slice(slice);
+        Erased(data)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Eraser<'tcx> {
+    arena: &'tcx bumpalo::Bump
+}
+
+impl<'tcx> Eraser<'tcx> {
+    fn from_tcx(tcx: TyCtxt<'tcx>) -> Self {
+        Self {
+            arena: &tcx.arena
+        }
+    }
+
+    fn erase<T: Pod>(&self, val: T) -> Erased<'tcx> {
+        let x = self.arena.alloc(val);
+        let slice = std::slice::from_ref(x);
+        let slice: &[u8] = bytemuck::cast_slice(slice);
+        Erased(slice)
+    }
+
+    fn erase_unsized<U: std::ptr::Pointee<Metadata = usize> + ?Sized>(&self, val: &U) -> Erased<'tcx> {
+        let layout = std::alloc::Layout::for_value(val);
+        let (src, size) = (val as *const U).to_raw_parts();
+        if size == 0 {
+            return Erased(&[]);
+        }
+        let dst = self.arena.alloc_layout(layout);
+        let data = unsafe {
+            dst.copy_from(
+                NonNull::new(src as *mut u8)
+                    .expect("expect sized value to have valid pointer"),
+                size
+            );
+            let data = std::ptr::from_raw_parts::<[u8]>(
+                dst.as_ptr() as *const (),
+                size
+            );
+            &*data
+        };
+        Erased(data)
+    }
+}
 
 #[derive(Hash, PartialEq, Eq)]
 pub struct Value<'tcx> {
     ty: Ty<'tcx>,
-    // FIXME: the new value system is using loads of `unsafe {}` blocks when trying to unerase a
-    // value from the native bytes representation. We should try to come up with a safe mechanism
-    // for these
-    data: &'tcx [u8]
+    erased: Erased<'tcx>
 }
 
 /// Tries to turn `&S` into `&T` (`T` being `dyn Trt`), by checking if `T` is `U` and enforcing
 /// that `S` implements `U`
 #[inline]
-fn downcast_unsized_knowingly<'a, T, U, S>(f: impl FnOnce() -> &'a S) -> Option<&'a T>
+fn downcast_sized_knowingly<'a, T, U, S>(erased: Erased<'a>) -> Option<&'a T>
 where 
     T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static,
     U: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<U>> + ?Sized + 'static,
-    S: StaticVtable<U> + Sized + 'a
+    S: Unsize<U> + Sized + 'a
 {
 
     if TypeId::of::<U>() != TypeId::of::<T>() {
         return None;
     }
 
-    let val = f();
+    let data = erased.0.as_ptr() as *const ();
+
+    let align = std::mem::align_of::<S>();
+    assert!(data.addr() & (align - 1) == 0);
+
+    let vtable: std::ptr::DynMetadata<U> = const { get_vtable::<U, S>() };
 
     // SAFETY:
     //  since T == U (through dynamic TypeId check),
-    //      <S as StaticVtable<U>> == <S as StaticVtable<T>>
+    //      <S as Unsize<U>> == <S as Unsize<T>>
     //  &S -> &dyn T
     unsafe {
-        let trait_ = std::ptr::from_raw_parts(val as *const _, <S as StaticVtable<U>>::VTABLE) as *const U;
+        let trait_ = std::ptr::from_raw_parts(data, vtable) as *const U;
+        let trait_ = &*trait_;
+        Some(std::mem::transmute(trait_))
+    }
+}
+
+/// Hack because unsized types are really hard to tame, and this is safe for sure.
+/// FIXME: maybe instead of passing refrences through the downcast_unsized system, we could passs
+/// somthing that has dtors, so we wouldn't need to leak here. And dtors seem to make sense in
+/// general
+#[inline]
+fn downcast_debug_string<'a, T>(string: Box<String>) -> Option<&'a T>
+where 
+    T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static
+{
+
+    if TypeId::of::<dyn std::fmt::Debug>() != TypeId::of::<T>() {
+        return None;
+    }
+
+    let vtable: std::ptr::DynMetadata<dyn std::fmt::Debug> = const { get_vtable::<dyn std::fmt::Debug, String>() };
+    let data = Box::leak(string);
+
+    unsafe {
+        let trait_ = std::ptr::from_raw_parts(data, vtable) as *const dyn std::fmt::Debug;
         let trait_ = &*trait_;
         Some(std::mem::transmute(trait_))
     }
@@ -172,15 +252,16 @@ where
 
 impl<'tcx> Value<'tcx> {
     pub fn from_string(tcx: TyCtxt<'tcx>, value: &str) -> Self {
-        let data = tcx.arena.alloc_slice_copy(value.as_bytes());
-        Self { ty: tcx.basic_types.string, data }
+        let eraser = Eraser::from_tcx(tcx);
+        let erased = eraser.erase_unsized(value);
+        Self { ty: tcx.basic_types.string, erased }
     }
 
-    pub fn from_integer<T: Num + ToBytes + 'static>(tcx: TyCtxt<'tcx>, value: T) -> Self {
+    pub fn from_integer<T: Num + ToBytes + Pod + 'static>(tcx: TyCtxt<'tcx>, value: T) -> Self {
         let ty = int_ty_from_id(tcx, std::any::TypeId::of::<T>());
-        let bytes = value.to_ne_bytes();
-        let data = tcx.arena.alloc_slice_clone(&bytes.borrow());
-        Value { ty, data }
+        let eraser = Eraser::from_tcx(tcx);
+        let erased = eraser.erase(value);
+        Value { ty, erased }
     }
 
     pub fn from_integer_with_ty(tcx: TyCtxt<'tcx>, value: impl Num + ToPrimitive, ty: Ty<'tcx>) -> Self {
@@ -192,35 +273,34 @@ impl<'tcx> Value<'tcx> {
                 panic!("from_integer_with_ty expects TyKind::Int, TyKind::Char or TyKind::Bool")
             }
         };
-        let mut buffer = [0u8; 8];
-        let data = int.convert(signed, &tcx, value, &mut buffer);
-        let data = tcx.arena.alloc_slice_copy(data);
-        Value { ty, data }
+        let eraser = Eraser::from_tcx(tcx);
+        let erased = int.convert(signed, &tcx, value, eraser);
+        Value { ty, erased }
     }
 
     pub fn from_size(tcx: TyCtxt<'tcx>, size: u64) -> Self {
         let int = Integer::ISize.normalize(&tcx);
-        let mut buffer = [0u8; 8];
-        let data = int.convert(false, &tcx, size, &mut buffer);
-        let data = tcx.arena.alloc_slice_clone(&data);
-        Value { ty: tcx.basic_types.nuint, data }
+        let eraser = Eraser::from_tcx(tcx);
+        let erased = int.convert(false, &tcx, size, eraser);
+        Value { ty: tcx.basic_types.nuint, erased }
     }
 
     fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
-        // let type_id: u128 = type_id_to_u128(std::any::TypeId::of::<T>());
         // NOTE: for Value this could be a query, allowing polymorphic data to be provided from
         // much further than just rust itself, but including compile-time executions (e.g.
         // generating vtables at runtime)
 
         match self.ty {
             Ty(TyKind::Int(int, signedness)) =>
-                int.downcast_unsized::<T>(*signedness, self.data),
+                int.downcast_unsized::<T>(*signedness, self.erased),
             Ty(TyKind::Bool) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
-                Integer::I8.downcast_unsized::<T>(false, self.data),
+                Integer::I8.downcast_unsized::<T>(false, self.erased),
             Ty(TyKind::Char) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
-                Integer::I32.downcast_unsized::<T>(false, self.data),
-            Ty(TyKind::String) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
-                downcast_unsized_knowingly::<T, dyn std::fmt::Debug, _>(|| unsafe { std::mem::transmute::<_, &&str>(&self.data) } ),
+                Integer::I32.downcast_unsized::<T>(false, self.erased),
+            Ty(TyKind::String) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() => {
+                let str = std::str::from_utf8(self.erased.0).unwrap();
+                downcast_debug_string(Box::new(str.to_string()))
+            },
             _ => None
         }
     }
@@ -258,10 +338,6 @@ fn int_ty_from_id<'tcx>(tcx: TyCtxt<'tcx>, needle: std::any::TypeId) -> Ty<'tcx>
     unreachable!("type doesn't seem to be integer")
 }
 
-trait StaticVtable<T: ?Sized> {
-    const VTABLE: std::ptr::DynMetadata<T>;
-}
-
 const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Pointee>::Metadata { 
     let ptr: *const S = std::ptr::null();
     let ptr: *const T = ptr;
@@ -269,6 +345,20 @@ const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Poin
     let (_, b) = ptr.to_raw_parts();
     b
 }
+
+/*const fn get_vtable_unsized<T, D, S>() -> <T as std::ptr::Pointee>::Metadata 
+where
+    T: ?Sized + 'static,
+    D: std::ptr::Pointee<Metadata = usize> + ?Sized,
+    S: Unsize<T> + Deref<Target = D>
+{ 
+    let ptr: *const D = std::ptr::from_raw_parts(std::ptr::null() as *const (), 0);
+    // let ptr: *const S = S::deref(&self);
+    let ptr: *const T = ptr;
+
+    let (_, b) = ptr.to_raw_parts();
+    b
+}*/
 
 #[derive(Hash, PartialEq, Eq)]
 pub enum ConstKind<'tcx> {
@@ -284,7 +374,7 @@ pub struct Const<'tcx>(pub &'tcx ConstKind<'tcx>);
 impl<'tcx> Const<'tcx> {
     pub fn void_value(tcx: TyCtxt<'tcx>) -> Const<'tcx> {
         let void = tcx.basic_types.void;
-        tcx.intern_const(ConstKind::Value(Value { ty: void, data: &[] }))
+        tcx.intern_const(ConstKind::Value(Value { ty: void, erased: Erased(&[]) }))
     }
 
     pub fn from_definition(tcx: TyCtxt<'tcx>, def_id: DefId) -> Const<'tcx> {
@@ -399,8 +489,8 @@ impl<'tcx> Const<'tcx> {
         match self {
             Const(ConstKind::Value(value)) => value.downcast_unsized::<T>(),
             Const(ConstKind::Definition(def)) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
-                downcast_unsized_knowingly::<T, dyn std::fmt::Debug, _>(|| unsafe { std::mem::transmute::<_, &DefinitionDebugWrapper>(def) }),
-            _ => todo!()
+                downcast_sized_knowingly::<T, dyn std::fmt::Debug, DebugInfoBuilder>(Erased::from_ref(def)),
+            _ => None
         }
     }
 }
@@ -434,9 +524,9 @@ impl std::fmt::Debug for DefinitionDebugWrapper {
 }
 
 
-impl StaticVtable<dyn std::fmt::Debug> for DefinitionDebugWrapper {
+/*impl StaticVtable<dyn std::fmt::Debug> for DefinitionDebugWrapper {
     const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, Self>();
-}
+}*/
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum TyKind<'tcx> {
@@ -709,13 +799,10 @@ impl Integer {
         }
     }
 
-    pub fn convert<'a>(&self, signedness: bool, provider: &impl DataLayoutExt, value: impl Num + ToPrimitive, buffer: &'a mut [u8; 8]) -> &'a [u8] {
+    fn convert<'a>(&self, signedness: bool, provider: &impl DataLayoutExt, value: impl Num + ToPrimitive, eraser: Eraser<'a>) -> Erased<'a> {
         macro_rules! expect_and_convert {
             ($expr:expr) => {{
-                let Some(number) = $expr else { panic!("expected this fits within type"); };
-                let bytes = number.to_ne_bytes();
-                buffer[..bytes.len()].copy_from_slice(&bytes);
-                return &buffer[..bytes.len()];
+                return eraser.erase(($expr).expect("value corresponds to type"));
             }};
         }
         match self {
@@ -731,49 +818,60 @@ impl Integer {
 
             Integer::ISize =>
                 self.normalize(provider)
-                    .convert(signedness, provider, value, buffer)
+                    .convert(signedness, provider, value, eraser)
         }
 
     }
 
-    fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self, signedness: bool, data: &[u8]) -> Option<&T> {
-        macro_rules! convert {
-            ($ty:ty) => {{
-                assert_eq!(data.len(), std::mem::size_of::<$ty>());
-                unsafe { &*(data.as_ptr() as *const $ty) }
-            }};
-        }
+    fn downcast_unsized<'a, T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self, signedness: bool, erased: Erased<'a>) -> Option<&'a T> {
         // FIXME: here we once again run into problems with ISize types. We'd need a tcx to pass
         // through the `downcast_unsized` system in order to obtain a TargetDataLayout here.
         // Passing this tcx is not possible at the moment as the `downcast_unsized` is vital for
         // `Debug` formatting and (`context::enter` does not work because of lifetime recstrictions).
-        // The problem with this bug, is that its actually dangerous once throug cross-compilation
-        // sizeof(TargetISize) != sizeof(HostISize), reading extra memory (though the `assert_eq`
-        // in `convert!` prevents this at the moment)
+        macro_rules! hack_normalize_from_data_size {
+            (signed $trait:ty, $erased:expr) => {
+                match $erased.0.len() {
+                    1 => downcast_sized_knowingly::<T, $trait, i8>(erased),
+                    2 => downcast_sized_knowingly::<T, $trait, i16>(erased),
+                    4 => downcast_sized_knowingly::<T, $trait, i32>(erased),
+                    8 => downcast_sized_knowingly::<T, $trait, i64>(erased),
+                    _ => unreachable!("non-sensible ISize"),
+                }
+            };
+            (unsigned $trait:ty, $erased:expr) => {
+                match $erased.0.len() {
+                    1 => downcast_sized_knowingly::<T, $trait, u8>($erased),
+                    2 => downcast_sized_knowingly::<T, $trait, u16>($erased),
+                    4 => downcast_sized_knowingly::<T, $trait, u32>($erased),
+                    8 => downcast_sized_knowingly::<T, $trait, u64>($erased),
+                    _ => unreachable!("non-sensible ISize"),
+                }
+            };
+        }
         macro_rules! downcast_for_every_int {
             ($trait:ty) => { 
                 match self {
                     Integer::I8 if signedness =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i8)),
+                        downcast_sized_knowingly::<T, $trait, i8>(erased),
                     Integer::I16 if signedness =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i16)),
+                        downcast_sized_knowingly::<T, $trait, i16>(erased),
                     Integer::I32 if signedness =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i32)),
+                        downcast_sized_knowingly::<T, $trait, i32>(erased),
                     Integer::I64 if signedness =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(i64)),
+                        downcast_sized_knowingly::<T, $trait, i64>(erased),
                     Integer::ISize if signedness =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(isize)),
+                        hack_normalize_from_data_size!(signed $trait, erased),
 
                     Integer::I8 =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u8)),
+                        downcast_sized_knowingly::<T, $trait, u8>(erased),
                     Integer::I16 =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u16)),
+                        downcast_sized_knowingly::<T, $trait, u16>(erased),
                     Integer::I32 =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u32)),
+                        downcast_sized_knowingly::<T, $trait, u32>(erased),
                     Integer::I64 =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(u64)),
+                        downcast_sized_knowingly::<T, $trait, u64>(erased),
                     Integer::ISize =>
-                        downcast_unsized_knowingly::<T, $trait, _>(|| convert!(usize)),
+                        hack_normalize_from_data_size!(unsigned $trait, erased),
                 }
             };
         }
@@ -803,30 +901,6 @@ impl Integer {
         }
     }
 
-}
-
-macro_rules! static_vtable_for_nums {
-    ($($p:ident),*) => {$(
-        impl StaticVtable<dyn ToPrimitive> for $p {
-            const VTABLE: std::ptr::DynMetadata<dyn ToPrimitive> = get_vtable::<dyn ToPrimitive, Self>();
-        }
-
-        impl StaticVtable<dyn std::fmt::Debug> for $p {
-            const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, Self>();
-        }
-    )*};
-}
-
-static_vtable_for_nums! {
-    u8, i8,
-    u16, i16,
-    u32, i32,
-    u64, i64,
-    usize, isize
-}
-
-impl<'a> StaticVtable<dyn std::fmt::Debug> for &'a str {
-    const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, &str>();
 }
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]

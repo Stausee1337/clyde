@@ -127,7 +127,8 @@ impl Hash for Ident {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(transparent)]
 pub struct DefId(pub u32);
 
 impl index_vec::Idx for DefId {
