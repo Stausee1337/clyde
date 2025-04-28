@@ -308,6 +308,12 @@ pub struct Param<'ast> {
     pub node_id: NodeId
 }
 
+impl<'ast> IntoNode<'ast> for Param<'ast> {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Param(self)
+    }
+}
+
 #[derive(Debug)]
 pub struct Block<'ast> {
     pub stmts: &'ast [&'ast Stmt<'ast>],
@@ -633,7 +639,6 @@ impl<'ast> IntoNode<'ast> for GenericParam<'ast>  {
 pub enum GenericParamKind<'ast> {
     Type(Ident),
     Const(Ident, &'ast TypeExpr<'ast>),
-    Err
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

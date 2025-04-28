@@ -15,6 +15,7 @@ Ordered (by priority):
       (wether it has a body or not, as an unused struct could still be cyclic)
 - Codegen
     √ Refactor Consts
+    - Parser Recovery and Tree-like AST Node ownership
 - Directives (`#if`, `#include`, etc ...)
     - Files and Imports -> Namespaces
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely

@@ -3,6 +3,7 @@
 #![feature(if_let_guard)]
 #![feature(ptr_metadata)]
 #![feature(unsize)]
+#![feature(never_type)]
 
 use std::{env, process::ExitCode};
 
@@ -15,6 +16,7 @@ mod target;
 mod type_ir;
 mod files;
 mod context;
+mod codegen;
 mod string_internals;
 
 fn main() -> ExitCode {

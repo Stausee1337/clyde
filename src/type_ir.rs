@@ -346,20 +346,6 @@ const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Poin
     b
 }
 
-/*const fn get_vtable_unsized<T, D, S>() -> <T as std::ptr::Pointee>::Metadata 
-where
-    T: ?Sized + 'static,
-    D: std::ptr::Pointee<Metadata = usize> + ?Sized,
-    S: Unsize<T> + Deref<Target = D>
-{ 
-    let ptr: *const D = std::ptr::from_raw_parts(std::ptr::null() as *const (), 0);
-    // let ptr: *const S = S::deref(&self);
-    let ptr: *const T = ptr;
-
-    let (_, b) = ptr.to_raw_parts();
-    b
-}*/
-
 #[derive(Hash, PartialEq, Eq)]
 pub enum ConstKind<'tcx> {
     Value(Value<'tcx>),

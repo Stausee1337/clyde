@@ -200,7 +200,6 @@ pub fn noop_visit_generic_param_kind<T: Visitor>(gp_kind: &GenericParamKind, vis
     match gp_kind {
         GenericParamKind::Type(..) => (),
         GenericParamKind::Const(_, cnst) => vis.visit_ty_expr(cnst),
-        GenericParamKind::Err => ()
     }
 }
 
