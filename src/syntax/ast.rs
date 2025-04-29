@@ -53,6 +53,21 @@ impl<'ast> Node<'ast> {
         }
     }
 
+    pub fn node_id(self) -> NodeId {
+        match self {
+            Node::Expr(expr) => expr.node_id,
+            Node::NestedConst(nconst) => nconst.node_id,
+            Node::Item(item) => item.node_id,
+            Node::SourceFile(file) => file.node_id,
+            Node::Stmt(stmt) => stmt.node_id,
+            Node::TypeExpr(expr) => expr.node_id,
+            Node::FieldDef(field) => field.node_id,
+            Node::Variant(variant) => variant.node_id,
+            Node::Param(param) => param.node_id,
+            Node::GenericParam(param) => param.node_id,
+        }
+    }
+
     /*pub fn span(self) -> Span {
         match self {
             Node::Expr(expr) => expr.span,
@@ -187,6 +202,7 @@ impl Name {
 
 #[derive(Debug)]
 pub struct SourceFile<'ast> {
+    pub name: Symbol,
     pub items: &'ast [&'ast Item<'ast>],
     pub span: Span,
     pub node_id: NodeId,

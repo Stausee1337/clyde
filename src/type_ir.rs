@@ -20,6 +20,7 @@ impl<'tcx> Deref for AdtDef<'tcx> {
 
 #[derive(Debug, Hash)]
 #[repr(u32)]
+// FXIME: Enum shouldn't be Adt as we're not rust
 pub enum AdtKind {
     Struct(Struct),
     Enum(Enum),
@@ -570,6 +571,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Slice(ty) => write!(f, "{ty}[]"),
             TyKind::Array(ty, _) => write!(f, "{ty}[_]"),
             TyKind::DynamicArray(ty) => write!(f, "{ty}[..]"),
+            // TODO: query function name and display it here
             TyKind::Function(_) => write!(f, "function"),
             TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
             TyKind::Tuple(tys) => {
@@ -1068,7 +1070,7 @@ pub enum Fields {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BackendScalar {
+pub enum Scalar {
     Int(Integer, bool),
     Float(Float),
     Pointer
@@ -1076,8 +1078,8 @@ pub enum BackendScalar {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendRepr {
-    Scalar(BackendScalar),
-    ScalarPair(BackendScalar, BackendScalar),
+    Scalar(Scalar),
+    ScalarPair(Scalar, Scalar),
     Memory
 }
 
@@ -1138,7 +1140,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         let align = data_layout.ptr_align;
         let ptr_size = data_layout.ptr_size;
 
-        let nuint = BackendScalar::Int(Integer::ISize.normalize(self), false);
+        let nuint = Scalar::Int(Integer::ISize.normalize(self), false);
 
         let mut fields = IndexVec::new();
         fields.push(0);
@@ -1147,14 +1149,13 @@ impl<'tcx> LayoutCtxt<'tcx> {
             fields.push(ptr_size.in_bytes * 2);
         }
 
-
         TypeLayout::new(
             self.tcx,
             Size::from_bytes(ptr_size.in_bytes * (2 + dynamic_sized as u64)),
             align,
             Fields::Struct { fields },
             if !dynamic_sized {
-                BackendRepr::ScalarPair(BackendScalar::Pointer, nuint)
+                BackendRepr::ScalarPair(Scalar::Pointer, nuint)
             } else {
                 BackendRepr::Memory
             }
@@ -1169,7 +1170,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             Size::from_bytes(size),
             align,
             Fields::Scalar,
-            BackendRepr::Scalar(BackendScalar::Int(integer, signedness))
+            BackendRepr::Scalar(Scalar::Int(integer, signedness))
         )
     }
 
@@ -1181,7 +1182,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             Size::from_bytes(size),
             align,
             Fields::Scalar,
-            BackendRepr::Scalar(BackendScalar::Float(float))
+            BackendRepr::Scalar(Scalar::Float(float))
         )
     }
 
@@ -1297,7 +1298,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     data_layout.ptr_size,
                     data_layout.ptr_align,
                     Fields::Scalar,
-                    BackendRepr::Scalar(BackendScalar::Pointer)
+                    BackendRepr::Scalar(Scalar::Pointer)
                 )
             }
             Ty(TyKind::Range(..)) => todo!(),

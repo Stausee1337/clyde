@@ -1825,7 +1825,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(item)
     }
 
-    fn parse_source_file(&mut self, file_span: Span) -> &'ast ast::SourceFile<'ast> {
+    fn parse_source_file(&mut self, name: Symbol, file_span: Span) -> &'ast ast::SourceFile<'ast> {
         let res = self.with_owner(|this| {
             let mut items = vec![];
 
@@ -1839,9 +1839,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let items = this.alloc_slice(&items);
 
             Ok(this.create_node_id(|this, node_id| this.alloc(ast::SourceFile {
-                items,
-                node_id,
-                span: file_span
+                name, items, node_id, span: file_span
             })))
         });
         let (source, owner_id, children) = res.unwrap();
@@ -1858,6 +1856,7 @@ pub fn parse_file<'a, 'tcx>(
     let diagnostics = session.diagnostics();
     let source = session.file_cacher().load_file(path)?;
 
+    let name = mangle_path(source.path());
 
     let stream = lexer::tokenize(&source, diagnostics)?;
     
@@ -1865,11 +1864,12 @@ pub fn parse_file<'a, 'tcx>(
     let source_file = if !stream.is_empty() {
         let arena = &ast_info.arena;
         let mut parser = Parser::new(stream, arena, &mut owners, diagnostics);
-        parser.parse_source_file(source.byte_span)
+        parser.parse_source_file(name, source.byte_span)
     } else {
         let owner_id = owners.len_idx();
         let owner_id = owners.push(ast::Owner::new(owner_id));
         let node = ast_info.arena.alloc(ast::SourceFile {
+            name,
             items: &[],
             node_id: NodeId { owner: owner_id, local: LocalId::from_raw(0) },
             span: Span::NULL
@@ -1882,3 +1882,7 @@ pub fn parse_file<'a, 'tcx>(
     Ok(source_file)
 }
 
+fn mangle_path(_path: &str) -> Symbol {
+    // FIXME: mangle path into actual name
+    Symbol::intern("dummy_module_name")
+}

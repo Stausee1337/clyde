@@ -31,9 +31,8 @@ fn main() -> ExitCode {
     };
 
     let res = sess.global_ctxt(|tcx| {
-        run_analylsis(tcx)?;
-
-        Ok(())
+        analysis::run_analylsis(tcx)?;
+        Ok(codegen::run_codegen(tcx))
     });
 
     sess.diagnostics().render();
@@ -45,35 +44,4 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_analylsis(tcx: context::TyCtxt) -> Result<(), ()> {
-    use syntax::ast::{Node, Item, ItemKind};
-
-    let mut has_errors = false;
-    for def in &tcx.resolutions.items {
-        let node = tcx.node_by_def_id(*def);
-        match node {
-            _ if node.body().is_some() => {
-                let body = tcx.build_ir(*def);
-                if let Ok(body) = body {
-                    let mut buffer = String::new();
-                    analysis::intermediate::display_ir_body(tcx, body, &mut buffer).unwrap();
-                    println!("{buffer}");
-                }
-                has_errors |= body.is_err();
-            }
-            Node::Item(Item { kind: ItemKind::Function(..), .. }) =>
-                // check if signature is well-formed for bodyless (external) fns
-                has_errors |= tcx.fn_sig(*def).has_errors,
-            Node::Item(..) =>
-                has_errors |= tcx.layout_of(tcx.type_of(*def)).is_err(),
-            _ => ()
-        }
-    }
-
-    if has_errors {
-        return Err(());
-    }
-
-    Ok(())
-}
 

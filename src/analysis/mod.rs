@@ -1,4 +1,46 @@
+use crate::{context::TyCtxt, diagnostics::Message, syntax::{ast::{Item, ItemKind, Node}, lexer}};
+
 pub mod resolve;
 pub mod node_visitor;
 pub mod typecheck;
 pub mod intermediate;
+
+pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
+    let mut has_errors = false;
+
+    for def in &tcx.resolutions.items {
+        let node = tcx.node_by_def_id(*def);
+        match node {
+            _ if node.body().is_some() => {
+                let body = tcx.build_ir(*def);
+                if let Ok(body) = body {
+                    let mut buffer = String::new();
+                    intermediate::display_ir_body(tcx, body, &mut buffer).unwrap();
+                    println!("{buffer}");
+                }
+                has_errors |= body.is_err();
+            }
+            Node::Item(Item { kind: ItemKind::Function(..), .. }) =>
+                // check if signature is well-formed for bodyless (external) fns
+                has_errors |= tcx.fn_sig(*def).has_errors,
+            Node::Item(..) =>
+                has_errors |= tcx.layout_of(tcx.type_of(*def)).is_err(),
+            _ => ()
+        }
+    }
+
+    if tcx.resolutions.entry.is_none() {
+        Message::error("file doesn't have an entry point")
+            .at(lexer::Span::new(0, 1))
+            .note("consider adding `void main()`")
+            .push(tcx.diagnostics());
+        has_errors = true;
+    }
+
+    if has_errors {
+        return Err(());
+    }
+
+    Ok(())
+}
+
