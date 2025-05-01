@@ -502,7 +502,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: lhs_ty
+                            ty: self.generator.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -531,7 +531,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: lhs_ty
+                            ty: self.generator.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -577,7 +577,61 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_float_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
+                            ty: self.generator.tcx.basic_types.bool
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, rhs_ty, BinaryOp::Add | BinaryOp::Sub) 
+                        if let Ty(TyKind::Refrence(ref_ty)) = lhs_ty && let Ty(TyKind::Int(..)) = rhs_ty => {
+                        let lhs: ll::PointerValue<'ll> = lhs.try_into().unwrap();
+                        let mut rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        if op == BinaryOp::Sub {
+                            rhs = ensure!(self.builder.build_int_sub(rhs.get_type().const_int(0, false), rhs, ""));
+                        }
+
+                        let llvm_ty = match ref_ty {
+                            Ty(TyKind::Void) => self.generator.context.i8_type().as_basic_type_enum(),
+                            _ => ref_ty.llvm_type(self.generator).try_into().unwrap()
+                        };
+
+                        let res = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_ty, lhs, &[rhs], "") });
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
                             ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, rhs_ty, BinaryOp::Sub) 
+                        if let Ty(TyKind::Refrence(_)) = lhs_ty && lhs_ty == rhs_ty => {
+                        let lhs: ll::PointerValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::PointerValue<'ll> = rhs.try_into().unwrap();
+
+                        let res = ensure!(self.builder.build_int_sub(lhs, rhs, ""));
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: self.generator.tcx.basic_types.nuint
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le) 
+                        if let Ty(TyKind::Refrence(_)) = lhs_ty => {
+                        let lhs: ll::PointerValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::PointerValue<'ll> = rhs.try_into().unwrap();
+
+                        let predicate = match op {
+                            BinaryOp::Eq => ll::IntPredicate::EQ,
+                            BinaryOp::Ne => ll::IntPredicate::NE,
+                            BinaryOp::Gt => ll::IntPredicate::UGT,
+                            BinaryOp::Ge => ll::IntPredicate::UGE,
+                            BinaryOp::Lt => ll::IntPredicate::ULT,
+                            BinaryOp::Le => ll::IntPredicate::ULE,
+                            _ => unreachable!()
+                        };
+                        let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: self.generator.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }

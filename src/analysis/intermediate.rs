@@ -235,7 +235,7 @@ impl<'tcx> std::fmt::Debug for RValue<'tcx> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Mul, Div, Rem,
     Add, Sub,

@@ -488,9 +488,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_op_between(&self, op: lexer::BinaryOp, lhs: Ty<'tcx>, rhs: Ty<'tcx>) -> Option<Ty<'tcx>> {
+        use lexer::BinaryOp::*;
+
         macro_rules! boolop {
             ($ret:expr) => {{
-                use lexer::BinaryOp::*;
                 if let GreaterThan | GreaterEqual | LessThan | LessEqual = op {
                     return Some(self.tcx.basic_types.bool);
                 }
@@ -498,14 +499,11 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             }};
         }
 
-        {
-            use lexer::BinaryOp::*;
-            let (Plus | Minus | Mul | Div | Mod |
-                 LeftShift | RightShift | BitwiseAnd | BitwiseOr | BitwiseXor |
-                 GreaterThan | GreaterEqual | LessThan | LessEqual) = op else {
-                panic!("check_op_between used on invalid operator {op:?}");
-            };
-        }
+        let (Plus | Minus | Mul | Div | Mod |
+             LeftShift | RightShift | BitwiseAnd | BitwiseOr | BitwiseXor |
+             GreaterThan | GreaterEqual | LessThan | LessEqual) = op else {
+            panic!("check_op_between used on invalid operator {op:?}");
+        };
         fn get_int(ty: Ty<'_>) -> Option<Ty<'_>> {
             match ty { 
                 Ty(type_ir::TyKind::Int(..)) => Some(ty),
@@ -517,14 +515,38 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return Some(bendable);
         }
 
+        // ptr arithmetic: ptr + int, ptr - int
+        if let Ty(type_ir::TyKind::Refrence(..)) = lhs &&
+            let Ty(type_ir::TyKind::Int(..)) = rhs &&
+            let Plus | Minus = op {
+            return Some(lhs);
+        }
+
+        // ptr arithmetic: ptr - ptr
+        if let Ty(type_ir::TyKind::Refrence(lhs_ty)) = lhs &&
+            let Ty(type_ir::TyKind::Refrence(rhs_ty)) = rhs &&
+            let Minus = op &&
+            lhs_ty == rhs_ty {
+            return Some(lhs);
+        }
+
+        // ptr comparison: ptr {cmp} ptr, where {cmp}: Gt, Ge, Lt, Le
+        if let Ty(type_ir::TyKind::Refrence(lhs_ty)) = lhs &&
+            let Ty(type_ir::TyKind::Refrence(rhs_ty)) = rhs &&
+            let GreaterThan | GreaterEqual | LessThan | LessEqual = op &&
+            lhs_ty == rhs_ty {
+            return Some(self.tcx.basic_types.bool);
+        }
+
+        // integer arithmetic
         let Some((lhs_int, rhs_int)) = Option::zip(get_int(lhs), get_int(rhs)) else {
             return None;
         };
 
-        // Simple case
         if lhs_int == rhs_int {
             boolop!(lhs_int);
         }
+        
 
         return None;
     }
@@ -583,6 +605,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 if !self.check_expr_ty_definite(&lhs.kind) && self.check_expr_ty_definite(&rhs.kind) {
                     (lhs, rhs) = (rhs, lhs);
                 }
+
+                // BUG: it seems logiacl that any two values of the same type should be comparable
+                // for equality, but this practicly needs quite some extra logic to polymorphically
+                // work for any two types. Of course there are the primitives (which are easily
+                // comparable), but anything else would need an emit during IR generation to a
+                // generically overloaded `eq` operator doing a memcmp. We obviously can't do that
+                // yet, so this will crash at codegen stage.
 
                 let ty = self.check_expr_with_expectation(lhs, Expectation::None);
                 self.check_expr_with_expectation(rhs, Expectation::Coerce(ty));
@@ -946,7 +975,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_valid_cast(&self, from: Ty<'tcx>, to: Ty<'tcx>) -> bool {
-        use type_ir::TyKind::{Err, Never, Int, Float, Char, Bool};
+        use type_ir::TyKind::{Err, Never, Int, Refrence, Float, Char, Bool};
         if let Ty(Err | Never) = from {
             return true;
         }
@@ -956,7 +985,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         if let (Ty(Int(..) | Float(..)), Ty(Int(..) | Float(..))) = (to, from) {
             return true;
-        } 
+        }
+        if let (Ty(Int(..) | Refrence(..)), Ty(Int(..) | Refrence(..))) = (to, from) {
+            return true;
+        }
 
         // int <-> bool conversions +
         // u32 <-> char conversions
