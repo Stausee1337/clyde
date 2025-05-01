@@ -619,6 +619,10 @@ impl<'tcx> Ty<'tcx> {
         tcx.intern_ty(TyKind::Int(int, signed))
     }
 
+    pub fn new_float(tcx: TyCtxt<'tcx>, float: Float) -> Ty<'tcx> {
+        tcx.intern_ty(TyKind::Float(float))
+    }
+
     pub fn new_adt(tcx: TyCtxt<'tcx>, adt: AdtDef<'tcx>) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Adt(adt))
     }
@@ -1078,6 +1082,30 @@ pub enum Scalar {
     Int(Integer, bool),
     Float(Float),
     Pointer
+}
+
+impl Scalar {
+    pub fn align(&self, provider: &impl DataLayoutExt) -> LLVMAlign {
+        match self {
+            Scalar::Int(int, _) => int.align(provider),
+            Scalar::Float(float) => float.align(provider),
+            Scalar::Pointer => {
+                let data_layout = provider.data_layout();
+                data_layout.ptr_align
+            }
+        }
+    }
+
+    pub fn get_type<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
+        match *self {
+            Scalar::Int(int, signed) =>
+                Ty::new_int(tcx, int, signed),
+            Scalar::Float(float) =>
+                Ty::new_float(tcx, float),
+            Scalar::Pointer =>
+                Ty::new_refrence(tcx, tcx.basic_types.void)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

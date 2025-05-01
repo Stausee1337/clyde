@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Deref};
 
-use proc_macro2::{TokenStream, Ident, Punct};
+use proc_macro2::{extra::DelimSpan, Span, Ident, Punct, TokenStream, TokenTree, Delimiter};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{parse::{Parse, ParseStream}, spanned::Spanned, Fields, ItemEnum, Lit, LitByteStr, Meta};
+use syn::{parse::{discouraged::AnyDelimiter, Parse, ParseStream}, spanned::Spanned, Expr, ExprLit, ExprMatch, Fields, ItemEnum, Lit, LitByteStr, LitStr, Meta, Token};
 
 fn map_enum_attributes(enm: &ItemEnum, names: &'static [&'static str]) -> Result<HashMap<Ident, Vec<(&'static str, Lit)>>, syn::Error> {
     let mut map = HashMap::new();
@@ -181,6 +181,103 @@ pub fn generate_lex_from_string(token_stream: TokenStream) -> Result<TokenStream
                 };
                 f.write_str(dis)
             }
+        }
+    })
+}
+
+struct BaseCaseHandler {
+    start: LitStr,
+    chain: Vec<ExprMatch>,
+    resolution: TokenStream
+}
+
+fn parse_delimiter(input: ParseStream) -> syn::Result<(DelimSpan, TokenStream)> {
+    input.step(|cursor| {
+        if let Some((TokenTree::Group(g), rest)) = cursor.token_tree() {
+            let span = g.delim_span();
+            let delimiter = match g.delimiter() {
+                Delimiter::Brace => span,
+                _ => {
+                    return Err(cursor.error("expected brace delimiter"));
+                }
+            };
+            Ok(((delimiter, g.stream()), rest))
+        } else {
+            Err(cursor.error("expected delimiter"))
+        }
+    })
+}
+
+impl Parse for BaseCaseHandler {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let start: LitStr = input.parse()?;
+        let mut chain: Vec<ExprMatch> = vec![];
+        while input.peek(Token![>>]) {
+            input.parse::<Token![>>]>().unwrap();
+            chain.push(input.parse()?);
+        }
+        input.parse::<Token![=>]>()?;
+        let (_, resolution) = parse_delimiter(input)?;
+
+        Ok(Self {
+            start,
+            chain,
+            resolution
+        })
+    }
+}
+
+fn ident_from_str(str: &LitStr) -> Option<Ident> {
+    let value = str.value();
+    if value.len() > 0 {
+        return Some(Ident::new(&value, Span::call_site()))
+    }
+    None
+}
+
+fn join_ident_and_str(ident: &Ident, str: &LitStr) -> Ident {
+    Ident::new(&format!("{}{}", ident.to_string(), str.value()), Span::call_site())
+}
+
+fn generate_handler_recursively(
+    current_ident: Option<Ident>,
+    remaining_chain: &[ExprMatch],
+) -> TokenStream {
+    if remaining_chain.is_empty() {
+        return quote! { inner!(#current_ident) };
+    }
+    let mut mtch = remaining_chain[0].clone();
+
+    for arm in &mut mtch.arms {
+        if let Expr::Lit(ExprLit { lit: Lit::Str(str), .. }) = arm.body.deref() {
+            let joined_ident = if let Some(ref current_ident) = current_ident {
+                Some(join_ident_and_str(current_ident, str))
+            } else {
+                ident_from_str(str)
+            };
+            arm.body = Box::new(syn::parse2(
+                generate_handler_recursively(joined_ident, &remaining_chain[1..])
+            ).unwrap());
+        }
+    }
+
+    quote! { #mtch }
+}
+
+pub fn generate_base_case_handler(token_stream: TokenStream) -> Result<TokenStream, syn::Error> {
+    let base_case: BaseCaseHandler = syn::parse2(token_stream)?;
+    let delim = base_case.resolution;
+
+    let ident = ident_from_str(&base_case.start);
+    let recusive_matches = generate_handler_recursively(
+        ident, &base_case.chain);
+
+    Ok(quote! {
+        {
+            macro_rules! inner {
+                ($token:tt) => {{ #delim }}
+            }
+            #recusive_matches
         }
     })
 }

@@ -105,6 +105,13 @@ pub enum TerminatorKind<'tcx> {
     }
 }
 
+// FIXME: instead of defining place like this, we should make use of LLVM's getelmementptr
+// instruction and its ability to take multiple consecutive elements.
+// Since gep can swiftly represent a recursive expression like `a[n]._5[42][69]._0` by a
+// series of linear tranflations, this place should be a structure with an
+// `origin: Option<RegisterId>` and a `ptr_tranlation_chain: Box<[PtrTranslation]>`, allowing each
+// variant to be applied to the same origin mutliple times. This reduces the amount of expr
+// linearization we'll have to do generating statements
 #[derive(Clone, Copy)]
 pub enum Place<'tcx> {
     Register(RegisterId),

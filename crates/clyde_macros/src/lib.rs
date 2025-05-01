@@ -15,3 +15,10 @@ pub fn derive_lex_from_string(item: TokenStream) -> TokenStream {
         .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
         .into()
 }
+
+#[proc_macro]
+pub fn base_case_handler(item: TokenStream) -> TokenStream {
+    codegen::generate_base_case_handler(item.into())
+        .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
+        .into()
+}

@@ -1,11 +1,11 @@
 use std::{cell::RefCell, collections::VecDeque};
 
 use index_vec::IndexVec;
-use inkwell::values::{AnyValue, BasicValue};
-use ll::BasicType;
+use ll::{BasicType, AnyValue};
 use hashbrown::{HashMap, hash_map::Entry};
 
 use crate::{analysis::intermediate, context::TyCtxt, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Ty, TyKind, TypeLayout}};
+use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
     ($expr:expr) => {
@@ -28,6 +28,7 @@ struct Place<'ll> {
 enum ValueKind<'ll> {
      Ref(Place<'ll>),
      Immediate(ll::AnyValueEnum<'ll>),
+     Pair(ll::AnyValueEnum<'ll>, ll::AnyValueEnum<'ll>),
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +49,8 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                     align: layout.align.abi
                 }
             }
+            ValueKind::Pair(..) =>
+                panic!("ValueKimd::Pair doesn't specify a place"),
             ValueKind::Ref(..) =>
                 panic!("cannot deref ValueKind::Ref - just use its place directly")
         }
@@ -95,17 +98,6 @@ impl<'ll, 'tcx> DeferredStorage<'ll, 'tcx> {
             DeferredStorage::None => ()
         }
     }
-
-    /*fn storable(self) -> (Place<'ll>, Ty<'tcx>) {
-        match self {
-            DeferredStorage::Place { place, ty } =>
-                return (place, ty),
-            DeferredStorage::Initialize(..) => 
-                panic!("DeferredStorage::Initialize is not storable"),
-            DeferredStorage::None => 
-                panic!("DeferredStorage::None is not storable"),
-        }
-    }*/
 }
 
 struct CodeBuilder<'a, 'll, 'tcx> {
@@ -136,6 +128,17 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
     fn load_value(&mut self, place: Place<'ll>, ty: Ty<'tcx>) -> Value<'ll, 'tcx> {
         todo!()
+    }
+
+    fn alloca_place(&mut self, llvm_ty: impl BasicType<'ll>, align: type_ir::Align) -> Place<'ll> {
+        let pointer = ensure!(self.builder.build_alloca(llvm_ty, ""));
+        pointer
+            .as_instruction()
+            .unwrap()
+            .set_alignment(align.in_bytes() as u32)
+            .unwrap();
+        
+        Place { value: pointer, align }
     }
 
     fn lower_place(&mut self, ir_place: intermediate::Place<'tcx>) -> (Place<'ll>, Ty<'tcx>) {
@@ -219,7 +222,6 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                     let nuint_type = self.generator.tcx.basic_types.nuint.llvm_type(self.generator).into_int_type();
                     let byte_type  = self.generator.tcx.basic_types.byte.llvm_type(self.generator).into_int_type();  
-                    let struct_type = ll_ty.into_struct_type();
 
                     let mut values = Vec::with_capacity(string_data.len());
                     for byte in string_data {
@@ -228,9 +230,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     let data = byte_type.const_array(&values);
                     let size = nuint_type.const_int(string_data.len() as u64, false);
 
-                    let string = struct_type.const_named_struct(&[data.as_basic_value_enum(), size.as_basic_value_enum()]);
                     return Value {
-                        kind: ValueKind::Immediate(string.as_any_value_enum()),
+                        kind: ValueKind::Pair(data.as_any_value_enum(), size.as_any_value_enum()),
                         ty,
                     };
                 }
@@ -289,17 +290,34 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let mut arguments = vec![];
                 for arg in args {
                     let value = self.lower_operand(arg.operand);
-                    match value.kind {
-                        ValueKind::Immediate(value) => 
+
+                    let layout = self.generator.tcx.layout_of(value.ty).ok().unwrap();
+                    match (value.kind, layout.repr) {
+                        (ValueKind::Immediate(value), type_ir::BackendRepr::Scalar(..)) =>
                             arguments.push(value.try_into().unwrap()),
-                        ValueKind::Ref(..) =>
-                            panic!("function argument cannto be ValueKind::Ref"),
+                        (ValueKind::Pair(value1, value2), type_ir::BackendRepr::ScalarPair(..)) => {    
+                            arguments.push(value1.try_into().unwrap());
+                            arguments.push(value2.try_into().unwrap());
+                        }
+                        (ValueKind::Ref(place), type_ir::BackendRepr::Memory) => {
+                            // copy the place to a temporary location, so that mutations done in
+                            // to it in the callee don't affect us, the caller
+                            
+                            let llvm_ty: ll::BasicTypeEnum<'ll> = value.ty.llvm_type(self.generator).try_into().unwrap();
+                            let tmp = self.alloca_place(llvm_ty, layout.align.abi);
+                            let place_value = self.load_value(place, value.ty);
+                            place_value.store(tmp, value.ty, self);
+
+                            arguments.push(tmp.value.into());
+                        }
+                        _ => panic!("Value representaion should correspond to Layout represenation"),
                     }
                 }
 
                 let Value { kind: ValueKind::Immediate(function), ty } = self.lower_operand(callee) else {
                     panic!("function value needs to be ValueKind::Immediate");
                 };
+
                 let result_ty = match ty {
                     Ty(TyKind::Function(def)) => {
                         let sig = self.generator.tcx.fn_sig(*def);
@@ -307,21 +325,265 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     },
                     _ => panic!("{ty:?} is not callable")
                 };
+                let result_layout = self.generator.tcx.layout_of(result_ty).ok().unwrap();
+
+                let mut ll_result = None;
+                let mut mem_argload = None;
+                match result_layout.repr {
+                    type_ir::BackendRepr::Scalar(..) =>
+                        ll_result = Some(()),
+                    type_ir::BackendRepr::ScalarPair(_, scalar2) => {
+                        ll_result = Some(());
+
+                        let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.generator).try_into().unwrap();
+                        let tmp = self.alloca_place(llvm_ty, scalar2.align(self.generator).abi);
+                        arguments.push(tmp.value.into());
+
+                        mem_argload = Some((tmp, scalar2.get_type(self.generator.tcx)));
+                    }
+                    type_ir::BackendRepr::Memory => {
+                        // FIXME: For now this is fine, but since we might store into a place at
+                        // the end anyway, there are cases where we could skip allocating the
+                        // temporary and go straight to the provided place
+                        // NOTE: this won't work for ScalarPairs as thier types won't match
+                        let llvm_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(self.generator).try_into().unwrap();
+                        let tmp = self.alloca_place(llvm_ty, result_layout.align.abi);
+                        arguments.push(tmp.value.into());
+
+                        mem_argload = Some((tmp, result_ty));
+                    }
+                }
 
                 let result = ensure!(self.builder.build_call(function.into_function_value(), &arguments, ""));
+                let result = ll_result.map(|()| result);
+
+                let value = match (result, mem_argload) {
+                    (Some(result), None) => { // scalar return
+                        Value {
+                            kind: ValueKind::Immediate(result.as_any_value_enum()),
+                            ty: result_ty
+                        }
+                    }
+                    (Some(result), Some((sideload, ty))) => { // scalar pair return
+                        let Value { kind: ValueKind::Immediate(llval), .. } = self.load_value(sideload, ty) else {
+                            unreachable!()
+                        };
+                        Value {
+                            kind: ValueKind::Pair(result.as_any_value_enum(), llval),
+                            ty: result_ty
+                        }
+                    }
+                    (None, Some((memload, ty))) => { // memory return
+                        Value {
+                            kind: ValueKind::Ref(memload),
+                            ty
+                        }
+                    }
+                    (None, None) => unreachable!()
+                };
+
                 deferred.store_or_init(
-                    Value {
-                        kind: ValueKind::Immediate(result.as_any_value_enum()),
-                        ty: result_ty 
-                    },
+                    value,
                     self
                 );
             }
             intermediate::RValue::BinaryOp { lhs, rhs, op } => {
                 use intermediate::BinaryOp;
 
-                let lhs = self.lower_operand(lhs);
-                let rhs = self.lower_operand(rhs);
+                let Value { kind: ValueKind::Immediate(lhs), ty: lhs_ty } = self.lower_operand(lhs) else {
+                    panic!("RValue::BinaryOp is only valid for ValueKind::Immediate");
+                };
+                let Value { kind: ValueKind::Immediate(rhs), ty: rhs_ty } = self.lower_operand(rhs) else {
+                    panic!("RValue::BinaryOp is only valid for ValueKind::Immediate");
+                };
+                match (lhs_ty, rhs_ty, op) {
+                    (lhs_ty, rhs_ty, BinaryOp::Mul | BinaryOp::Add | BinaryOp::Sub) 
+                        if let Ty(TyKind::Int(_, signed)) = lhs_ty && lhs_ty == rhs_ty => {
+                        // this is a normal integer addition, mutliplication or subtraction
+                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        let res = base_case_handler! {
+                            "build_int_"
+                            >> match signed {
+                                true => "nsw_",
+                                false => ""
+                            }
+                            >> match op {
+                                BinaryOp::Mul => "mul",
+                                BinaryOp::Add => "add",
+                                BinaryOp::Sub => "sub",
+                                _ => unreachable!()
+                            }
+                            => {
+                                ensure!(self.builder.$token(lhs, rhs, ""))
+                            }
+                        };
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Div | BinaryOp::Rem) 
+                        if let Ty(TyKind::Int(_, signed)) = lhs_ty => {
+                        // this is a normal integer division and remainder
+                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        let res = base_case_handler! {
+                            "build_int_"
+                            >> match signed {
+                                true => "signed_",
+                                false => "unsigned_"
+                            }
+                            >> match op {
+                                BinaryOp::Div => "div",
+                                BinaryOp::Rem => "rem",
+                                _ => unreachable!()
+                            }
+                            => {
+                                ensure!(self.builder.$token(lhs, rhs, ""))
+                            }
+                        };
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Shr) 
+                        if let Ty(TyKind::Int(_, signed)) = lhs_ty => {
+                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        let res = ensure!(self.builder.build_right_shift(lhs, rhs, *signed, ""));
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Shl | BinaryOp::Xor | BinaryOp::Or | BinaryOp::And) 
+                        if let Ty(TyKind::Int(..)) = lhs_ty => {
+                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        let res = base_case_handler! {
+                            "build_"
+                            >> match op {
+                                BinaryOp::Shl => "left_shift",
+                                BinaryOp::Xor => "xor",
+                                BinaryOp::Or => "or",
+                                BinaryOp::And => "and",
+                                _ => unreachable!()
+                            }
+                            => {
+                                ensure!(self.builder.$token(lhs, rhs, ""))
+                            }
+                        };
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Eq | BinaryOp::Ne) 
+                        if let Ty(TyKind::Int(..)) = lhs_ty => {
+                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        let predicate = match op {
+                            BinaryOp::Eq => ll::IntPredicate::EQ,
+                            BinaryOp::Ne => ll::IntPredicate::NE,
+                            _ => unreachable!()
+                        };
+
+                        let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le) 
+                        if let Ty(TyKind::Int(.., signed)) = lhs_ty => {
+                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+
+                        let predicate = base_case_handler! {
+                            ""
+                            >> match signed {
+                                true => "S",
+                                false => "U"
+                            }
+                            >> match op {
+                                BinaryOp::Gt => "GT",
+                                BinaryOp::Ge => "GE",
+                                BinaryOp::Lt => "LT",
+                                BinaryOp::Le => "LE",
+                                _ => unreachable!()
+                            }
+                            => {
+                                ll::IntPredicate::$token
+                            }
+                        };
+                        let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem | BinaryOp::Add | BinaryOp::Sub) 
+                        if let Ty(TyKind::Float(_)) = lhs_ty => {
+                        let lhs: ll::FloatValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::FloatValue<'ll> = rhs.try_into().unwrap();
+
+                        let res = base_case_handler! {
+                            "build_float_"
+                            >> match op {
+                                BinaryOp::Mul => "mul",
+                                BinaryOp::Div => "div",
+                                BinaryOp::Rem => "rem",
+                                BinaryOp::Add => "add",
+                                BinaryOp::Sub => "sub",
+                                _ => unreachable!()
+                            }
+                            => {
+                                ensure!(self.builder.$token(lhs, rhs, ""))
+                            }
+                        };
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, _rhs_ty, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le) 
+                        if let Ty(TyKind::Float(_)) = lhs_ty => {
+                        let lhs: ll::FloatValue<'ll> = lhs.try_into().unwrap();
+                        let rhs: ll::FloatValue<'ll> = rhs.try_into().unwrap();
+
+                        let predicate = match op {
+                            BinaryOp::Eq => ll::FloatPredicate::OEQ,
+                            BinaryOp::Ne => ll::FloatPredicate::ONE,
+                            BinaryOp::Gt => ll::FloatPredicate::OGT,
+                            BinaryOp::Ge => ll::FloatPredicate::OGE,
+                            BinaryOp::Lt => ll::FloatPredicate::OLT,
+                            BinaryOp::Le => ll::FloatPredicate::OLE,
+                            _ => unreachable!()
+                        };
+                        let res = ensure!(self.builder.build_float_compare(predicate, lhs, rhs, ""));
+                        let res = Value {
+                            kind: ValueKind::Immediate(res.into()),
+                            ty: lhs_ty
+                        };
+                        deferred.store_or_init(res, self);
+                    }
+                    (lhs_ty, rhs_ty, op) =>
+                        panic!("{op:?} is not defined between {lhs_ty:?} and {rhs_ty:?} and should not be caught here"),
+                }
 
             }
             _ => todo!()
@@ -368,14 +630,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 .try_into().unwrap();
             let align = self.generator.tcx.layout_of(ty).ok().unwrap().align.abi;
 
-            let pointer = ensure!(self.builder.build_alloca(llvm_ty, ""));
-            pointer
-                .as_instruction()
-                .unwrap()
-                .set_alignment(align.in_bytes() as u32)
-                .unwrap();
-
-            let place = Place { value: pointer, align };
+            let place = self.alloca_place(llvm_ty, align);
             self.reg_translations[id] = LocalKind::Place { place, ty };
         }
 
@@ -564,18 +819,51 @@ fn llvm_lower_type_and_layout<'ll, 'tcx>(ty: Ty<'tcx>, layout: TypeLayout<'tcx>,
             return ll::AnyTypeEnum::VoidType(ctxt.context.void_type()),
         Ty(TyKind::Function(def)) => {
             let signature = ctxt.tcx.fn_sig(*def);
-            let ret_ty = signature.returns.llvm_type(ctxt);
+
+            let result_ty = signature.returns;
+            let result_layout = ctxt.tcx.layout_of(result_ty)
+                .ok()
+                .unwrap();
+
             let mut param_tys = Vec::<ll::BasicMetadataTypeEnum<'ll>>::with_capacity(signature.params.len());
             for param in signature.params {
-                param_tys.push(param.ty.llvm_type(ctxt).try_into().unwrap());
+                let layout = ctxt.tcx.layout_of(param.ty).ok().unwrap();
+                match layout.repr {
+                    type_ir::BackendRepr::Scalar(scalar) => { 
+                        param_tys.push(llvm_lower_scalar(scalar, ctxt).try_into().unwrap());
+                    }
+                    type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {    
+                        param_tys.push(llvm_lower_scalar(scalar1, ctxt).try_into().unwrap());
+                        param_tys.push(llvm_lower_scalar(scalar2, ctxt).try_into().unwrap());
+                    }
+                    type_ir::BackendRepr::Memory => {
+                        param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
+                    }
+                }
             }
-            return match ret_ty {
-                ll::AnyTypeEnum::VoidType(ret_ty) => {
+            return match result_layout.repr {
+                type_ir::BackendRepr::Scalar(_) => {
+                    let ret_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(ctxt).try_into().unwrap();
                     ll::AnyTypeEnum::FunctionType(ret_ty.fn_type(&param_tys, false))
                 }
-                ret_ty => {
-                    let ret_ty: ll::BasicTypeEnum<'ll> = ret_ty.try_into().unwrap();
+                type_ir::BackendRepr::ScalarPair(scalar1, _) => {
+                    // scalar1 is the result_ty, scalar2 passed as an out pointer argument
+                    param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
+                    let ret_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, ctxt).try_into().unwrap();
                     ll::AnyTypeEnum::FunctionType(ret_ty.fn_type(&param_tys, false))
+                }
+                type_ir::BackendRepr::Memory => {
+                    if result_layout.size.in_bytes > 0 {
+                        // memory values need to be passed passed as an out pointer argument
+
+                        // FIXME: we should check how big the memory type is, (e.g. struct of 5
+                        // bytes) maybe it still fits into a scalar (e.g. I64). So instead of using
+                        // a pointer here, we could just cast it. This can only be done once we
+                        // have better datastructes (e.g. a PassStyle) reducing the duplication
+                        // in param deduction between here and function calling
+                        param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
+                    }
+                    ll::AnyTypeEnum::FunctionType(ctxt.context.void_type().fn_type(&param_tys, false))
                 }
             };
         }
@@ -704,8 +992,10 @@ mod ll {
         builder::Builder,
         basic_block::BasicBlock,
         types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, BasicType},
-        values::{FunctionValue, AnyValueEnum, PointerValue},
-        AddressSpace
+        values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, AnyValue},
+        AddressSpace,
+        IntPredicate,
+        FloatPredicate
     };
 }
 
