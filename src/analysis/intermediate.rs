@@ -4,10 +4,11 @@ use std::{cell::OnceCell, fmt::Write};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::{self, TyCtxt}, type_ir::{Const, FieldIdx, Ty, TyKind}};
+use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::TyCtxt, type_ir::{Const, FieldIdx, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
 pub struct Body<'tcx> {
+    pub entry: BlockId,
     pub origin: DefId,
     pub result_ty: Ty<'tcx>,
     pub num_params: usize,
@@ -15,7 +16,15 @@ pub struct Body<'tcx> {
     pub local_registers: IndexVec<RegisterId, Register<'tcx>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegKind {
+    Param,
+    Local,
+    Temp
+}
+
 pub struct Register<'tcx> {
+    pub kind: RegKind,
     pub mutability: Mutability,
     pub ty: Ty<'tcx>
 }
@@ -101,12 +110,12 @@ pub enum Place<'tcx> {
     Register(RegisterId),
     Deref(RegisterId),
     Field {
-        target: Operand<'tcx>,
+        target: RegisterId,
         field: FieldIdx,
         ty: Ty<'tcx>
     },
     Index {
-        target: Operand<'tcx>,
+        target: RegisterId,
         idx: Operand<'tcx>
     },
     None
@@ -286,7 +295,13 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 
     fn create_register(&mut self, node_id: NodeId, mutability: Mutability) -> RegisterId {
+        let kind = if self.registers.len() < self.num_params {
+            RegKind::Param
+        } else {
+            RegKind::Local
+        };
         let reg = self.registers.push(Register {
+            kind,
             mutability,
             ty: self.typecheck.locals[&node_id],
         });
@@ -295,7 +310,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 
     fn tmp_register(&mut self, ty: Ty<'tcx>, mutability: Mutability) -> RegisterId {
-        self.registers.push(Register { mutability, ty })
+        self.registers.push(Register {
+            kind: RegKind::Temp,
+            mutability, ty
+        })
     }
 
     fn create_block(&mut self) -> BlockId {
@@ -955,14 +973,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::ExprKind::Subscript(subscript) => {
                 debug_assert_eq!(subscript.args.len(), 1);
                 let target;
-                (block, target) = self.expr_as_operand(block, subscript.expr);
+                (block, target) = self.as_register(block, subscript.expr);
                 let idx;
                 (block, idx) = self.expr_as_operand(block, subscript.args[0]);
                 (block, Place::Index { target, idx })
             }
             ast::ExprKind::Field(field) => {
                 let target;
-                (block, target) = self.expr_as_operand(block, field.expr);
+                (block, target) = self.as_register(block, field.expr);
                 let field = match field.field {
                     ast::FieldIdent::Named(..) =>
                         self.typecheck.field_indices[&expr.node_id],
@@ -1072,8 +1090,9 @@ impl<'tcx> TranslationCtxt<'tcx> {
         self.blocks[block].terminator.get().is_some()
     }
 
-    fn build(self, result_ty: Ty<'tcx>) -> &'tcx Body<'tcx> {
+    fn build(self, entry: BlockId, result_ty: Ty<'tcx>) -> &'tcx Body<'tcx> {
         self.tcx.arena.alloc(Body {
+            entry,
             result_ty,
             origin: self.def,
             num_params: self.num_params,
@@ -1097,13 +1116,14 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
 
     let mut ctxt = TranslationCtxt::new(tcx, def_id, typecheck_results, body.params);
 
+    let entry;
     let result_ty = match tcx.def_kind(def_id) {
         DefinitionKind::Function => {
-            let start = ctxt.create_block();
+            entry = ctxt.create_block();
             let block = ctxt.enter_block_scope(
                 body.body.node_id,
                 ScopeKind::Body,
-                |ctxt| ctxt.write_expr_into(Place::None, start, body.body)
+                |ctxt| ctxt.write_expr_into(Place::None, entry, body.body)
             );
             if !ctxt.is_terminated(block) {
                 ctxt.ret(
@@ -1117,9 +1137,9 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
             sig.returns
         }
         DefinitionKind::NestedConst | DefinitionKind::Const |  DefinitionKind::Static => {
-            let result;
-            let mut block = ctxt.create_block();
-            (block, result) = ctxt.expr_as_operand(block, body.body);
+            let (block, result);
+            entry = ctxt.create_block();
+            (block, result) = ctxt.expr_as_operand(entry, body.body);
             ctxt.ret(block, result.with_span(Span::NULL));
 
             tcx.type_of(def_id)
@@ -1127,7 +1147,7 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
         _ => unreachable!()
     };
 
-    Ok(ctxt.build(result_ty))
+    Ok(ctxt.build(entry, result_ty))
 }
 
 const INDENT: &'static str = "    ";

@@ -191,7 +191,7 @@ impl<'tcx> Eraser<'tcx> {
 
 #[derive(Hash, PartialEq, Eq)]
 pub struct Value<'tcx> {
-    ty: Ty<'tcx>,
+    pub ty: Ty<'tcx>,
     erased: Erased<'tcx>
 }
 
@@ -286,7 +286,7 @@ impl<'tcx> Value<'tcx> {
         Value { ty: tcx.basic_types.nuint, erased }
     }
 
-    fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
+    pub fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
         // NOTE: for Value this could be a query, allowing polymorphic data to be provided from
         // much further than just rust itself, but including compile-time executions (e.g.
         // generating vtables at runtime)
@@ -304,6 +304,10 @@ impl<'tcx> Value<'tcx> {
             },
             _ => None
         }
+    }
+
+    pub fn as_bytes(&self) -> &'tcx [u8] {
+        self.erased.0
     }
 }
 
