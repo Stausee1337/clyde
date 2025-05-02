@@ -332,11 +332,6 @@ impl<'tcx> TranslationCtxt<'tcx> {
         if let Some(terminator) = bb.terminator.get() {
             panic!("can't emit into terminated block {block:?}\n{terminator:?}");
         }
-        if let Place::None = stmt.place {
-            let RValue::Call { .. } = stmt.rhs else {
-                return;
-            };
-        }
         bb.statements.push(stmt);
     }
 
@@ -835,7 +830,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 block
             }
             ast::ExprKind::Cast(cast) => {
-                let ty = self.typecheck.associations[&cast.expr.node_id];
+                let ty = self.typecheck.associations[&expr.node_id];
                 let value;
                 (block, value) = self.expr_as_operand(block, cast.expr);
 

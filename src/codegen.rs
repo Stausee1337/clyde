@@ -758,6 +758,56 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 }
 
             }
+            intermediate::RValue::Cast { value, ty: res_ty } => {
+                let Value { kind: ValueKind::Immediate(llvm_value), ty: val_ty } = self.lower_operand(value) else {
+                    panic!("RValue::BinaryOp is only valid for ValueKind::Immediate");
+                };
+                let res = match (val_ty, res_ty) {
+                    (Ty(TyKind::Int(..)), Ty(TyKind::Int(_, signed))) => {
+                        let int_value: ll::IntValue<'ll> = llvm_value.try_into().unwrap();
+                        let int_type: ll::IntType<'ll> = res_ty.llvm_type(self.generator)
+                            .try_into()
+                            .unwrap();
+                        ensure!(self.builder.build_int_cast_sign_flag(int_value, int_type, *signed, ""))
+                            .as_any_value_enum()
+                    }
+                    (Ty(TyKind::Float(..)), Ty(TyKind::Float(..))) => {
+                        let float_value: ll::FloatValue<'ll> = llvm_value.try_into().unwrap();
+                        let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.generator)
+                            .try_into()
+                            .unwrap();
+                        ensure!(self.builder.build_float_cast(float_value, float_type, ""))
+                            .as_any_value_enum()
+                    }
+                    (Ty(TyKind::Int(_, signed)), Ty(TyKind::Float(..))) => {
+                        let int_value: ll::IntValue<'ll> = llvm_value.try_into().unwrap();
+                        let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.generator)
+                            .try_into()
+                            .unwrap();
+
+                        let res = base_case_handler! {
+                            "build_"
+                            >> match signed {
+                                true => "signed_int_to_float",
+                                false => "unsigned_int_to_float"
+                            }
+                            => {
+                                ensure!(self.builder.$token(int_value, float_type, ""))
+                            }
+                        };
+                        res.as_any_value_enum()
+                    }
+                    (Ty(TyKind::Int(type_ir::Integer::I8, false)), Ty(TyKind::Bool)) => llvm_value,
+                    (Ty(TyKind::Int(type_ir::Integer::I32, false)), Ty(TyKind::Char)) => llvm_value,
+                    (val_ty, res_ty) =>
+                        panic!("casting is not defined from {val_ty:?} to {res_ty:?} and should not be caught here"),
+                };
+                let res = Value {
+                    kind: ValueKind::Immediate(res),
+                    ty: res_ty
+                };
+                deferred.store_or_init(res, self);
+            }
             _ => todo!()
         }
     }
@@ -1415,7 +1465,7 @@ mod ll {
         module::{Module, Linkage},
         builder::Builder,
         basic_block::BasicBlock,
-        types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, BasicType},
+        types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, IntType, FloatType, BasicType},
         values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, BasicValueEnum, BasicValue, AnyValue},
         targets::FileType,
         AddressSpace,

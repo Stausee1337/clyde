@@ -1253,7 +1253,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             Message::error(format!("mismatched types: expected {expected}, found {found}"))
                 .at(span)
                 .push(self.diagnostics());
-            return Ty::new_error(self.tcx);
+            let err = Ty::new_error(self.tcx);
+            self.last_error.set(Some(err));
+            return err;
         }
         Ty::with_non_bendable(&[found, expected]).unwrap()
     }

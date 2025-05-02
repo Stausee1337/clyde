@@ -7,9 +7,11 @@ void clyde$print(char *ptr, size_t size) {
     printf("%.*s\n", (int)size, ptr);
 }
 
-int main() {
-    clyde$main(NULL, 0);
+void clyde$printint(int msg) {
+    printf("%d\n", msg);
 }
 
-
+int main() {
+    return clyde$main(NULL, 0);
+}
 
