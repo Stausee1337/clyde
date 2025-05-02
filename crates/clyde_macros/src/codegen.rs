@@ -2,7 +2,7 @@ use std::{collections::HashMap, ops::Deref};
 
 use proc_macro2::{extra::DelimSpan, Span, Ident, Punct, TokenStream, TokenTree, Delimiter};
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{parse::{discouraged::AnyDelimiter, Parse, ParseStream}, spanned::Spanned, Expr, ExprLit, ExprMatch, Fields, ItemEnum, Lit, LitByteStr, LitStr, Meta, Token};
+use syn::{parse::{Parse, ParseStream}, spanned::Spanned, Expr, ExprLit, ExprMatch, Fields, ItemEnum, Lit, LitByteStr, LitStr, Meta, Token};
 
 fn map_enum_attributes(enm: &ItemEnum, names: &'static [&'static str]) -> Result<HashMap<Ident, Vec<(&'static str, Lit)>>, syn::Error> {
     let mut map = HashMap::new();

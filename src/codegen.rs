@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::VecDeque};
 
 use index_vec::IndexVec;
-use ll::{BasicType, AnyValue};
+use ll::{BasicType, AnyValue, BasicValue};
 use hashbrown::{HashMap, hash_map::Entry};
 
 use crate::{analysis::intermediate, context::TyCtxt, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Ty, TyKind, TypeLayout}};
@@ -58,10 +58,64 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
 
     fn store<'a>(&self, 
         dest: Place<'ll>,
-        ty: Ty<'tcx>,
+        _ty: Ty<'tcx>,
         builder: &mut CodeBuilder<'a, 'll, 'tcx>
     ) {
+        debug_assert_eq!(_ty, self.ty, "why shouldn't that be the case?");
+        match self.kind {
+            ValueKind::Immediate(value) => {
+                let value: ll::BasicValueEnum<'ll> = value.try_into().unwrap();
+                let instruction = ensure!(builder.builder.build_store(dest.value, value));
+                instruction.set_alignment(dest.align.in_bytes() as u32)
+                    .unwrap();
+            }
+            ValueKind::Pair(value1, value2) => {
+                let value1: ll::BasicValueEnum<'ll> = value1.try_into().unwrap();
+                let value2: ll::BasicValueEnum<'ll> = value2.try_into().unwrap();
 
+                let mut ptr = dest.value;
+
+                let layout = builder.generator.tcx.layout_of(self.ty)
+                    .ok()
+                    .unwrap();
+
+
+                let type_ir::BackendRepr::ScalarPair(scalar1, scalar2) = layout.repr else {
+                    panic!("ValueKind should match BackendRepr");
+                };
+
+                let instruction = ensure!(builder.builder.build_store(ptr, value1));
+                instruction.set_alignment(dest.align.in_bytes() as u32)
+                    .unwrap();
+
+                let align = scalar2.align(builder.generator).abi;
+                let offset = scalar1.size(builder.generator).align_up(align);
+                let offset = builder.generator.context.i32_type().const_int(offset, false);
+
+                ptr = unsafe { ptr.const_gep(builder.generator.context.i8_type(), &[offset]) };
+
+                let instruction = ensure!(builder.builder.build_store(ptr, value2));
+                instruction.set_alignment(dest.align.in_bytes() as u32)
+                    .unwrap();
+            }
+            ValueKind::Ref(place) => {
+                // TODO: only load-store when opt_level == OptLevel::None
+                // TODO: add llvm metadata
+                let layout = builder.generator.tcx.layout_of(self.ty)
+                    .ok()
+                    .unwrap();
+                if layout.is_llvm_immediate() {
+                    let value = builder.load_value(place, self.ty);
+                    value.store(dest, self.ty, builder);
+                } else if layout.size.in_bytes > 0 {
+                    let llvm_i64 = builder.generator.context.i64_type();
+                    ensure!(builder.builder.build_memcpy(
+                        dest.value, dest.align.in_bytes() as u32,
+                        place.value, place.align.in_bytes() as u32,
+                        llvm_i64.const_int(layout.size.in_bytes, false)));
+                }
+            }
+        }
     }
 }
 
@@ -127,7 +181,65 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     }
 
     fn load_value(&mut self, place: Place<'ll>, ty: Ty<'tcx>) -> Value<'ll, 'tcx> {
-        todo!()
+        let layout = self.generator.tcx.layout_of(ty)
+            .ok()
+            .unwrap();
+        match layout.repr {
+            type_ir::BackendRepr::Scalar(_) => {
+                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
+                    .try_into()
+                    .unwrap();
+                let value = ensure!(self.builder.build_load(llvm_ty, place.value, ""));
+                value.as_instruction_value()
+                    .unwrap()
+                    .set_alignment(place.align.in_bytes() as u32)
+                    .unwrap();
+                Value {
+                    kind: ValueKind::Immediate(value.as_any_value_enum()),
+                    ty
+                }
+            }
+            type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {
+                let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, self.generator)
+                    .try_into()
+                    .unwrap();
+
+                let mut ptr = place.value;
+
+                let value1 = ensure!(self.builder.build_load(llvm_ty, ptr, ""));
+                value1.as_instruction_value()
+                    .unwrap()
+                    .set_alignment(place.align.in_bytes() as u32)
+                    .unwrap();
+
+                let align = scalar2.align(self.generator).abi;
+                let offset = scalar1.size(self.generator).align_up(align);
+                let offset = self.generator.context.i32_type().const_int(offset, false);
+
+                ptr = unsafe { ptr.const_gep(self.generator.context.i8_type(), &[offset]) };
+
+                let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.generator)
+                    .try_into()
+                    .unwrap();
+
+                let value2 = ensure!(self.builder.build_load(llvm_ty, ptr, ""));
+                value2.as_instruction_value()
+                    .unwrap()
+                    .set_alignment(place.align.in_bytes() as u32)
+                    .unwrap();
+
+                Value {
+                    kind: ValueKind::Pair(value1.as_any_value_enum(), value2.as_any_value_enum()),
+                    ty
+                }
+            }
+            type_ir::BackendRepr::Memory => {
+                Value {
+                    kind: ValueKind::Ref(place),
+                    ty
+                }
+            }
+        }
     }
 
     fn alloca_place(&mut self, llvm_ty: impl BasicType<'ll>, align: type_ir::Align) -> Place<'ll> {
@@ -644,35 +756,143 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         }
     }
 
-    fn visit_terminator(&mut self, _terminator: &'tcx intermediate::Terminator<'tcx>) {
+    fn visit_terminator(&mut self, terminator: &'tcx intermediate::Terminator<'tcx>, signature: type_ir::Signature<'tcx>) {
+        match terminator.kind {
+            intermediate::TerminatorKind::Goto(block_id) => {
+                let basic_block = self.resolve_block(block_id);
+                ensure!(self.builder.build_unconditional_branch(basic_block));
+            }
+            intermediate::TerminatorKind::Diverge { condition, true_target, false_target } => {
+                let then_block = self.resolve_block(true_target);
+                let else_block = self.resolve_block(false_target);
+                let Value { kind: ValueKind::Immediate(comparison), .. } = self.lower_operand(condition) else {
+                    panic!("cannto compare against other than ValueKind::Immediate");
+                };
+                ensure!(self.builder.build_conditional_branch(comparison.into_int_value(), then_block, else_block));
 
+            }
+            intermediate::TerminatorKind::Return { value } => {
+                let layout = self.generator.tcx.layout_of(signature.returns)
+                    .ok()
+                    .unwrap();
+                match layout.repr {
+                    type_ir::BackendRepr::Scalar(_) => {
+                        let value = self.lower_operand(value);
+                        let Value { kind: ValueKind::Immediate(value), .. } = value else {
+                            panic!("ValueKind should match BackendRepr");
+                        };
+                        let value: ll::BasicValueEnum<'ll> = value.try_into().unwrap();
+                        ensure!(self.builder.build_return(Some(&value)));
+                    }
+                    type_ir::BackendRepr::ScalarPair(_scalar1, scalar2) => {
+
+                        let value = self.lower_operand(value);
+                        let Value { kind: ValueKind::Pair(value1, value2), .. } = value else {
+                            panic!("ValueKind should match BackendRepr");
+                        };
+
+                        let argument: ll::PointerValue<'ll> = self.function.get_last_param()
+                            .unwrap()
+                            .try_into()
+                            .unwrap();
+                        let align = scalar2.align(self.generator).abi;
+                        let place = Place { value: argument, align };
+                        let scalar2_ty = scalar2.get_type(self.generator.tcx);
+                        let value2 = Value {
+                            kind: ValueKind::Immediate(value2),
+                            ty: scalar2_ty
+                        };
+                        value2.store(place, scalar2_ty, self);
+
+                        let value1: ll::BasicValueEnum<'ll> = value1.try_into().unwrap();
+                        ensure!(self.builder.build_return(Some(&value1)));
+                    }
+                    type_ir::BackendRepr::Memory => {
+                        if layout.size.in_bytes > 0 {
+                            let value = self.lower_operand(value);
+                            let Value { kind: ValueKind::Immediate(value), .. } = value else {
+                                panic!("ValueKind should match BackendRepr");
+                            };
+
+                            let argument: ll::PointerValue<'ll> = self.function.get_last_param()
+                                .unwrap()
+                                .try_into()
+                                .unwrap();
+                            let place = Place { value: argument, align: layout.align.abi };
+                            let value = Value {
+                                kind: ValueKind::Immediate(value),
+                                ty: signature.returns
+                            };
+                            value.store(place, signature.returns, self);
+                        }
+                        ensure!(self.builder.build_return(None));
+                    }
+                }
+            }
+        }
     }
 
-    fn visit_basic_block(&mut self, block: &'tcx intermediate::BasicBlock<'tcx>) {
+    fn visit_basic_block(&mut self, block: &'tcx intermediate::BasicBlock<'tcx>, signature: type_ir::Signature<'tcx>) {
         for statement in &block.statements {
             self.visit_statement(statement);
         }
         let terminator = block.terminator
             .get()
             .expect("every IR block should be terminated");
-        self.visit_terminator(terminator);
+        self.visit_terminator(terminator, signature);
     }
 
-    fn visit_body(&mut self, body: &'tcx intermediate::Body<'tcx>) {
+    fn visit_body(&mut self, body: &'tcx intermediate::Body<'tcx>, signature: type_ir::Signature<'tcx>) {
         self.reg_translations.resize_with(
             body.local_registers.len(), Default::default);
 
-        for (idx, register) in body.local_registers.iter_enumerated().take(body.num_params) {
-            debug_assert_eq!(register.kind, intermediate::RegKind::Param);
-            let ty = register.ty;
-            let kind = ValueKind::Immediate(self.function.get_nth_param(idx.raw()).unwrap().into());
-            // FIXME: alloca and copy to stack and use LocalKind::Place for every mutable param
-            // (trying to mutate params at the moment will crash)
-            self.reg_translations[idx] = LocalKind::Value(Value { kind, ty });
-        }
-
         let entry = self.resolve_block(body.entry);
         self.builder.position_at_end(entry);
+
+        let mut arg_idx = 0;
+        for (idx, param) in signature.params.iter().enumerate() {
+            let idx = intermediate::RegisterId::from_usize(idx);
+            let param_layout = self.generator.tcx.layout_of(param.ty)
+                .ok()
+                .unwrap();
+            let reg = &body.local_registers[idx];
+            debug_assert_eq!(reg.kind, intermediate::RegKind::Param);
+            match param_layout.repr {
+                type_ir::BackendRepr::Scalar(..) => {
+                    let argument = self.function.get_nth_param(arg_idx)
+                        .unwrap();
+                    let kind = ValueKind::Immediate(argument.into());
+                    // FIXME: alloca and copy to stack and use LocalKind::Place for every mutable param
+                    // (trying to mutate params at the moment will crash)
+                    self.reg_translations[idx] = LocalKind::Value(Value { kind, ty: param.ty });
+                }
+                type_ir::BackendRepr::ScalarPair(..) => {
+                    let argument1 = self.function.get_nth_param(arg_idx)
+                        .unwrap();
+                    let argument2 = self.function.get_nth_param(arg_idx + 1)
+                        .unwrap();
+                    let kind = ValueKind::Pair(argument1.into(), argument2.into());
+
+                    // FIXME: alloca and copy to stack and use LocalKind::Place for every mutable param
+                    // (trying to mutate params at the moment will crash)
+                    self.reg_translations[idx] = LocalKind::Value(Value { kind, ty: param.ty });
+
+                    arg_idx += 2;
+                    continue;
+                }
+                type_ir::BackendRepr::Memory => {
+                    let argument: ll::PointerValue<'ll> = self.function.get_nth_param(arg_idx)
+                        .unwrap()
+                        .try_into()
+                        .unwrap();
+                    let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
+                    let kind = ValueKind::Ref(Place { value: argument, align });
+                    self.reg_translations[idx] = LocalKind::Value(Value { kind, ty: param.ty });
+                }
+            }
+            arg_idx += 1;
+        }
+
         for (id, register) in body.local_registers.iter_enumerated() {
             if register.kind != intermediate::RegKind::Local {
                 continue;
@@ -691,7 +911,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         for (id, block) in body.basic_blocks.iter_enumerated() {
             let basic_block = self.resolve_block(id);
             self.builder.position_at_end(basic_block);
-            self.visit_basic_block(block);
+            self.visit_basic_block(block, signature);
         }
     }
 
@@ -795,9 +1015,11 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
 
             let body = self.tcx.build_ir(element)
                 .expect("valid body should exist for codegen item");
+            let sig = self.tcx.fn_sig(element);
 
             let mut builder = CodeBuilder::new(module, value, self);
-            builder.visit_body(body);
+
+            builder.visit_body(body, sig);
 
             self.dependency_map.get_mut(&element)
                 .unwrap()
@@ -860,6 +1082,15 @@ impl<'tcx> Ty<'tcx> {
     }
 }
 
+impl<'tcx> TypeLayout<'tcx> {
+    fn is_llvm_immediate(&self) -> bool {
+        match self.repr {
+            type_ir::BackendRepr::Scalar(..) => true,
+            type_ir::BackendRepr::ScalarPair(..) | type_ir::BackendRepr::Memory => false,
+        }
+    }
+}
+
 fn llvm_lower_type_and_layout<'ll, 'tcx>(ty: Ty<'tcx>, layout: TypeLayout<'tcx>, ctxt: &CodegenCtxt<'ll, 'tcx>) -> ll::AnyTypeEnum<'ll> {
     if let type_ir::BackendRepr::Scalar(scalar) = layout.repr && !matches!(ty, Ty(TyKind::Bool)){
         return llvm_lower_scalar(scalar, ctxt);
@@ -914,7 +1145,7 @@ fn llvm_lower_type_and_layout<'ll, 'tcx>(ty: Ty<'tcx>, layout: TypeLayout<'tcx>,
                         // bytes) maybe it still fits into a scalar (e.g. I64). So instead of using
                         // a pointer here, we could just cast it. This can only be done once we
                         // have better datastructes (e.g. a PassStyle) reducing the duplication
-                        // in param deduction between here and function calling
+                        // in param deduction between here, function calling and param unwrapping
                         param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
                     }
                     ll::AnyTypeEnum::FunctionType(ctxt.context.void_type().fn_type(&param_tys, false))
@@ -1033,10 +1264,15 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
     let entry = tcx.resolutions.entry.expect("program should have an entrypoint");
 
     let mut ctxt = CodegenCtxt::new(tcx, &arena);
-    let entry = ctxt.push_dependency(entry);
+    ctxt.push_dependency(entry);
 
     ctxt.generate_code_bfs();
-    todo!()
+
+    for (_, module) in ctxt.module_map.iter() {
+        module.print_to_stderr();
+    }
+
+    CodegenResults
 }
 
 mod ll {
@@ -1046,7 +1282,7 @@ mod ll {
         builder::Builder,
         basic_block::BasicBlock,
         types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, BasicType},
-        values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, AnyValue},
+        values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, BasicValueEnum, BasicValue, AnyValue},
         AddressSpace,
         IntPredicate,
         FloatPredicate

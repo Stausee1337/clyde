@@ -401,7 +401,7 @@ impl<'tcx> Const<'tcx> {
 
         if let Ty(TyKind::Int(integer, signed)) = ty && *signed | !int.signed {
             let min_int = if *signed {
-                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(128, |i| i.size(&tcx))
+                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(Size::from_bits(128), |i| i.size(&tcx))
             } else {
                 Integer::fit_unsigned(int.value).size(&tcx)
             };
@@ -757,15 +757,15 @@ impl Integer {
         }
     }
 
-    pub fn size(&self, provider: &impl DataLayoutExt) -> usize {
+    pub fn size(&self, provider: &impl DataLayoutExt) -> Size {
         let data_layout = provider.data_layout();
         use Integer::*;
         match self {
-            I8 => 1,
-            I16 => 2,
-            I32 => 4,
-            I64 => 8,
-            ISize => data_layout.ptr_size.in_bytes as usize,
+            I8 => Size::from_bits(8),
+            I16 => Size::from_bits(16),
+            I32 => Size::from_bits(32),
+            I64 => Size::from_bits(64),
+            ISize => data_layout.ptr_size
         }
     }
 
@@ -906,10 +906,10 @@ pub enum Float {
 }
 
 impl Float {
-    pub fn size(&self) -> usize {
+    pub fn size(&self) -> Size {
         match self {
-            Float::F32 => 4,
-            Float::F64 => 8,
+            Float::F32 => Size::from_bits(32),
+            Float::F64 => Size::from_bits(64),
         }
     }
 
@@ -1047,7 +1047,7 @@ impl LLVMAlign {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Size {
     pub in_bytes: u64
 }
@@ -1059,6 +1059,20 @@ impl Size {
 
     pub fn from_bytes(bytes: impl TryInto<u64>) -> Self {
         Size { in_bytes: bytes.try_into().map_err(|_| "u64 conversion failure in Size::from_bytes").unwrap() }
+    }
+
+    pub const fn align_up(&self, align: Align) -> u64 {
+        let align_mask = align.in_bytes() - 1;
+        if self.in_bytes & align_mask == 0 {
+            self.in_bytes // already aligned
+        } else {
+            // FIXME: Replace with .expect, once `Option::expect` is const.
+            if let Some(aligned) = (self.in_bytes | align_mask).checked_add(1) {
+                aligned
+            } else {
+                panic!("attempt to add with overflow")
+            }
+        }
     }
 }
 
@@ -1092,6 +1106,17 @@ impl Scalar {
             Scalar::Pointer => {
                 let data_layout = provider.data_layout();
                 data_layout.ptr_align
+            }
+        }
+    }
+
+    pub fn size(&self, provider: &impl DataLayoutExt) -> Size {
+        match self {
+            Scalar::Int(int, _) => int.size(provider),
+            Scalar::Float(float) => float.size(),
+            Scalar::Pointer => {
+                let data_layout = provider.data_layout();
+                data_layout.ptr_size
             }
         }
     }
@@ -1199,7 +1224,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         let align = integer.align(self);
         TypeLayout::new(
             self.tcx,
-            Size::from_bytes(size),
+            size,
             align,
             Fields::Scalar,
             BackendRepr::Scalar(Scalar::Int(integer, signedness))
@@ -1211,7 +1236,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         let align = float.align(self);
         TypeLayout::new(
             self.tcx,
-            Size::from_bytes(size),
+            size,
             align,
             Fields::Scalar,
             BackendRepr::Scalar(Scalar::Float(float))
