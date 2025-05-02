@@ -1,10 +1,11 @@
-use std::{cell::RefCell, collections::VecDeque};
+use std::{cell::RefCell, collections::VecDeque, hash::{BuildHasher, Hasher}};
 
+use foldhash::quality::FixedState;
 use index_vec::IndexVec;
 use ll::{BasicType, AnyValue, BasicValue};
-use hashbrown::{HashMap, hash_map::Entry};
+use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate, context::TyCtxt, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Ty, TyKind, TypeLayout}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::TyCtxt, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Ty, TyKind, TypeLayout}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -88,11 +89,19 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                 instruction.set_alignment(dest.align.in_bytes() as u32)
                     .unwrap();
 
+
                 let align = scalar2.align(builder.generator).abi;
                 let offset = scalar1.size(builder.generator).align_up(align);
                 let offset = builder.generator.context.i32_type().const_int(offset, false);
 
-                ptr = unsafe { ptr.const_gep(builder.generator.context.i8_type(), &[offset]) };
+                ptr = unsafe { 
+                    ensure!(builder.builder.build_in_bounds_gep(
+                        builder.generator.context.i8_type(),
+                        ptr,
+                        &[offset],
+                        ""
+                    ))
+                };
 
                 let instruction = ensure!(builder.builder.build_store(ptr, value2));
                 instruction.set_alignment(dest.align.in_bytes() as u32)
@@ -333,13 +342,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
 
                     let nuint_type = self.generator.tcx.basic_types.nuint.llvm_type(self.generator).into_int_type();
-                    let byte_type  = self.generator.tcx.basic_types.byte.llvm_type(self.generator).into_int_type();  
 
-                    let mut values = Vec::with_capacity(string_data.len());
-                    for byte in string_data {
-                        values.push(byte_type.const_int(*byte as u64, false));
-                    }
-                    let data = byte_type.const_array(&values);
+                    let data = self.generator.allocate_string_data(self.module, string_data);
                     let size = nuint_type.const_int(string_data.len() as u64, false);
 
                     return Value {
@@ -458,11 +462,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         // the end anyway, there are cases where we could skip allocating the
                         // temporary and go straight to the provided place
                         // NOTE: this won't work for ScalarPairs as thier types won't match
-                        let llvm_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(self.generator).try_into().unwrap();
-                        let tmp = self.alloca_place(llvm_ty, result_layout.align.abi);
-                        arguments.push(tmp.value.into());
+                        if result_layout.size.in_bytes > 0 {
+                            let llvm_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(self.generator).try_into().unwrap();
+                            let tmp = self.alloca_place(llvm_ty, result_layout.align.abi);
+                            arguments.push(tmp.value.into());
 
-                        mem_argload = Some((tmp, result_ty));
+                            mem_argload = Some((tmp, result_ty));
+                        }
                     }
                 }
 
@@ -491,7 +497,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                             ty
                         }
                     }
-                    (None, None) => unreachable!()
+                    (None, None) => return
                 };
 
                 deferred.store_or_init(
@@ -842,7 +848,32 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         self.visit_terminator(terminator, signature);
     }
 
+    fn collect_placebound_regs(body: &'tcx intermediate::Body<'tcx>) -> HashSet<intermediate::RegisterId> {
+        let mut placebounds = HashSet::new();
+        for block in &body.basic_blocks {
+            for statement in &block.statements {
+                
+                if let intermediate::RValue::Read(place) | intermediate::RValue::Ref(place) = statement.rhs &&
+                    let Some(reg) = get_reg(place) {
+                    placebounds.insert(reg);
+                }
+            }
+        }
+
+        return placebounds;
+
+        fn get_reg(place: intermediate::Place) -> Option<RegisterId> {
+            use intermediate::Place::*;
+            if let Register(target) | Field { target, .. } | Index { target, .. } = place {
+                return Some(target);
+            }
+            Option::None
+        }
+    }
+
     fn visit_body(&mut self, body: &'tcx intermediate::Body<'tcx>, signature: type_ir::Signature<'tcx>) {
+        let placebounds = Self::collect_placebound_regs(body);
+
         self.reg_translations.resize_with(
             body.local_registers.len(), Default::default);
 
@@ -862,9 +893,19 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     let argument = self.function.get_nth_param(arg_idx)
                         .unwrap();
                     let kind = ValueKind::Immediate(argument.into());
-                    // FIXME: alloca and copy to stack and use LocalKind::Place for every mutable param
-                    // (trying to mutate params at the moment will crash)
-                    self.reg_translations[idx] = LocalKind::Value(Value { kind, ty: param.ty });
+
+                    let value = Value { kind, ty: param.ty };
+                    if reg.mutability == Mutability::Const && !placebounds.contains(&idx) {
+                        self.reg_translations[idx] = LocalKind::Value(value);
+                    } else {
+                        let llvm_ty: ll::BasicTypeEnum<'ll> = param.ty.llvm_type(self.generator)
+                            .try_into().unwrap();
+                        let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
+
+                        let place = self.alloca_place(llvm_ty, align);
+                        value.store(place, param.ty, self);
+                        self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
+                    }
                 }
                 type_ir::BackendRepr::ScalarPair(..) => {
                     let argument1 = self.function.get_nth_param(arg_idx)
@@ -873,9 +914,18 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         .unwrap();
                     let kind = ValueKind::Pair(argument1.into(), argument2.into());
 
-                    // FIXME: alloca and copy to stack and use LocalKind::Place for every mutable param
-                    // (trying to mutate params at the moment will crash)
-                    self.reg_translations[idx] = LocalKind::Value(Value { kind, ty: param.ty });
+                    let value = Value { kind, ty: param.ty };
+                    if reg.mutability == Mutability::Const && !placebounds.contains(&idx) {
+                        self.reg_translations[idx] = LocalKind::Value(value);
+                    } else {
+                        let llvm_ty: ll::BasicTypeEnum<'ll> = param.ty.llvm_type(self.generator)
+                            .try_into().unwrap();
+                        let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
+
+                        let place = self.alloca_place(llvm_ty, align);
+                        value.store(place, param.ty, self);
+                        self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
+                    }
 
                     arg_idx += 2;
                     continue;
@@ -894,18 +944,27 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         }
 
         for (id, register) in body.local_registers.iter_enumerated() {
-            if register.kind != intermediate::RegKind::Local {
+            if register.kind == intermediate::RegKind::Local {
+                let ty = register.ty;
+
+                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
+                    .try_into().unwrap();
+                let align = self.generator.tcx.layout_of(ty).ok().unwrap().align.abi;
+
+                let place = self.alloca_place(llvm_ty, align);
+                self.reg_translations[id] = LocalKind::Place { place, ty };
+            } else if register.kind != intermediate::RegKind::Temp {
                 continue;
             }
 
-            let ty = register.ty;
+            if placebounds.contains(&id) {
+                let llvm_ty: ll::BasicTypeEnum<'ll> = register.ty.llvm_type(self.generator)
+                    .try_into().unwrap();
+                let align = self.generator.tcx.layout_of(register.ty).ok().unwrap().align.abi;
 
-            let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
-                .try_into().unwrap();
-            let align = self.generator.tcx.layout_of(ty).ok().unwrap().align.abi;
-
-            let place = self.alloca_place(llvm_ty, align);
-            self.reg_translations[id] = LocalKind::Place { place, ty };
+                let place = self.alloca_place(llvm_ty, align);
+                self.reg_translations[id] = LocalKind::Place { place, ty: register.ty };
+            }
         }
 
         for (id, block) in body.basic_blocks.iter_enumerated() {
@@ -955,6 +1014,7 @@ struct CodegenCtxt<'ll, 'tcx> {
     context: &'ll ll::Context,
     module_map: HashMap<ast::NodeId, &'ll ll::Module<'ll>>,
     dependency_map: HashMap<ast::DefId, DependencyData<'ll>>,
+    string_data_map: HashMap<&'ll [u8], ll::PointerValue<'ll>>,
     type_translation_cache: RefCell<HashMap<Ty<'tcx>, ll::AnyTypeEnum<'ll>>>,
     depedency_queue: VecDeque<ast::DefId>,
     target_data_layout: TargetDataLayout
@@ -969,10 +1029,32 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
             context,
             module_map: HashMap::new(),
             dependency_map: HashMap::new(),
+            string_data_map: HashMap::new(),
             type_translation_cache: RefCell::new(HashMap::new()),
             depedency_queue: VecDeque::new(),
             target_data_layout: *tcx.data_layout()
         }
+    }
+
+    fn allocate_string_data(&mut self, module: &'ll ll::Module<'ll>, string_data: &[u8]) -> ll::PointerValue<'ll> {
+        if let Some(value) = self.string_data_map.get(string_data) {
+            return *value;
+        }
+
+        let byte_type  = self.tcx.basic_types.byte.llvm_type(self).into_int_type();
+
+        let mut values = Vec::with_capacity(string_data.len());
+        for byte in string_data {
+            values.push(byte_type.const_int(*byte as u64, false));
+        }
+        let llvm_array = byte_type.const_array(&values);
+
+        let string_global = module.add_global(byte_type.array_type(values.len() as u32), None, &format!("string_data_{:x}", hash_data(string_data)));
+        string_global.set_initializer(&llvm_array);
+
+        let value = string_global.as_pointer_value();
+        self.string_data_map.insert(self.arena.alloc_slice_copy(string_data), value);
+        value
     }
 
     fn push_dependency(&mut self, def: ast::DefId) -> ll::FunctionValue<'ll> {
@@ -1057,6 +1139,14 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
     fn create_module_by_name(name: &str, context: &'ll ll::Context, arena: &'ll bumpalo::Bump) -> &'ll ll::Module<'ll> {
         arena.alloc(context.create_module(name))
     }
+}
+
+const HASH_STATE: FixedState = FixedState::with_seed(0xd1310ba698dfb5ac);
+
+fn hash_data(data: &[u8]) -> u64 {
+    let mut hasher = HASH_STATE.build_hasher();
+    hasher.write(data);
+    hasher.finish()
 }
 
 impl<'ll, 'tcx> DataLayoutExt for CodegenCtxt<'ll, 'tcx> {
