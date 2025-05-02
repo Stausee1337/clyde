@@ -167,6 +167,10 @@ impl Target {
         })
     }
 
+    pub fn get_llvm_target_machine(&self) -> &ll::TargetMachine {
+        &self.llvm_target_machine
+    }
+
     // TODO: add `search` here to try and create targets from triple str
 }
 

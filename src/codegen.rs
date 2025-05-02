@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::VecDeque, hash::{BuildHasher, Hasher}};
+use std::{cell::RefCell, collections::VecDeque, ffi::OsString, hash::{BuildHasher, Hasher}, fmt::Write, process::Command};
 
 use foldhash::quality::FixedState;
 use index_vec::IndexVec;
@@ -1077,9 +1077,10 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         let module = self.get_module_for_def(def);
         let ty = self.tcx.type_of(def);
 
+        let clyde_name = item.ident().symbol;
         let function = module
             .add_function(
-                item.ident().symbol.get(),
+                &format!("clyde${}", clyde_name.get()),
                 ty.llvm_type(self).into_function_type(),
                 Some(ll::Linkage::External)
             );
@@ -1348,6 +1349,20 @@ fn llvm_lower_fields<'ll, 'tcx>(ty: Ty<'tcx>, _field_offsets: impl Iterator<Item
 
 pub struct CodegenResults;
 
+const LINKER: &'static str = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\link.exe";
+
+const BASIC_ARGS: [&'static str; 9] = [
+    r"-defaultlib:libcmt",
+    r"-defaultlib:oldnames",
+    r"-libpath:C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\lib\x64",
+    r"-libpath:C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\atlmfc\lib\x64",
+    r"-libpath:C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\x64",
+    r"-libpath:C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64",
+    r"-libpath:C:\Program Files\LLVM\lib\clang\20\lib\windows",
+    r"-nologo",
+    r"bootstrap.o"
+];
+
 pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
     let arena = bumpalo::Bump::new();
 
@@ -1358,9 +1373,38 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
 
     ctxt.generate_code_bfs();
 
+    let session = tcx.session;
+    let machine = session.target.get_llvm_target_machine();
+
+    let output = &session.output_dir;
+
+    let mut modules = vec![];
     for (_, module) in ctxt.module_map.iter() {
         module.print_to_stderr();
+
+        let mut path = output.clone();
+        path.push(format!("{}.o", module.get_name().to_bytes().escape_ascii()));
+
+        // TODO: properly report error
+        machine.write_to_file(*module, ll::FileType::Object, &path)
+            .unwrap();
+        modules.push(path);
     }
+
+    let mut linker = Command::new(LINKER);
+
+    let mut out = OsString::new();
+    write!(out, "-out:").unwrap();
+    out.push(session.output_file.as_os_str());
+
+    linker.arg(out);
+    linker.args(BASIC_ARGS);
+    linker.args(modules);
+
+    linker.current_dir(&session.working_dir);
+
+    linker.status()
+        .expect("linker exited unsuccessfully");
 
     CodegenResults
 }
@@ -1373,6 +1417,7 @@ mod ll {
         basic_block::BasicBlock,
         types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, BasicType},
         values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, BasicValueEnum, BasicValue, AnyValue},
+        targets::FileType,
         AddressSpace,
         IntPredicate,
         FloatPredicate

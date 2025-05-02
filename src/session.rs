@@ -14,9 +14,9 @@ pub struct Session {
     input: PathBuf,
     pub target: Target,
 
-    output_dir: PathBuf,
-    output_file: PathBuf,
-    working_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub output_file: PathBuf,
+    pub working_dir: PathBuf,
 
     config: Cfg,
     diagnostics: DiagnosticsCtxt,
@@ -71,11 +71,20 @@ impl Options {
         let target = Target::host().ok_or(())?;
 
         let file_cacher: Rc<files::FileCacher> = FILE_CACHER.with(|cacher| cacher.clone());
+        let output_file = self.output_file.unwrap_or_else(|| {
+            let input = self.input.clone();
+            assert!(input.is_file());
+            let mut output = input;
+            // FIXME: ommit this on non-windows systems
+            output.set_extension("exe");
+
+            output
+        });
         Ok(Session {
             target,
             input: self.input,
             output_dir: self.output_dir.unwrap_or_else(|| self.working_dir.clone()),
-            output_file: self.output_file.unwrap_or_else(|| self.working_dir.clone()),
+            output_file,
             working_dir: self.working_dir,
 
             config: self.config,
@@ -146,11 +155,13 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
         _ => None
     };
 
+    let output_file = matches.opt_str("o").map(PathBuf::from);
+
     let mut options = Options {
         input: PathBuf::new(),
 
         output_dir: None,
-        output_file: None,
+        output_file,
         working_dir,
 
         config: matches_to_config(&matches)
