@@ -1,13 +1,32 @@
 
-use std::{cell::RefCell, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
+use std::{cell::{OnceCell, RefCell}, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
 
 use index_vec::IndexVec;
 use crate::{syntax::{ast::AstInfo, parser}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, analysis::{intermediate, resolve, typecheck}, type_ir, files, target::Target};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizationLevel {
+    #[default] O0, O1, O2, O3
+}
+
+impl OptimizationLevel {
+    pub const fn as_str(&self) -> &'static str {
+        macro_rules! build_match {
+            ($($ident:ident),*) => {
+                match self {
+                    $(OptimizationLevel::$ident => stringify!($ident)),*
+                }
+            };
+        }
+        build_match!(O0, O1, O2, O3)
+    }
+}
+
 pub struct Cfg {
-    run_output: bool
+    pub run_output: bool,
+    pub opt_level: OptimizationLevel
 }
 
 pub struct Session {
@@ -18,7 +37,7 @@ pub struct Session {
     pub output_file: PathBuf,
     pub working_dir: PathBuf,
 
-    config: Cfg,
+    pub config: Cfg,
     diagnostics: DiagnosticsCtxt,
     file_cacher: Rc<files::FileCacher>,
 }
@@ -97,9 +116,9 @@ impl Options {
 pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     let mut args: Vec<String> = args.collect();
 
-    let program = if args.is_empty() { "wpc".to_string() } else { args.remove(0) };
+    let program = if args.is_empty() { "clydec".to_string() } else { args.remove(0) };
     let program = PathBuf::from_str(program.as_str()).unwrap();
-    let program = get_filename(&program).unwrap_or_else(|| "wpc");
+    let program = get_filename(&program).unwrap_or_else(|| "clydec");
 
     let working_dir = env::current_dir().map_err(|error| {
         eprintln!("ERROR: Could not get current working directory {error}");
@@ -119,11 +138,17 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     }
 
     const CMD_OPTIONS: &[fn(&mut getopts::Options) -> &mut getopts::Options] = &[
-        optflag!("h", "help", "Displays this message"),
+        optflag!("", "O0", "Compile with optimization level 0"),
+        optflag!("", "O1", "Compile with optimization level 1"),
+        optflag!("", "O2", "Compile with optimization level 2"),
+        optflag!("", "O3", "Compile with optimization level 3"),
+
         optopt!("o", "", "Put the output into <file>", "<file>"),
         optopt!("", "out-dir", "Write the output into <dir>", "<dir>"),
-        optflag!("R", "run", "Run the generated output upon successful build"),
-        optflag!("v", "version", "Print wpc version")
+
+        optflag!("R", "run", "Run the programm upon successful build"),
+        optflag!("v", "version", "Print clydec version"),
+        optflag!("h", "help", "Displays this message"),
     ];
 
     let mut parser = getopts::Options::new();
@@ -165,6 +190,7 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
         working_dir,
 
         config: matches_to_config(&matches)
+            .map_err(|()| ExitCode::FAILURE)?
     };
 
     match input_file {
@@ -186,10 +212,22 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     Ok(options)
 }
 
-fn matches_to_config(matches: &getopts::Matches) -> Cfg {
-    Cfg {
-        run_output: matches.opt_present("R") || matches.opt_present("run")
+fn matches_to_config(matches: &getopts::Matches) -> Result<Cfg, ()> {
+    let opt_level = OnceCell::new();
+
+    use OptimizationLevel::*;
+    for flag in [O0, O1, O2, O3] {
+        if matches.opt_present(flag.as_str()) {
+            opt_level.set(flag).map_err(|_| {
+                eprintln!("ERROR: cannot specify multiple optimization flags: found `--{}` and later `--{}`", opt_level.get().unwrap().as_str(), flag.as_str());
+            })?;
+        }
     }
+
+    Ok(Cfg {
+        run_output: matches.opt_present("R") || matches.opt_present("run"),
+        opt_level: opt_level.into_inner().unwrap_or_default()
+    })
 }
 
 unsafe fn osstr_as_str(osstr: &OsStr) -> &str {

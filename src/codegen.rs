@@ -5,7 +5,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, AnyValue, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::TyCtxt, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Ty, TyKind, TypeLayout}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::TyCtxt, session::OptimizationLevel, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Ty, TyKind, TypeLayout}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -1421,10 +1421,22 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
     let machine = session.target.get_llvm_target_machine();
 
     let output = &session.output_dir;
+    let mut opt_level = Some(session.config.opt_level);
+    if opt_level == Some(OptimizationLevel::O0) {
+        opt_level.take();
+    }
+    let passes = opt_level.map(|level| format!("default<{}>", level.as_str()));
 
     let mut modules = vec![];
     for (_, module) in ctxt.module_map.iter() {
+        if let Some(ref passes) = passes {
+            let result = module.run_passes(passes, machine, ll::PassBuilderOptions::create());
+            if let Err(err) = result {
+                eprintln!("couldn't optimize module: {}: {}", module.get_name().to_bytes().escape_ascii(), err);
+            }
+        }
         module.print_to_stderr();
+
 
         let mut path = output.clone();
         path.push(format!("{}.o", module.get_name().to_bytes().escape_ascii()));
@@ -1462,6 +1474,7 @@ mod ll {
         types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, IntType, FloatType, BasicType},
         values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, BasicValueEnum, BasicValue, AnyValue},
         targets::FileType,
+        passes::PassBuilderOptions,
         AddressSpace,
         IntPredicate,
         FloatPredicate
