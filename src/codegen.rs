@@ -225,7 +225,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let offset = scalar1.size(self.generator).align_up(align);
                 let offset = self.generator.context.i32_type().const_int(offset, false);
 
-                ptr = unsafe { ptr.const_gep(self.generator.context.i8_type(), &[offset]) };
+                ptr = unsafe {
+                    ensure!(self.builder.build_in_bounds_gep(
+                        self.generator.context.i8_type(),
+                        ptr,
+                        &[offset],
+                        ""
+                    ))
+                };
 
                 let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.generator)
                     .try_into()
@@ -251,8 +258,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         }
     }
 
-    fn alloca_place(&mut self, llvm_ty: impl BasicType<'ll>, align: type_ir::Align) -> Place<'ll> {
-        let pointer = ensure!(self.builder.build_alloca(llvm_ty, ""));
+    fn alloca_place(&mut self, ty: Ty<'tcx>) -> Place<'ll> {
+        let layout = self.generator.tcx.layout_of(ty).ok().unwrap();
+        let align = layout.align.abi;
+
+        let array_ty = self.generator.context.i8_type()
+            .array_type(layout.size.in_bytes as u32);
+
+        let pointer = ensure!(self.builder.build_alloca(array_ty, ""));
         pointer
             .as_instruction()
             .unwrap()
@@ -419,8 +432,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                             // copy the place to a temporary location, so that mutations done in
                             // to it in the callee don't affect us, the caller
                             
-                            let llvm_ty: ll::BasicTypeEnum<'ll> = value.ty.llvm_type(self.generator).try_into().unwrap();
-                            let tmp = self.alloca_place(llvm_ty, layout.align.abi);
+                            let tmp = self.alloca_place(value.ty);
                             let place_value = self.load_value(place, value.ty);
                             place_value.store(tmp, value.ty, self);
 
@@ -451,8 +463,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     type_ir::BackendRepr::ScalarPair(_, scalar2) => {
                         ll_result = Some(());
 
-                        let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.generator).try_into().unwrap();
-                        let tmp = self.alloca_place(llvm_ty, scalar2.align(self.generator).abi);
+                        let tmp = self.alloca_place(scalar2.get_type(self.generator.tcx));
                         arguments.push(tmp.value.into());
 
                         mem_argload = Some((tmp, scalar2.get_type(self.generator.tcx)));
@@ -463,8 +474,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         // temporary and go straight to the provided place
                         // NOTE: this won't work for ScalarPairs as thier types won't match
                         if result_layout.size.in_bytes > 0 {
-                            let llvm_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(self.generator).try_into().unwrap();
-                            let tmp = self.alloca_place(llvm_ty, result_layout.align.abi);
+                            let tmp = self.alloca_place(result_ty);
                             arguments.push(tmp.value.into());
 
                             mem_argload = Some((tmp, result_ty));
@@ -948,11 +958,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     if reg.mutability == Mutability::Const && !placebounds.contains(&idx) {
                         self.reg_translations[idx] = LocalKind::Value(value);
                     } else {
-                        let llvm_ty: ll::BasicTypeEnum<'ll> = param.ty.llvm_type(self.generator)
-                            .try_into().unwrap();
-                        let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
-
-                        let place = self.alloca_place(llvm_ty, align);
+                        let place = self.alloca_place(param.ty);
                         value.store(place, param.ty, self);
                         self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
                     }
@@ -968,11 +974,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     if reg.mutability == Mutability::Const && !placebounds.contains(&idx) {
                         self.reg_translations[idx] = LocalKind::Value(value);
                     } else {
-                        let llvm_ty: ll::BasicTypeEnum<'ll> = param.ty.llvm_type(self.generator)
-                            .try_into().unwrap();
-                        let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
-
-                        let place = self.alloca_place(llvm_ty, align);
+                        let place = self.alloca_place(param.ty);
                         value.store(place, param.ty, self);
                         self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
                     }
@@ -997,22 +999,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             if register.kind == intermediate::RegKind::Local {
                 let ty = register.ty;
 
-                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
-                    .try_into().unwrap();
-                let align = self.generator.tcx.layout_of(ty).ok().unwrap().align.abi;
-
-                let place = self.alloca_place(llvm_ty, align);
+                let place = self.alloca_place(ty);
                 self.reg_translations[id] = LocalKind::Place { place, ty };
             } else if register.kind != intermediate::RegKind::Temp {
                 continue;
             }
 
             if placebounds.contains(&id) {
-                let llvm_ty: ll::BasicTypeEnum<'ll> = register.ty.llvm_type(self.generator)
-                    .try_into().unwrap();
-                let align = self.generator.tcx.layout_of(register.ty).ok().unwrap().align.abi;
-
-                let place = self.alloca_place(llvm_ty, align);
+                let place = self.alloca_place(register.ty);
                 self.reg_translations[id] = LocalKind::Place { place, ty: register.ty };
             }
         }
