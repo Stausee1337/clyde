@@ -19,36 +19,40 @@ macro_rules! ensure {
     };
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Place<'ll> {
      value: ll::PointerValue<'ll>,
      align: type_ir::Align,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum ValueKind<'ll> {
      Ref(Place<'ll>),
      Immediate(ll::AnyValueEnum<'ll>),
      Pair(ll::AnyValueEnum<'ll>, ll::AnyValueEnum<'ll>),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Value<'ll, 'tcx> {
     kind: ValueKind<'ll>,
     ty: Ty<'tcx>
 }
 
 impl<'ll, 'tcx> Value<'ll, 'tcx> {
-    fn deref<'a>(&self, builder: &mut CodeBuilder<'a, 'll, 'tcx>) -> Place<'ll> {
+    fn deref<'a>(&self, builder: &mut CodeBuilder<'a, 'll, 'tcx>) -> (Place<'ll>, Ty<'tcx>){
         match self.kind {
             ValueKind::Immediate(value) => {
-                let layout = builder.generator.tcx.layout_of(self.ty)
+                let Ty(TyKind::Refrence(inner)) = self.ty else {
+                    panic!("Cannot deref {:?}", self.ty);
+                };
+                let layout = builder.generator.tcx.layout_of(*inner)
                     .ok()
                     .unwrap();
-                Place {
+                let place = Place {
                     value: value.into_pointer_value(),
                     align: layout.align.abi
-                }
+                };
+                (place, *inner)
             }
             ValueKind::Pair(..) =>
                 panic!("ValueKimd::Pair doesn't specify a place"),
@@ -286,30 +290,38 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let Deref(..) = ir_place else {
                     panic!("only Place::Deref makes a LocalKind::Value here");
                 };
-                (value.deref(self), value.ty)
+                return value.deref(self);
             }
             LocalKind::Dangling => panic!("tried to resolve a LocalKind::Dangling")
         };
         match ir_place {
-            Deref(_) => (cg_place, ty),
+            Deref(_) => {
+                let value = self.load_value(cg_place, ty);
+                value.deref(self)
+            },
             Register(_) => (cg_place, ty),
             Field { field, ty: res_ty, .. } => {
                 let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
                     .try_into()
                     .unwrap();
 
-                let layout = self.generator.tcx.layout_of(ty)
+                let value = ensure!(self.builder.build_struct_gep(llvm_ty, cg_place.value, field.raw(), ""));
+                let res_layout = self.generator.tcx.layout_of(res_ty)
                     .ok()
                     .unwrap();
-                let value = ensure!(self.builder.build_struct_gep(llvm_ty, cg_place.value, field.raw(), ""));
-                (Place { value, align: layout.align.abi }, res_ty)
+                (Place { value, align: res_layout.align.abi }, res_ty)
             }
-            Index { idx: _idx, .. } => {
-                // TODO: Index is more complicated as it needs to work on (arrays, slices, dynamic
-                // arrays, ptr) and we first need to understand the ty we are operating on. Also
-                // the idx Operand can be Constant or Copy leading to two different codepaths. The
-                // constant case should propably generate `extractvalue` while the runtime case
-                // should generate `inbounds_gep`
+            Index { idx, .. } => {
+                let Ty(TyKind::Array(element, ..) | TyKind::Slice(element) | TyKind::DynamicArray(element) | TyKind::Refrence(element)) = ty else {
+                    panic!("Can't index {ty:?}");
+                };
+                let element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.generator).force_into();
+                let Value { kind: ValueKind::Immediate(idx), .. } = self.lower_operand(idx) else {
+                    panic!("ValueKinds other than ValueKind::Immediate is not valid on Place::Index");
+                };
+                let idx: ll::IntValue<'ll> = idx.force_into();
+
+                ensure!(unsafe { self.builder.build_in_bounds_gep(element, cg_place.value, &[idx], "") });
                 todo!("Place::Index")
             }
             None => unreachable!()
@@ -399,7 +411,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
         match statement.rhs {
             intermediate::RValue::Ref(ir_place) => {
-                let (cg_place, ty) = self.lower_place(ir_place);
+                let (cg_place, mut ty) = self.lower_place(ir_place);
+                ty = Ty::new_refrence(self.generator.tcx, ty);
                 let value = Value {
                     kind: ValueKind::Immediate(cg_place.value.as_any_value_enum()),
                     ty,
@@ -416,11 +429,20 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 deferred.store_or_init(value, self);
             }
             intermediate::RValue::Call { callee, ref args } => {
-                let mut arguments = vec![];
-                for arg in args {
-                    let value = self.lower_operand(arg.operand);
+                let Value { kind: ValueKind::Immediate(function), ty } = self.lower_operand(callee) else {
+                    panic!("function value needs to be ValueKind::Immediate");
+                };
+                let Ty(TyKind::Function(fndef)) = ty else {
+                    panic!("{ty:?} is not callable");
+                };
+                let sig = self.generator.tcx.fn_sig(*fndef);
 
-                    let layout = self.generator.tcx.layout_of(value.ty).ok().unwrap();
+                let mut arguments = vec![];
+                for (idx, param) in sig.params.iter().enumerate() {
+                    let value = args[idx];
+                    let value = self.lower_operand(value.operand);
+
+                    let layout = self.generator.tcx.layout_of(param.ty).ok().unwrap();
                     match (value.kind, layout.repr) {
                         (ValueKind::Immediate(value), type_ir::BackendRepr::Scalar(..)) =>
                             arguments.push(value.try_into().unwrap()),
@@ -438,13 +460,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                             arguments.push(tmp.value.into());
                         }
-                        _ => panic!("Value representaion should correspond to Layout represenation"),
+                        (kind, repr) => panic!("Value representaion should correspond to Layout represenation {kind:?}, {repr:?}"),
                     }
                 }
-
-                let Value { kind: ValueKind::Immediate(function), ty } = self.lower_operand(callee) else {
-                    panic!("function value needs to be ValueKind::Immediate");
-                };
 
                 let result_ty = match ty {
                     Ty(TyKind::Function(def)) => {
@@ -870,13 +888,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         };
                         value2.store(place, scalar2_ty, self);
 
-                        let value1: ll::BasicValueEnum<'ll> = value1.try_into().unwrap();
+                        let value1: ll::BasicValueEnum<'ll> = value1.force_into();
                         ensure!(self.builder.build_return(Some(&value1)));
                     }
                     type_ir::BackendRepr::Memory => {
                         if layout.size.in_bytes > 0 {
                             let value = self.lower_operand(value);
-                            let Value { kind: ValueKind::Immediate(value), .. } = value else {
+                            let Value { kind: ValueKind::Ref(value), .. } = value else {
                                 panic!("ValueKind should match BackendRepr");
                             };
 
@@ -886,7 +904,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                                 .unwrap();
                             let place = Place { value: argument, align: layout.align.abi };
                             let value = Value {
-                                kind: ValueKind::Immediate(value),
+                                kind: ValueKind::Ref(value),
                                 ty: signature.returns
                             };
                             value.store(place, signature.returns, self);
@@ -988,8 +1006,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         .try_into()
                         .unwrap();
                     let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
-                    let kind = ValueKind::Ref(Place { value: argument, align });
-                    self.reg_translations[idx] = LocalKind::Value(Value { kind, ty: param.ty });
+                    let place = Place { value: argument, align };
+                    self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
                 }
             }
             arg_idx += 1;
@@ -1001,11 +1019,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                 let place = self.alloca_place(ty);
                 self.reg_translations[id] = LocalKind::Place { place, ty };
-            } else if register.kind != intermediate::RegKind::Temp {
-                continue;
-            }
-
-            if placebounds.contains(&id) {
+            } else if register.kind == intermediate::RegKind::Temp && placebounds.contains(&id) {
                 let place = self.alloca_place(register.ty);
                 self.reg_translations[id] = LocalKind::Place { place, ty: register.ty };
             }
@@ -1192,6 +1206,16 @@ fn hash_data(data: &[u8]) -> u64 {
     let mut hasher = HASH_STATE.build_hasher();
     hasher.write(data);
     hasher.finish()
+}
+
+trait ForceInto<R> {
+    fn force_into(self) -> R;
+}
+
+impl<T: TryInto<R, Error = E>, R, E: std::fmt::Debug> ForceInto<R> for T {
+    fn force_into(self) -> R {
+        self.try_into().unwrap()
+    }
 }
 
 impl<'ll, 'tcx> DataLayoutExt for CodegenCtxt<'ll, 'tcx> {

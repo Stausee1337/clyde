@@ -316,10 +316,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
         reg
     }
 
-    fn tmp_register(&mut self, ty: Ty<'tcx>, mutability: Mutability) -> RegisterId {
+    fn tmp_register(&mut self, ty: Ty<'tcx>) -> RegisterId {
         self.registers.push(Register {
             kind: RegKind::Temp,
-            mutability, ty
+            mutability: Mutability::Const, ty
         })
     }
 
@@ -331,6 +331,11 @@ impl<'tcx> TranslationCtxt<'tcx> {
         let bb = &mut self.blocks[block];
         if let Some(terminator) = bb.terminator.get() {
             panic!("can't emit into terminated block {block:?}\n{terminator:?}");
+        }
+        if let Place::None = stmt.place {
+            let RValue::Call { .. } = stmt.rhs else {
+                return;
+            };
         }
         bb.statements.push(stmt);
     }
@@ -510,7 +515,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     let dest = if let Some(expr) = yeet.expr {
                         let dest = reg.unwrap_or_else(|| {
                             let ty = self.typecheck.associations[&expr.node_id];
-                            Place::Register(self.tmp_register(ty, Mutability::Const))
+                            Place::Register(self.tmp_register(ty))
                         });
                         block = self.write_expr_into(dest, block, expr);
 
@@ -713,7 +718,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 let lhs = if let Place::Register(reg) = dest2 {
                     Operand::Copy(reg)
                 } else {
-                    let reg = self.tmp_register(self.typecheck.associations[&expr.node_id], Mutability::Const);
+                    let reg = self.tmp_register(self.typecheck.associations[&expr.node_id]);
                     self.emit_into(
                         block,
                         Statement {
@@ -962,7 +967,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             }
         }
         let ty = self.typecheck.associations[&expr.node_id];
-        let reg = self.tmp_register(ty, Mutability::Const);
+        let reg = self.tmp_register(ty);
         let dest = Place::Register(reg);
         let block = self.write_expr_into(dest, block, expr);
         (block, reg)
@@ -981,8 +986,24 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 (block, Place::Index { target, idx })
             }
             ast::ExprKind::Field(field) => {
-                let target;
+                let mut target;
                 (block, target) = self.as_register(block, field.expr);
+
+                let mut base_ty = self.typecheck.associations[&field.expr.node_id];
+                while let Ty(TyKind::Refrence(inner_ty)) = base_ty {
+                    let tmp = self.tmp_register(*inner_ty);
+                    self.emit_into(block,
+                        Statement {
+                            place: Place::Register(tmp),
+                            rhs: RValue::Read(Place::Deref(target)),
+                            span: Span::NULL
+                        }
+                    );
+
+                    target = tmp;
+                    base_ty = *inner_ty;
+                }
+
                 let field = match field.field {
                     ast::FieldIdent::Named(..) =>
                         self.typecheck.field_indices[&expr.node_id],
@@ -990,6 +1011,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                         FieldIdx::from_usize(value as usize)
                 };
                 let ty = self.typecheck.associations[&expr.node_id];
+
                 // field.field
                 (block, Place::Field { target, field, ty })
             }
@@ -1023,7 +1045,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 let mut reg = self.register_lookup[local];
                 let info = &self.registers[reg];
                 if info.mutability == Mutability::Mut {
-                    let tmp = self.tmp_register(info.ty, Mutability::Const);
+                    let tmp = self.tmp_register(info.ty);
                     self.emit_into(
                         block,
                         Statement {
