@@ -13,10 +13,10 @@ pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
         match node {
             _ if node.body().is_some() => {
                 let body = tcx.build_ir(*def);
-                if let Ok(body) = body {
+                if let Ok(body) = body && tcx.session.config.print_ir {
                     let mut buffer = String::new();
                     intermediate::display_ir_body(tcx, body, &mut buffer).unwrap();
-                    println!("{buffer}");
+                    eprintln!("{buffer}");
                 }
                 has_errors |= body.is_err();
             }
@@ -31,7 +31,7 @@ pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
 
     if tcx.resolutions.entry.is_none() {
         Message::error("file doesn't have an entry point")
-            .at(lexer::Span::new(0, 1))
+            .at(lexer::Span::new(0, 1)) // emit an error at the first char in the input file
             .note("consider adding `void main()`")
             .push(tcx.diagnostics());
         has_errors = true;

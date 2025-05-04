@@ -55,9 +55,9 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                 (place, *inner)
             }
             ValueKind::Pair(..) =>
-                panic!("ValueKimd::Pair doesn't specify a place"),
+                panic!("cannot deref ValueKimd::Pair: pointers always fit into immediates"),
             ValueKind::Ref(..) =>
-                panic!("cannot deref ValueKind::Ref - just use its place directly")
+                panic!("cannot deref ValueKind::Ref:  pointers always fit into immediates")
         }
     }
 
@@ -83,7 +83,6 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                 let layout = builder.generator.tcx.layout_of(self.ty)
                     .ok()
                     .unwrap();
-
 
                 let type_ir::BackendRepr::ScalarPair(scalar1, scalar2) = layout.repr else {
                     panic!("ValueKind should match BackendRepr");
@@ -1459,7 +1458,9 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
                 eprintln!("couldn't optimize module: {}: {}", module.get_name().to_bytes().escape_ascii(), err);
             }
         }
-        module.print_to_stderr();
+        if tcx.session.config.print_llvm_ir {
+            module.print_to_stderr();
+        }
 
 
         let mut path = output.clone();

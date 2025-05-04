@@ -24,7 +24,22 @@ impl OptimizationLevel {
     }
 }
 
+impl TryFrom<&str> for OptimizationLevel {
+    type Error = ();
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "0" => Ok(OptimizationLevel::O0),
+            "1" => Ok(OptimizationLevel::O1),
+            "2" => Ok(OptimizationLevel::O2),
+            "3" => Ok(OptimizationLevel::O3),
+            _ => Err(())
+        }
+    }
+}
+
 pub struct Cfg {
+    pub print_ir: bool,
+    pub print_llvm_ir: bool,
     pub run_output: bool,
     pub opt_level: OptimizationLevel
 }
@@ -125,30 +140,32 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
         ExitCode::FAILURE
     })?;
 
-    macro_rules! optflag {
+    macro_rules! flag {
         ($shortopt:literal, $fullopt:literal, $desc:literal) => {
             |parser| parser.optflag($shortopt, $fullopt, $desc)
         };
     }
 
-    macro_rules! optopt {
+    macro_rules! flagopt {
+        ($shortopt:literal, $fullopt:literal, $desc:literal, $hint:literal) => {
+            |parser| parser.optmulti($shortopt, $fullopt, $desc, $hint)
+        };
+    }
+
+    macro_rules! opt {
         ($shortopt:literal, $fullopt:literal, $desc:literal, $arg:literal) => {
             |parser| parser.optopt($shortopt, $fullopt, $desc, $arg)
         };
     }
 
     const CMD_OPTIONS: &[fn(&mut getopts::Options) -> &mut getopts::Options] = &[
-        optflag!("", "O0", "Compile with optimization level 0"),
-        optflag!("", "O1", "Compile with optimization level 1"),
-        optflag!("", "O2", "Compile with optimization level 2"),
-        optflag!("", "O3", "Compile with optimization level 3"),
+        flagopt!("C", "", "Specifiy compiler config", ""),
+        opt!("o", "", "Put the output into <file>", "<file>"),
+        opt!("", "out-dir", "Write the output into <dir>", "<dir>"),
 
-        optopt!("o", "", "Put the output into <file>", "<file>"),
-        optopt!("", "out-dir", "Write the output into <dir>", "<dir>"),
-
-        optflag!("R", "run", "Run the programm upon successful build"),
-        optflag!("v", "version", "Print clydec version"),
-        optflag!("h", "help", "Displays this message"),
+        flag!("R", "run", "Run the programm upon successful build"),
+        flag!("v", "version", "Print clydec version"),
+        flag!("h", "help", "Displays this message"),
     ];
 
     let mut parser = getopts::Options::new();
@@ -161,7 +178,7 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     })?;
 
     if matches.opt_present("h") || matches.opt_present("help") {
-        print!(
+        eprint!(
             "{}",
             parser.usage(format!("Usage: {program} [OPTIONS] INPUT").as_str())
         );
@@ -169,7 +186,7 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     }
 
     if matches.opt_present("v") || matches.opt_present("version") {
-        println!("{program} version {VERSION}");
+        eprintln!("{program} version {VERSION}");
         return Err(ExitCode::SUCCESS);
     }
 
@@ -189,8 +206,7 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
         output_file,
         working_dir,
 
-        config: matches_to_config(&matches)
-            .map_err(|()| ExitCode::FAILURE)?
+        config: matches_to_config(&matches)?
     };
 
     match input_file {
@@ -212,19 +228,50 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     Ok(options)
 }
 
-fn matches_to_config(matches: &getopts::Matches) -> Result<Cfg, ()> {
+fn matches_to_config(matches: &getopts::Matches) -> Result<Cfg, ExitCode> {
     let opt_level = OnceCell::new();
+    let mut print_ir = false;
+    let mut print_llvm_ir = false;
 
-    use OptimizationLevel::*;
-    for flag in [O0, O1, O2, O3] {
-        if matches.opt_present(flag.as_str()) {
-            opt_level.set(flag).map_err(|_| {
-                eprintln!("ERROR: cannot specify multiple optimization flags: found `--{}` and later `--{}`", opt_level.get().unwrap().as_str(), flag.as_str());
-            })?;
+    for cfg in matches.opt_strs("C") {
+        let parts = cfg.splitn(2, '=').collect::<Vec<_>>();
+        match &*parts {
+            ["print-ir"] => print_ir = true,
+            ["print-llvm-ir"] => print_llvm_ir = true,
+            ["opt-level", opt] => {
+                let level = OptimizationLevel::try_from(opt.trim())
+                    .map_err(|()| {
+                        eprintln!("ERROR: Unknown opt-level: found `-C opt-level={}`, valid values are `0`, `1`, `2` and `3`", opt);
+                        ExitCode::FAILURE
+                    })?;
+                opt_level.set(level)
+                    .map_err(|_| {
+                        eprintln!("ERROR: Cannot specify multiple opt-levels: found `-C opt-level={}` and later `-C opt-level={}`", opt_level.get().unwrap().as_str(), opt);
+                        ExitCode::FAILURE
+                    })?;
+            }
+            ["help"] => {
+                eprintln!("Config Options:");
+                const OPTIONS: &[(&'static str, &'static str)] = &[
+                    ("print-ir", ""),
+                    ("print-llvm-ir", ""),
+                    ("opt-level", "Specify llvm optimization level, valid values are `0`, `1`, `2` and `3"),
+                ];
+                for (name, desc) in OPTIONS {
+                    eprintln!("    -C {name:20}{desc}");
+                }
+                return Err(ExitCode::SUCCESS);
+            }
+            _ => {
+                eprintln!("ERROR: Unknown config option: `-C {}`; Run with `-C help` to get a list of all config options", cfg);
+                return Err(ExitCode::FAILURE);
+            }
         }
     }
 
     Ok(Cfg {
+        print_ir,
+        print_llvm_ir,
         run_output: matches.opt_present("R") || matches.opt_present("run"),
         opt_level: opt_level.into_inner().unwrap_or_default()
     })

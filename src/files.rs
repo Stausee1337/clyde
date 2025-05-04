@@ -176,7 +176,7 @@ impl FileCacher {
         let (contents, pos, len) = fs::File::open(path)
             .and_then(|mut f| {
                 let metadata = f.metadata()?;
-                let size = metadata.len() as usize;
+                let mut size = metadata.len() as usize;
                 // NOTE: Should we already read into the file cacher here?
                 // Maybe the file is invalid utf8 and we're wasting space,
                 // But the compilation fails anyways so maybe it doesn't matter
@@ -188,7 +188,15 @@ impl FileCacher {
                     (buf, pos) = storage.new_buffer(size);
                     f.read_exact(buf)?;
                 } else {
-                    (buf, pos) = (&mut [], 0);
+                    // the file is literally completely empty, this is may be bad as the diagnostic
+                    // system won't be able to decode it's Span back to the `File`. It is unusual
+                    // that we need to create a diagnostic in an empty file, but if it happens to
+                    // be the input file we might need to. So we just pretend there is a single
+                    // newline in the file to mitigate those problems. 
+                    // Completely empty files are pretty unusual anways.
+                    size = 1;
+                    (buf, pos) = storage.new_buffer(size);
+                    buf[0] = b'\n';
                 }
                 Ok((buf, pos as u32, size as u32))
             })
@@ -198,9 +206,8 @@ impl FileCacher {
             })?;
         let mut files = self.files.borrow_mut();
         let source = Rc::new(File::new(path.to_owned(), contents, Span::new(pos, pos + len)));
-        if len > 0 {
-            files.push(source.clone());
-        }
+        debug_assert!(len > 0);
+        files.push(source.clone());
         Ok(source)
     }
 
