@@ -983,6 +983,9 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 (block, target) = self.as_register(block, subscript.expr);
                 let idx;
                 (block, idx) = self.expr_as_operand(block, subscript.args[0]);
+                // FIXME: as soon as more advanced operator overloading becomes available we should
+                // change this into more of an intrinsic overloaded call for dynamic arrays and
+                // slices, as they're excpetions during codegen and need to be handled seperately
                 (block, Place::Index { target, idx })
             }
             ast::ExprKind::Field(field) => {

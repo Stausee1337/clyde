@@ -1,20 +1,39 @@
 
-const nuint BOARD_CAP = 100;
-[BOARD_CAP]int board;
+// const nuint BOARD_CAP = 100;
+// int[BOARD_CAP] board;
 
 
-void main() {
+void main(string[] args) {
+    int[100] board;
+    nuint BOARD_CAP = 100;
+
+    nuint i = 0;
+    while i < BOARD_CAP {
+        board[i] = 0;
+        i += 1;
+    }
     board[BOARD_CAP - 2] = 1;
-    for i in (0..BOARD_CAP - 2) {
-        for j in (0..BOARD_CAP) {
-            print(" *"[board[j]]);
-        }
-        println();
 
+
+    i = 0;
+    while i < BOARD_CAP - 2 {
+        nuint j = 0;
+        while j < BOARD_CAP {
+            printchr(" *"[cast(uint)board[j]]);
+            j += 1;
+        }
+        print("");
+
+        j = 1;
         var pattern = (board[0] << 1) | board[1];
-        for j in (1..BOARD_CAP - 1) {
+        while j < BOARD_CAP - 1 {
             pattern = ((pattern << 1) & 7) | board[j + 1];
             board[j] = (110 >> pattern) & 1;
+            j += 1;
         }
+        i += 1;
     }
 }
+
+void print(string msg);
+void printchr(byte msg);

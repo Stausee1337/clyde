@@ -311,17 +311,33 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 (Place { value, align: res_layout.align.abi }, res_ty)
             }
             Index { idx, .. } => {
-                let Ty(TyKind::Array(element, ..) | TyKind::Slice(element) | TyKind::DynamicArray(element) | TyKind::Refrence(element)) = ty else {
-                    panic!("Can't index {ty:?}");
+                let element = match ty {
+                    Ty(TyKind::Array(element, ..) | TyKind::Slice(element) | TyKind::DynamicArray(element) | TyKind::Refrence(element)) => *element,
+                    Ty(TyKind::String) => self.generator.tcx.basic_types.byte,
+                    _ => panic!("Can't index {ty:?}"),
                 };
-                let element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.generator).force_into();
+                let element_layout = self.generator.tcx.layout_of(element).ok().unwrap();
+                let ptr = match ty {
+                    Ty(TyKind::DynamicArray(..) | TyKind::Slice(..) | TyKind::String) => {
+                        let fictional_ty = Ty::new_refrence(self.generator.tcx, element);
+                        let Value { kind: ValueKind::Immediate(value), .. } = self.load_value(cg_place, fictional_ty) else {
+                            panic!("Place::Index: pointers always fit into immediates");
+                        };
+                        value.force_into()
+                    }
+                    _ => cg_place.value
+                };
+                let llvm_element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.generator).force_into();
                 let Value { kind: ValueKind::Immediate(idx), .. } = self.lower_operand(idx) else {
                     panic!("ValueKinds other than ValueKind::Immediate is not valid on Place::Index");
                 };
                 let idx: ll::IntValue<'ll> = idx.force_into();
 
-                ensure!(unsafe { self.builder.build_in_bounds_gep(element, cg_place.value, &[idx], "") });
-                todo!("Place::Index")
+                let value = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_element, ptr, &[idx], "") });
+                (Place {
+                    value,
+                    align: element_layout.align.abi
+                }, element)
             }
             None => unreachable!()
         }

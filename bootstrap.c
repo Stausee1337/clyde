@@ -11,6 +11,10 @@ void clyde$printint(int msg) {
     printf("%d\n", msg);
 }
 
+void clyde$printchr(char msg) {
+    printf("%c", msg);
+}
+
 int main() {
     return clyde$main(NULL, 0);
 }

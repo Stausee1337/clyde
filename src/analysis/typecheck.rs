@@ -758,20 +758,23 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             let end = subscript.args.last().unwrap().span.end;
             Span { start, end }
         };
-        let base = {
-            use type_ir::TyKind::{Err, Never, Array, DynamicArray, Slice};
+        let base;
+        {
+            use type_ir::TyKind::{Err, Never, Array, DynamicArray, Slice, String, Refrence};
             if let Ty(Err | Never) = ty {
                 return ty;
             }
-            let Ty(Array(base, _) | DynamicArray(base) | Slice(base)) = ty else {
-                Message::error(format!("cannot index into value of type {ty}"))
-                    .at(index_span)
-                    .push(self.diagnostics());
-                return Ty::new_error(self.tcx);
+            base = match ty {
+                Ty(Array(base, _) | DynamicArray(base) | Slice(base) | Refrence(base)) => *base,
+                Ty(String) => self.tcx.basic_types.byte,
+                _ => {
+                    Message::error(format!("cannot index into value of type {ty}"))
+                        .at(index_span)
+                        .push(self.diagnostics());
+                    return Ty::new_error(self.tcx);
+                }
             };
-
-            *base
-        };
+        }
 
         // later, we'll have operator overloading, but for now it's just arrays, dyn arrays and
         // slices and all of them are index by only one argument
