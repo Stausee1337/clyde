@@ -66,7 +66,7 @@ struct TypecheckCtxt<'tcx> {
     lowering_ctxt: LoweringCtxt<'tcx>,
     associations: HashMap<ast::NodeId, Ty<'tcx>>,
     locals: HashMap<ast::NodeId, Ty<'tcx>>,
-    last_error: Cell<Option<Ty<'tcx>>>
+    last_error: Cell<Option<()>>
 }
 
 impl<'tcx> TypecheckCtxt<'tcx> {
@@ -123,7 +123,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             eprintln!("[WARNING] unwanted attempt to associate {node_id:?} with {ty:?} twice")
         }
         if let Ty(type_ir::TyKind::Err) = ty {
-            self.last_error.set(Some(ty));
+            self.last_error.set(Some(()));
         }
     }
 
@@ -133,7 +133,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             eprintln!("[WARNING] unwanted attempt to create local {node_id:?} with {ty:?} twice")
         }
         if let Ty(type_ir::TyKind::Err) = ty {
-            self.last_error.set(Some(ty));
+            self.last_error.set(Some(()));
         }
     }
 
@@ -746,6 +746,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         signature.name.get(), signature.params.len(), arg_count))
                 .at(span)
                 .push(self.diagnostics());
+            self.last_error.set(Some(()));
         }
 
         signature.returns
@@ -871,6 +872,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .at(span)
                     .note("initialze primitive directly")
                     .push(self.diagnostics());
+                self.last_error.set(Some(()));
             }
             Ty(TyKind::Refrence(..)) => {
                 Message::error(format!("expected struct, found {ty}"))
@@ -883,12 +885,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .at(span)
                     .note("initialize a fixed or dynamic array")
                     .push(self.diagnostics());
+                self.last_error.set(Some(()));
             }
             Ty(TyKind::Tuple(..)) => {
                 Message::error(format!("expected struct, found tuple {ty}"))
                     .at(span)
                     .note("initialize tuple using tuple expression (<0>, <1>, ...)")
                     .push(self.diagnostics());
+                self.last_error.set(Some(()));
             }
             Ty(kind @ (TyKind::Array(base, _) | TyKind::DynamicArray(base))) => {
                 for init in ty_init.initializers {
@@ -900,6 +904,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                             Message::error("field initializer in array initialization is invalid")
                                 .at(Span::new(ident.span.start, expr.span.end))
                                 .push(self.diagnostics());
+                            self.last_error.set(Some(()));
                         }
                     }
                 }
@@ -915,6 +920,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                             Message::error(format!("expected array with {capacity} elements, found {count} elements"))
                                 .at(span)
                                 .push(self.diagnostics());
+                            self.last_error.set(Some(()));
                         }
                     }
                     _ => ()
@@ -947,6 +953,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                     Message::error(format!("can't find field `{}` on struct {ty}", name.ident.symbol.get()))
                                         .at(name.ident.span)
                                         .push(self.diagnostics());
+                                    self.last_error.set(Some(()));
                                     continue;
                                 };
                                 let fty = self.tcx.type_of(fdef.def);
@@ -957,6 +964,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 Message::error("immediate initializer in struct initialization is invalid")
                                     .at(expr.span)
                                     .push(self.diagnostics());
+                                self.last_error.set(Some(()));
                             }
                         }
                     }
@@ -966,6 +974,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         .at(span)
                         .note(format!("initialize an enum with {}::<Variant> syntax", adt.name().get()))
                         .push(self.diagnostics());
+                    self.last_error.set(Some(()));
                 }
                 AdtDef(type_ir::AdtKind::Union) => todo!()
             }
@@ -1257,7 +1266,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 .at(span)
                 .push(self.diagnostics());
             let err = Ty::new_error(self.tcx);
-            self.last_error.set(Some(err));
+            self.last_error.set(Some(()));
             return err;
         }
         Ty::with_non_bendable(&[found, expected]).unwrap()

@@ -4,18 +4,11 @@
 
 
 void main(string[] args) {
-    int[100] board;
     nuint BOARD_CAP = 100;
-
-    nuint i = 0;
-    while i < BOARD_CAP {
-        board[i] = 0;
-        i += 1;
-    }
+    int[100] board = int[100] {0};
     board[BOARD_CAP - 2] = 1;
 
-
-    i = 0;
+    nuint i = 0;
     while i < BOARD_CAP - 2 {
         nuint j = 0;
         while j < BOARD_CAP {

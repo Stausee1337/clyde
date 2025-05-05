@@ -164,6 +164,13 @@ impl<'ll, 'tcx> DeferredStorage<'ll, 'tcx> {
             DeferredStorage::None => ()
         }
     }
+
+    fn dissolve(self) -> (Option<(Place<'ll>, Ty<'tcx>)>, Option<Self>) {
+        match self {
+            DeferredStorage::Place { place, ty } => (Some((place, ty)), None),
+            DeferredStorage::None | DeferredStorage::Initialize(..) => (None, Some(self)), 
+        }
+    }
 }
 
 struct CodeBuilder<'a, 'll, 'tcx> {
@@ -748,7 +755,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let mut rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
 
                         if op == BinaryOp::Sub {
-                            rhs = ensure!(self.builder.build_int_sub(rhs.get_type().const_int(0, false), rhs, ""));
+                            rhs = ensure!(self.builder.build_int_nsw_sub(rhs.get_type().const_int(0, false), rhs, ""));
                         }
 
                         let llvm_ty = match ref_ty {
@@ -851,8 +858,151 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 };
                 deferred.store_or_init(res, self);
             }
-            _ => todo!()
+            intermediate::RValue::Invert(value) => {
+                let Value { kind: ValueKind::Immediate(value), ty } = self.lower_operand(value) else {
+                    panic!("RValue::Invert is only valid for ValueKind::Immediate");
+                };
+                let value: ll::IntValue<'ll> = value.force_into();
+                let res = ensure!(self.builder.build_not(value, ""));
+                let res = Value {
+                    kind: ValueKind::Immediate(res.as_any_value_enum()),
+                    ty
+                };
+                deferred.store_or_init(res, self);
+            }
+            intermediate::RValue::Negate(value) => {
+                let Value { kind: ValueKind::Immediate(value), ty } = self.lower_operand(value) else {
+                    panic!("RValue::Negate is only valid for ValueKind::Immediate");
+                };
+                let res = match ty {
+                    Ty(TyKind::Int(..)) => {
+                        let value: ll::IntValue<'ll> = value.force_into();
+                        let res = ensure!(self.builder.build_int_nsw_sub(value.get_type().const_int(0, false), value, ""));
+                        res.as_any_value_enum()
+                    }
+                    Ty(TyKind::Float(_)) => {
+                        let value: ll::FloatValue<'ll> = value.force_into();
+                        let res = ensure!(self.builder.build_float_neg(value, ""));
+                        res.as_any_value_enum()
+                    }
+                    _ => panic!("Cannot negate {ty:?}"),
+                };
+                let res = Value {
+                    kind: ValueKind::Immediate(res),
+                    ty
+                };
+                deferred.store_or_init(res, self);
+            }
+            intermediate::RValue::ExplicitInit { ty, ref initializers } => {
+                let (dest, deferred) = deferred.dissolve();
+                let dest = dest.map_or_else(|| self.alloca_place(ty), |(place, _)| place);
+                match ty {
+                    Ty(TyKind::Array(element, count)) => {
+                        let count = count.downcast_unsized::<dyn num_traits::ToPrimitive>()
+                            .unwrap()
+                            .to_u64()
+                            .unwrap();
+                        if initializers.len() == 1 {
+                            let default = self.lower_operand(initializers[0].1.operand);
+                            let id = (statement as *const intermediate::Statement<'tcx>).addr() as u16;
+                            self.default_initialize_array(dest, *element, default, count, id);
+                        } else {
+                            debug_assert!(initializers.len() as u64 == count);
+                            self.initialize_with_initializers(dest, *element, initializers, false);
+                        }
+                    }
+                    Ty(TyKind::Adt(AdtDef(AdtKind::Struct(..)))) => {
+                        self.initialize_with_initializers(dest, ty, initializers, true);
+                    }
+                    _ => panic!("can't explicit init {ty:?}"),
+                }
+                if let Some(deferred) = deferred {
+                    let value = self.load_value(dest, ty);
+                    deferred.store_or_init(value, self);
+                }
+            }
         }
+    }
+
+    fn initialize_with_initializers(
+        &mut self,
+        dest: Place<'ll>,
+        ty: Ty<'tcx>,
+        initializers: &[(type_ir::FieldIdx, intermediate::SpanOperand<'tcx>)],
+        is_struct: bool
+    ) {
+        let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator).force_into();
+        let ty_layout = self.generator.tcx.layout_of(ty).ok().unwrap();
+        for init in initializers {
+            let value = self.lower_operand(init.1.operand);
+            let (element_pointer, element_ty, align) = if is_struct {
+                let ptr = ensure!(self.builder.build_struct_gep(llvm_ty, dest.value, init.0.raw(), ""));
+                let Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)))) = ty else {
+                    unreachable!("ty is not struct")
+                };
+                let field = strct.get_field(init.0);
+                let field_ty = self.generator.tcx.type_of(field.def);
+                let field_layout = self.generator.tcx.layout_of(field_ty).ok().unwrap();
+
+                (ptr, field_ty, field_layout.align.abi)
+            } else {
+                let idx = self.generator.context.i32_type().const_int(init.0.raw() as u64, false);
+                let ptr = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_ty, dest.value, &[idx], "") });
+
+                (ptr, ty, ty_layout.align.abi)
+            };
+            let place = Place {
+                value: element_pointer,
+                align
+            };
+            value.store(place, element_ty, self);
+        }
+    }
+
+    fn default_initialize_array(&mut self, dest: Place<'ll>, ty: Ty<'tcx>, default: Value<'ll, 'tcx>, count: u64, id: u16) {
+        if count == 0 {
+            return;
+        }
+        if count == 1 {
+            default.store(dest, ty, self);
+            return;
+        }
+
+        let llvm_element: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator).force_into();
+        let element_layout = self.generator.tcx.layout_of(ty).ok().unwrap();
+        let llvm_index: ll::IntType<'ll> = self.generator.tcx.basic_types.nuint.llvm_type(self.generator).force_into();
+
+        let begin = self.builder.get_insert_block().unwrap();
+
+        let context = self.module.get_context();
+        let loop_body = context.append_basic_block(self.function, &format!("init_array_loop_body_{id:x}"));
+        let loop_end = context.append_basic_block(self.function, &format!("init_array_loop_done_{id:x}"));
+
+        ensure!(self.builder.build_unconditional_branch(loop_body));
+        self.builder.position_at_end(loop_body);
+
+        let phi_idx = ensure!(self.builder.build_phi(llvm_index, &format!("idx_{id:x}")));
+
+        let idx = phi_idx.as_basic_value().force_into();
+        let idx_pointer = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_element, dest.value, &[idx], "") });
+        let idx_place = Place {
+            value: idx_pointer,
+            align: element_layout.align.abi
+        };
+        default.store(idx_place, ty, self);
+
+        let next_idx = ensure!(self.builder.build_int_add(idx, llvm_index.const_int(1, false), &format!("next_idx_{id:x}")));
+        phi_idx.add_incoming(&[
+            (&llvm_index.const_zero(), begin),
+            (&next_idx, loop_body)
+        ]);
+        let cmp = ensure!(self.builder.build_int_compare(
+            ll::IntPredicate::UGE,
+            next_idx, llvm_index.const_int(count, false),
+            ""
+        ));
+        ensure!(self.builder.build_conditional_branch(cmp, loop_end, loop_body));
+        self.builder.position_at_end(loop_end);
     }
 
     fn visit_terminator(&mut self, terminator: &'tcx intermediate::Terminator<'tcx>, signature: type_ir::Signature<'tcx>) {

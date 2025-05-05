@@ -108,6 +108,10 @@ impl Struct {
     pub fn fields(&self) -> impl Iterator<Item = (FieldIdx, &FieldDef)> {
         self.fields.iter_enumerated()
     }
+
+    pub fn get_field(&self, field: FieldIdx) -> &FieldDef {
+        &self.fields[field]
+    }
 }
 
 #[derive(Debug, Hash)]
