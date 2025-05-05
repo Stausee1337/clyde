@@ -6,7 +6,7 @@ pub mod typecheck;
 pub mod intermediate;
 
 pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
-    let mut has_errors = false;
+    let mut has_errors = tcx.resolutions.ast_info.tainted_with_errors.get().is_some();
 
     for def in &tcx.resolutions.items {
         let node = tcx.node_by_def_id(*def);

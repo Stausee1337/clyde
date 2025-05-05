@@ -121,7 +121,7 @@ enum LexState {
     Initial = 0,
     CommentOrPunct = 1,
     CharOrStringLiteral = 2,
-    SymbolOrKeyword = 3,
+    SymbolDirectiveOrKeyword = 3,
     NumberLiteral = 4,
     PunctOrError = 5,
     Comment = 6,
@@ -137,6 +137,7 @@ pub enum LexErrorKind {
     InvalidCharacter(char),
     IncompleteIntegerLiteral,
     NonDecimalFloatingPointLiteral,
+    UnknownDirective(Symbol),
     StringError(StringError),
 }
 
@@ -357,6 +358,7 @@ pub struct Token<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum TokenKind<'a> {
     Keyword(Keyword),
+    Directive(Directive),
     Punctuator(Punctuator),
     Literal(&'a str, LiteralKind),
     Symbol(Symbol),
@@ -385,6 +387,8 @@ impl<'a> std::fmt::Display for Token<'a> {
                 std::fmt::Display::fmt(&keyword, f),
             TokenKind::Punctuator(punct) =>
                 std::fmt::Display::fmt(&punct, f),
+            TokenKind::Directive(directive) =>
+                write!(f, "#{}", directive),
             TokenKind::Symbol(symbol) =>
                 f.write_str(symbol.get()),
             TokenKind::Literal(repr, _) =>
@@ -397,7 +401,8 @@ impl<'a> std::fmt::Display for Token<'a> {
 }
 
 pub struct TokenStream<'a> {
-    tokens: Vec<Token<'a>>
+    tokens: Vec<Token<'a>>,
+    tainted_with_errors: bool
 }
 
 impl<'a> TokenStream<'a> {
@@ -450,7 +455,7 @@ impl<'a> TokenStream<'a> {
             return Err(());
         }
 
-        Ok(Self { tokens })
+        Ok(Self { tokens, tainted_with_errors: false })
     }
 
     fn create_delimiter_diagnostic(start: Option<Token<'a>>, end: Option<Token<'a>>, diagnostics: &DiagnosticsCtxt) {
@@ -475,6 +480,10 @@ impl<'a> TokenStream<'a> {
 
     pub fn into_boxed_slice(self) -> Box<[Token<'a>]> {
         self.tokens.into_boxed_slice()
+    }
+
+    pub fn tainted_with_errors(&self) -> bool {
+        self.tainted_with_errors
     }
 }
 
@@ -652,8 +661,8 @@ impl<'a> Tokenizer<'a> {
         if let '"' | '\'' = current {
             goto!(CharOrStringLiteral);
         }
-        if current.is_alphabetic() || current == '_' {
-            goto!(SymbolOrKeyword);
+        if current.is_alphabetic() || current == '_' || current == '#' {
+            goto!(SymbolDirectiveOrKeyword);
         }
         if let '0'..='9' = current {
             goto!(NumberLiteral);
@@ -717,7 +726,11 @@ impl<'a> Tokenizer<'a> {
         goto!(End);
     }
 
-    fn symbol_or_keyword(&mut self) -> Result<LexState, LexErrorKind> {
+    fn symbol_directive_or_keyword(&mut self) -> Result<LexState, LexErrorKind> {
+        let directive = self.current().unwrap() == '#';
+        if directive {
+            must!(self.bump());
+        }
         let start = self.position();
         let mut length = 1;
         loop {
@@ -731,7 +744,16 @@ impl<'a> Tokenizer<'a> {
             length += current.len_utf8();
         }
         let symbol = self.slice_bytes(self.position() - start, length).unwrap();
-        if let Some(keyword) = Keyword::try_from_string(symbol) {
+        if directive {
+            let directive = Directive::try_from_string(symbol).ok_or_else(|| {
+                let symbol = Symbol::intern(std::str::from_utf8(symbol).unwrap());
+                LexErrorKind::UnknownDirective(symbol)
+            })?;
+            self.token = Token {
+                kind: TokenKind::Directive(directive),
+                span: self.make_span(start - 1, (start - 1) + (length + 1))
+            };
+        } else if let Some(keyword) = Keyword::try_from_string(symbol) {
             self.token = Token {
                 kind: TokenKind::Keyword(keyword),
                 span: self.make_span(start, start + length)
@@ -898,7 +920,7 @@ impl<'a> Tokenizer<'a> {
             Self::initial,
             Self::comment_or_punct,
             Self::char_or_string_literal,
-            Self::symbol_or_keyword,
+            Self::symbol_directive_or_keyword,
             Self::number_literal,
             Self::punct_or_error,
             Self::comment,
@@ -980,9 +1002,10 @@ pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Res
     };
     let cursor = SourceCursor::new(contents);
     let (tokens, errors) = Tokenizer::tokenize_relative_source(cursor, source_file.relative_start());
-    let stream = TokenStream::build(tokens, diagnostics)?;
+    let mut stream = TokenStream::build(tokens, diagnostics)?;
 
     for err in errors {
+        stream.tainted_with_errors = true;
         match err.kind {
             LexErrorKind::InvalidCharacter(chr) => {
                 Message::error(format!("invalid character in stream: {chr:?}"))
@@ -996,6 +1019,11 @@ pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Res
             }
             LexErrorKind::NonDecimalFloatingPointLiteral => {
                 Message::error(format!("non-decimal float literal is not allowed"))
+                    .at(err.span)
+                    .push(diagnostics);
+            }
+            LexErrorKind::UnknownDirective(symbol) => {
+                Message::error(format!("unknown directive `#{}`", symbol.get()))
                     .at(err.span)
                     .push(diagnostics);
             }
@@ -1214,10 +1242,6 @@ pub enum Keyword {
     Null
 }
 
-/*
- 
-*/
-
 impl Tokenish for Keyword {
     fn matches(&self, tok: Token) -> bool { 
         if let TokenKind::Keyword(keyword) = tok.kind {
@@ -1227,27 +1251,23 @@ impl Tokenish for Keyword {
     }
 }
 
-    /*
-    pub fn keyword(&self) -> Option<Keyword> {
-        if let TokenKind::Keyword(keyword) = self.current().kind {
-            return Some(keyword);
-        }
-        None
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]
+pub enum Directive {
+    #[str = "c_call"]
+    CCall,
 
-    pub fn symbol(&self) -> Option<Symbol> {
-        if let TokenKind::Symbol(symbol) = self.current().kind {
-            return Some(symbol);
-        }
-        None
-    }
+    #[str = "include"]
+    Include,
+}
 
-    pub fn literal(&self) -> Option<(&'a str, LiteralKind)> {
-        if let TokenKind::Literal(literal, kind) = self.current().kind {
-            return Some((literal, kind));
+impl Tokenish for Directive {
+    fn matches(&self, tok: Token) -> bool { 
+        if let TokenKind::Directive(keyword) = tok.kind {
+            return *self == keyword;
         }
-        None
-    }*/
+        false
+    }
+}
 
 trait LexFromString: Sized {
     fn try_from_string(str: &[u8]) -> Option<Self>;

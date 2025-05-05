@@ -1,5 +1,5 @@
 
-use std::{cell::{OnceCell, RefCell}, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
+use std::{cell::{Cell, OnceCell, RefCell}, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
 
 use index_vec::IndexVec;
 use crate::{syntax::{ast::AstInfo, parser}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, analysis::{intermediate, resolve, typecheck}, type_ir, files, target::Target};
@@ -69,7 +69,8 @@ impl Session {
     pub fn global_ctxt<F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> Result<R, ()>, R>(&self, f: F) -> Result<R, ()> {
         let ast_info = AstInfo {
             arena: bumpalo::Bump::new(),
-            global_owners: RefCell::new(IndexVec::new())
+            global_owners: RefCell::new(IndexVec::new()),
+            tainted_with_errors: Cell::new(None)
         };
         let entry = parser::parse_file(&self, &self.input, &ast_info)?;
         let resolutions = resolve::resolve_from_entry(

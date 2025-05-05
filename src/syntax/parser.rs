@@ -1807,8 +1807,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let res = self.with_owner(|this| {
             let constant = this.bump_if(Token![const]).is_some();
-            let ty = this.parse_ty_expr()
-                .unwrap_or_else(|span| this.make_ty_expr(ast::TypeExprKind::Err, span));
+            let ty = this.parse_ty_expr()?;
 
             let ident = this.expect_any::<ast::Ident>()?;
             this.cursor.advance();
@@ -1859,6 +1858,9 @@ pub fn parse_file<'a, 'tcx>(
     let name = mangle_path(source.path());
 
     let stream = lexer::tokenize(&source, diagnostics)?;
+    if stream.tainted_with_errors() {
+        ast_info.tainted_with_errors.set(Some(()));
+    }
     
     let mut owners = ast_info.global_owners.borrow_mut();
     let source_file = if !stream.is_empty() {

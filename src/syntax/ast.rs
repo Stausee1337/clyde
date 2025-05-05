@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::hash::Hash;
 
 use index_vec::IndexVec;
@@ -665,7 +665,8 @@ pub struct NodeId {
 
 pub struct AstInfo<'ast> {
     pub arena: bumpalo::Bump,
-    pub global_owners: RefCell<IndexVec<OwnerId, Owner<'ast>>>
+    pub global_owners: RefCell<IndexVec<OwnerId, Owner<'ast>>>,
+    pub tainted_with_errors: Cell<Option<()>>
 }
 
 pub trait IntoNode<'ast> {

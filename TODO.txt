@@ -13,10 +13,14 @@ Ordered (by priority):
       (make the ir_build(..) query return Result, as the build phase will be able to emit errs in the future)
     √ Make sure to check every item
       (wether it has a body or not, as an unused struct could still be cyclic)
-- Codegen
+√ Codegen
     √ Refactor Consts
-    - Parser Recovery and Tree-like AST Node ownership
+    √ Parser Recovery and Tree-like AST Node ownership
 - Directives (`#if`, `#include`, etc ...)
+    - Implement basic (real) calling convention
+    - `#c_call` for non-mangled names
+    - propper Name mangling for clyde functions
+    - Behavioural tests (and testing suite) to have some foundational test cases
     - Files and Imports -> Namespaces
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
     - Enums
