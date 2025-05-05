@@ -45,7 +45,7 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                 let Ty(TyKind::Refrence(inner)) = self.ty else {
                     panic!("Cannot deref {:?}", self.ty);
                 };
-                let layout = builder.generator.tcx.layout_of(*inner)
+                let layout = builder.tcx.layout_of(*inner)
                     .unwrap();
                 let place = Place {
                     value: value.into_pointer_value(),
@@ -79,7 +79,7 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
 
                 let mut ptr = dest.value;
 
-                let layout = builder.generator.tcx.layout_of(self.ty)
+                let layout = builder.tcx.layout_of(self.ty)
                     .unwrap();
 
                 let type_ir::BackendRepr::ScalarPair(scalar1, scalar2) = layout.repr else {
@@ -91,13 +91,13 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                     .unwrap();
 
 
-                let align = scalar2.align(builder.generator);
-                let offset = scalar1.size(builder.generator).align_up(align);
-                let offset = builder.generator.context.i32_type().const_int(offset, false);
+                let align = scalar2.align(builder.cctxt);
+                let offset = scalar1.size(builder.cctxt).align_up(align);
+                let offset = builder.cctxt.context.i32_type().const_int(offset, false);
 
                 ptr = unsafe { 
                     ensure!(builder.builder.build_in_bounds_gep(
-                        builder.generator.context.i8_type(),
+                        builder.cctxt.context.i8_type(),
                         ptr,
                         &[offset],
                         ""
@@ -111,13 +111,13 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
             ValueKind::Ref(place) => {
                 // TODO: only load-store when opt_level == OptLevel::None
                 // TODO: add llvm metadata
-                let layout = builder.generator.tcx.layout_of(self.ty)
+                let layout = builder.tcx.layout_of(self.ty)
                     .unwrap();
                 if layout.is_llvm_immediate() {
                     let value = builder.load_value(place, self.ty);
                     value.store(dest, self.ty, builder);
                 } else if layout.size.in_bytes > 0 {
-                    let llvm_i64 = builder.generator.context.i64_type();
+                    let llvm_i64 = builder.cctxt.context.i64_type();
                     ensure!(builder.builder.build_memcpy(
                         dest.value, dest.align.in_bytes() as u32,
                         place.value, place.align.in_bytes() as u32,
@@ -171,10 +171,11 @@ impl<'ll, 'tcx> DeferredStorage<'ll, 'tcx> {
 }
 
 struct CodeBuilder<'a, 'll, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    cctxt: &'a mut CodegenCtxt<'ll, 'tcx>,
     module: &'ll ll::Module<'ll>,
     builder: ll::Builder<'ll>,
     function: ll::FunctionValue<'ll>,
-    generator: &'a mut CodegenCtxt<'ll, 'tcx>,
     reg_translations: IndexVec<intermediate::RegisterId, LocalKind<'ll, 'tcx>>,
     block_translations: IndexVec<intermediate::BlockId, Option<ll::BasicBlock<'ll>>>
 }
@@ -183,25 +184,26 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     fn new(
         module: &'ll ll::Module<'ll>,
         function: ll::FunctionValue<'ll>,
-        generator: &'a mut CodegenCtxt<'ll, 'tcx>
+        cctxt: &'a mut CodegenCtxt<'ll, 'tcx>
     ) -> Self {
         let builder = module.get_context().create_builder();
         Self {
+            tcx: cctxt.tcx,
             module,
             builder,
             function,
-            generator,
+            cctxt,
             reg_translations: IndexVec::new(),
             block_translations: IndexVec::new()
         }
     }
 
     fn load_value(&mut self, place: Place<'ll>, ty: Ty<'tcx>) -> Value<'ll, 'tcx> {
-        let layout = self.generator.tcx.layout_of(ty)
+        let layout = self.tcx.layout_of(ty)
             .unwrap();
         match layout.repr {
             type_ir::BackendRepr::Scalar(_) => {
-                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
+                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.cctxt)
                     .force_into();
                 let value = ensure!(self.builder.build_load(llvm_ty, place.value, ""));
                 value.as_instruction_value()
@@ -214,7 +216,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 }
             }
             type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {
-                let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, self.generator)
+                let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, self.cctxt)
                     .force_into();
 
                 let mut ptr = place.value;
@@ -225,20 +227,20 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     .set_alignment(place.align.in_bytes() as u32)
                     .unwrap();
 
-                let align = scalar2.align(self.generator);
-                let offset = scalar1.size(self.generator).align_up(align);
-                let offset = self.generator.context.i32_type().const_int(offset, false);
+                let align = scalar2.align(self.cctxt);
+                let offset = scalar1.size(self.cctxt).align_up(align);
+                let offset = self.cctxt.context.i32_type().const_int(offset, false);
 
                 ptr = unsafe {
                     ensure!(self.builder.build_in_bounds_gep(
-                        self.generator.context.i8_type(),
+                        self.cctxt.context.i8_type(),
                         ptr,
                         &[offset],
                         ""
                     ))
                 };
 
-                let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.generator)
+                let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.cctxt)
                     .force_into();
 
                 let value2 = ensure!(self.builder.build_load(llvm_ty, ptr, ""));
@@ -262,10 +264,10 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     }
 
     fn alloca_place(&mut self, ty: Ty<'tcx>) -> Place<'ll> {
-        let layout = self.generator.tcx.layout_of(ty).unwrap();
+        let layout = self.tcx.layout_of(ty).unwrap();
         let align = layout.align;
 
-        let array_ty = self.generator.context.i8_type()
+        let array_ty = self.cctxt.context.i8_type()
             .array_type(layout.size.in_bytes as u32);
 
         let pointer = ensure!(self.builder.build_alloca(array_ty, ""));
@@ -300,24 +302,24 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             },
             Register(_) => (cg_place, ty),
             Field { field, ty: res_ty, .. } => {
-                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
+                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.cctxt)
                     .force_into();
 
                 let value = ensure!(self.builder.build_struct_gep(llvm_ty, cg_place.value, field.raw(), ""));
-                let res_layout = self.generator.tcx.layout_of(res_ty)
+                let res_layout = self.tcx.layout_of(res_ty)
                     .unwrap();
                 (Place { value, align: res_layout.align }, res_ty)
             }
             Index { idx, .. } => {
                 let element = match ty {
                     Ty(TyKind::Array(element, ..) | TyKind::Slice(element) | TyKind::DynamicArray(element) | TyKind::Refrence(element)) => *element,
-                    Ty(TyKind::String) => self.generator.tcx.basic_types.byte,
+                    Ty(TyKind::String) => self.tcx.basic_types.byte,
                     _ => panic!("Can't index {ty:?}"),
                 };
-                let element_layout = self.generator.tcx.layout_of(element).unwrap();
+                let element_layout = self.tcx.layout_of(element).unwrap();
                 let ptr = match ty {
                     Ty(TyKind::DynamicArray(..) | TyKind::Slice(..) | TyKind::String) => {
-                        let fictional_ty = Ty::new_refrence(self.generator.tcx, element);
+                        let fictional_ty = Ty::new_refrence(self.tcx, element);
                         let Value { kind: ValueKind::Immediate(value), .. } = self.load_value(cg_place, fictional_ty) else {
                             panic!("Place::Index: pointers always fit into immediates");
                         };
@@ -325,7 +327,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     _ => cg_place.value
                 };
-                let llvm_element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.generator).force_into();
+                let llvm_element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.cctxt).force_into();
                 let Value { kind: ValueKind::Immediate(idx), .. } = self.lower_operand(idx) else {
                     panic!("ValueKinds other than ValueKind::Immediate is not valid on Place::Index");
                 };
@@ -347,14 +349,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         // for this trait)
         match cnst {
             Const(ConstKind::Definition(def)) => {
-                let node = self.generator.tcx.node_by_def_id(*def);
+                let node = self.tcx.node_by_def_id(*def);
                 let ll_value = if let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(..), .. }) = node {
-                    let function = self.generator.push_dependency(*def);
+                    let function = self.cctxt.push_dependency(*def);
                     ll::AnyValueEnum::FunctionValue(function)
                 } else {
                     todo!("global items like static variables, etc")
                 };
-                let ty = self.generator.tcx.type_of(*def);
+                let ty = self.tcx.type_of(*def);
                 Value {
                     kind: ValueKind::Immediate(ll_value),
                     ty
@@ -362,7 +364,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             }
             Const(ConstKind::Value(value)) => {
                 let ty = value.ty;
-                let ll_ty = ty.llvm_type(self.generator);
+                let ll_ty = ty.llvm_type(self.cctxt);
                 if let ll::AnyTypeEnum::IntType(int_ty) = ll_ty {
                     // should take care of Bool, Char and any Integer
                     let value = value.downcast_unsized::<dyn num_traits::ToPrimitive>()
@@ -379,9 +381,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     let string_data = value.as_bytes();
 
 
-                    let nuint_type = self.generator.tcx.basic_types.nuint.llvm_type(self.generator).into_int_type();
+                    let nuint_type = self.tcx.basic_types.nuint.llvm_type(self.cctxt).into_int_type();
 
-                    let data = self.generator.allocate_string_data(self.module, string_data);
+                    let data = self.cctxt.allocate_string_data(self.module, string_data);
                     let size = nuint_type.const_int(string_data.len() as u64, false);
 
                     return Value {
@@ -425,7 +427,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         match statement.rhs {
             intermediate::RValue::Ref(ir_place) => {
                 let (cg_place, mut ty) = self.lower_place(ir_place);
-                ty = Ty::new_refrence(self.generator.tcx, ty);
+                ty = Ty::new_refrence(self.tcx, ty);
                 let value = Value {
                     kind: ValueKind::Immediate(cg_place.value.as_any_value_enum()),
                     ty,
@@ -448,14 +450,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let Ty(TyKind::Function(fndef)) = ty else {
                     panic!("{ty:?} is not callable");
                 };
-                let sig = self.generator.tcx.fn_sig(*fndef);
+                let sig = self.tcx.fn_sig(*fndef);
 
                 let mut arguments = vec![];
                 for (idx, param) in sig.params.iter().enumerate() {
                     let value = args[idx];
                     let value = self.lower_operand(value.operand);
 
-                    let layout = self.generator.tcx.layout_of(param.ty).unwrap();
+                    let layout = self.tcx.layout_of(param.ty).unwrap();
                     match (value.kind, layout.repr) {
                         (ValueKind::Immediate(value), type_ir::BackendRepr::Scalar(..)) =>
                             arguments.push(value.force_into()),
@@ -479,12 +481,12 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                 let result_ty = match ty {
                     Ty(TyKind::Function(def)) => {
-                        let sig = self.generator.tcx.fn_sig(*def);
+                        let sig = self.tcx.fn_sig(*def);
                         sig.returns
                     },
                     _ => panic!("{ty:?} is not callable")
                 };
-                let result_layout = self.generator.tcx.layout_of(result_ty).unwrap();
+                let result_layout = self.tcx.layout_of(result_ty).unwrap();
 
                 let mut ll_result = None;
                 let mut mem_argload = None;
@@ -494,10 +496,10 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     type_ir::BackendRepr::ScalarPair(_, scalar2) => {
                         ll_result = Some(());
 
-                        let tmp = self.alloca_place(scalar2.get_type(self.generator.tcx));
+                        let tmp = self.alloca_place(scalar2.get_type(self.tcx));
                         arguments.push(tmp.value.into());
 
-                        mem_argload = Some((tmp, scalar2.get_type(self.generator.tcx)));
+                        mem_argload = Some((tmp, scalar2.get_type(self.tcx)));
                     }
                     type_ir::BackendRepr::Memory => {
                         // FIXME: For now this is fine, but since we might store into a place at
@@ -661,7 +663,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: self.generator.tcx.basic_types.bool
+                            ty: self.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -690,7 +692,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: self.generator.tcx.basic_types.bool
+                            ty: self.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -736,7 +738,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_float_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: self.generator.tcx.basic_types.bool
+                            ty: self.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -750,8 +752,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         }
 
                         let llvm_ty = match ref_ty {
-                            Ty(TyKind::Void) => self.generator.context.i8_type().as_basic_type_enum(),
-                            _ => ref_ty.llvm_type(self.generator).force_into()
+                            Ty(TyKind::Void) => self.cctxt.context.i8_type().as_basic_type_enum(),
+                            _ => ref_ty.llvm_type(self.cctxt).force_into()
                         };
 
                         let res = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_ty, lhs, &[rhs], "") });
@@ -769,7 +771,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_int_sub(lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: self.generator.tcx.basic_types.nuint
+                            ty: self.tcx.basic_types.nuint
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -790,7 +792,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let res = ensure!(self.builder.build_int_compare(predicate, lhs, rhs, ""));
                         let res = Value {
                             kind: ValueKind::Immediate(res.into()),
-                            ty: self.generator.tcx.basic_types.bool
+                            ty: self.tcx.basic_types.bool
                         };
                         deferred.store_or_init(res, self);
                     }
@@ -806,21 +808,21 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let res = match (val_ty, res_ty) {
                     (Ty(TyKind::Int(..)), Ty(TyKind::Int(_, signed))) => {
                         let int_value: ll::IntValue<'ll> = llvm_value.force_into();
-                        let int_type: ll::IntType<'ll> = res_ty.llvm_type(self.generator)
+                        let int_type: ll::IntType<'ll> = res_ty.llvm_type(self.cctxt)
                             .force_into();
                         ensure!(self.builder.build_int_cast_sign_flag(int_value, int_type, *signed, ""))
                             .as_any_value_enum()
                     }
                     (Ty(TyKind::Float(..)), Ty(TyKind::Float(..))) => {
                         let float_value: ll::FloatValue<'ll> = llvm_value.force_into();
-                        let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.generator)
+                        let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.cctxt)
                             .force_into();
                         ensure!(self.builder.build_float_cast(float_value, float_type, ""))
                             .as_any_value_enum()
                     }
                     (Ty(TyKind::Int(_, signed)), Ty(TyKind::Float(..))) => {
                         let int_value: ll::IntValue<'ll> = llvm_value.force_into();
-                        let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.generator)
+                        let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.cctxt)
                             .force_into();
 
                         let res = base_case_handler! {
@@ -919,8 +921,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         initializers: &[(type_ir::FieldIdx, intermediate::SpanOperand<'tcx>)],
         is_struct: bool
     ) {
-        let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator).force_into();
-        let ty_layout = self.generator.tcx.layout_of(ty).unwrap();
+        let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.cctxt).force_into();
+        let ty_layout = self.tcx.layout_of(ty).unwrap();
         for init in initializers {
             let value = self.lower_operand(init.1.operand);
             let (element_pointer, element_ty, align) = if is_struct {
@@ -929,12 +931,12 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     unreachable!("ty is not struct")
                 };
                 let field = strct.get_field(init.0);
-                let field_ty = self.generator.tcx.type_of(field.def);
-                let field_layout = self.generator.tcx.layout_of(field_ty).unwrap();
+                let field_ty = self.tcx.type_of(field.def);
+                let field_layout = self.tcx.layout_of(field_ty).unwrap();
 
                 (ptr, field_ty, field_layout.align)
             } else {
-                let idx = self.generator.context.i32_type().const_int(init.0.raw() as u64, false);
+                let idx = self.cctxt.context.i32_type().const_int(init.0.raw() as u64, false);
                 let ptr = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_ty, dest.value, &[idx], "") });
 
                 (ptr, ty, ty_layout.align)
@@ -956,9 +958,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             return;
         }
 
-        let llvm_element: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator).force_into();
-        let element_layout = self.generator.tcx.layout_of(ty).unwrap();
-        let llvm_index: ll::IntType<'ll> = self.generator.tcx.basic_types.nuint.llvm_type(self.generator).force_into();
+        let llvm_element: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.cctxt).force_into();
+        let element_layout = self.tcx.layout_of(ty).unwrap();
+        let llvm_index: ll::IntType<'ll> = self.tcx.basic_types.nuint.llvm_type(self.cctxt).force_into();
 
         let begin = self.builder.get_insert_block().unwrap();
 
@@ -1009,7 +1011,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
             }
             intermediate::TerminatorKind::Return { value } => {
-                let layout = self.generator.tcx.layout_of(signature.returns)
+                let layout = self.tcx.layout_of(signature.returns)
                     .unwrap();
                 match layout.repr {
                     type_ir::BackendRepr::Scalar(_) => {
@@ -1030,9 +1032,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let argument: ll::PointerValue<'ll> = self.function.get_last_param()
                             .unwrap()
                             .force_into();
-                        let align = scalar2.align(self.generator);
+                        let align = scalar2.align(self.cctxt);
                         let place = Place { value: argument, align };
-                        let scalar2_ty = scalar2.get_type(self.generator.tcx);
+                        let scalar2_ty = scalar2.get_type(self.tcx);
                         let value2 = Value {
                             kind: ValueKind::Immediate(value2),
                             ty: scalar2_ty
@@ -1111,7 +1113,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         let mut arg_idx = 0;
         for (idx, param) in signature.params.iter().enumerate() {
             let idx = intermediate::RegisterId::from_usize(idx);
-            let param_layout = self.generator.tcx.layout_of(param.ty)
+            let param_layout = self.tcx.layout_of(param.ty)
                 .unwrap();
             let reg = &body.local_registers[idx];
             debug_assert_eq!(reg.kind, intermediate::RegKind::Param);
@@ -1153,7 +1155,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     let argument: ll::PointerValue<'ll> = self.function.get_nth_param(arg_idx)
                         .unwrap()
                         .force_into();
-                    let align = self.generator.tcx.layout_of(param.ty).unwrap().align;
+                    let align = self.tcx.layout_of(param.ty).unwrap().align;
                     let place = Place { value: argument, align };
                     self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
                 }
