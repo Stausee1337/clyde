@@ -46,11 +46,10 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                     panic!("Cannot deref {:?}", self.ty);
                 };
                 let layout = builder.generator.tcx.layout_of(*inner)
-                    .ok()
                     .unwrap();
                 let place = Place {
                     value: value.into_pointer_value(),
-                    align: layout.align.abi
+                    align: layout.align
                 };
                 (place, *inner)
             }
@@ -69,19 +68,18 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
         debug_assert_eq!(_ty, self.ty, "why shouldn't that be the case?");
         match self.kind {
             ValueKind::Immediate(value) => {
-                let value: ll::BasicValueEnum<'ll> = value.try_into().unwrap();
+                let value: ll::BasicValueEnum<'ll> = value.force_into();
                 let instruction = ensure!(builder.builder.build_store(dest.value, value));
                 instruction.set_alignment(dest.align.in_bytes() as u32)
                     .unwrap();
             }
             ValueKind::Pair(value1, value2) => {
-                let value1: ll::BasicValueEnum<'ll> = value1.try_into().unwrap();
-                let value2: ll::BasicValueEnum<'ll> = value2.try_into().unwrap();
+                let value1: ll::BasicValueEnum<'ll> = value1.force_into();
+                let value2: ll::BasicValueEnum<'ll> = value2.force_into();
 
                 let mut ptr = dest.value;
 
                 let layout = builder.generator.tcx.layout_of(self.ty)
-                    .ok()
                     .unwrap();
 
                 let type_ir::BackendRepr::ScalarPair(scalar1, scalar2) = layout.repr else {
@@ -93,7 +91,7 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                     .unwrap();
 
 
-                let align = scalar2.align(builder.generator).abi;
+                let align = scalar2.align(builder.generator);
                 let offset = scalar1.size(builder.generator).align_up(align);
                 let offset = builder.generator.context.i32_type().const_int(offset, false);
 
@@ -114,7 +112,6 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                 // TODO: only load-store when opt_level == OptLevel::None
                 // TODO: add llvm metadata
                 let layout = builder.generator.tcx.layout_of(self.ty)
-                    .ok()
                     .unwrap();
                 if layout.is_llvm_immediate() {
                     let value = builder.load_value(place, self.ty);
@@ -201,13 +198,11 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
     fn load_value(&mut self, place: Place<'ll>, ty: Ty<'tcx>) -> Value<'ll, 'tcx> {
         let layout = self.generator.tcx.layout_of(ty)
-            .ok()
             .unwrap();
         match layout.repr {
             type_ir::BackendRepr::Scalar(_) => {
                 let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
-                    .try_into()
-                    .unwrap();
+                    .force_into();
                 let value = ensure!(self.builder.build_load(llvm_ty, place.value, ""));
                 value.as_instruction_value()
                     .unwrap()
@@ -220,8 +215,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             }
             type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {
                 let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, self.generator)
-                    .try_into()
-                    .unwrap();
+                    .force_into();
 
                 let mut ptr = place.value;
 
@@ -231,7 +225,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     .set_alignment(place.align.in_bytes() as u32)
                     .unwrap();
 
-                let align = scalar2.align(self.generator).abi;
+                let align = scalar2.align(self.generator);
                 let offset = scalar1.size(self.generator).align_up(align);
                 let offset = self.generator.context.i32_type().const_int(offset, false);
 
@@ -245,8 +239,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 };
 
                 let llvm_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar2, self.generator)
-                    .try_into()
-                    .unwrap();
+                    .force_into();
 
                 let value2 = ensure!(self.builder.build_load(llvm_ty, ptr, ""));
                 value2.as_instruction_value()
@@ -269,8 +262,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     }
 
     fn alloca_place(&mut self, ty: Ty<'tcx>) -> Place<'ll> {
-        let layout = self.generator.tcx.layout_of(ty).ok().unwrap();
-        let align = layout.align.abi;
+        let layout = self.generator.tcx.layout_of(ty).unwrap();
+        let align = layout.align;
 
         let array_ty = self.generator.context.i8_type()
             .array_type(layout.size.in_bytes as u32);
@@ -308,14 +301,12 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             Register(_) => (cg_place, ty),
             Field { field, ty: res_ty, .. } => {
                 let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator)
-                    .try_into()
-                    .unwrap();
+                    .force_into();
 
                 let value = ensure!(self.builder.build_struct_gep(llvm_ty, cg_place.value, field.raw(), ""));
                 let res_layout = self.generator.tcx.layout_of(res_ty)
-                    .ok()
                     .unwrap();
-                (Place { value, align: res_layout.align.abi }, res_ty)
+                (Place { value, align: res_layout.align }, res_ty)
             }
             Index { idx, .. } => {
                 let element = match ty {
@@ -323,7 +314,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     Ty(TyKind::String) => self.generator.tcx.basic_types.byte,
                     _ => panic!("Can't index {ty:?}"),
                 };
-                let element_layout = self.generator.tcx.layout_of(element).ok().unwrap();
+                let element_layout = self.generator.tcx.layout_of(element).unwrap();
                 let ptr = match ty {
                     Ty(TyKind::DynamicArray(..) | TyKind::Slice(..) | TyKind::String) => {
                         let fictional_ty = Ty::new_refrence(self.generator.tcx, element);
@@ -343,7 +334,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let value = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_element, ptr, &[idx], "") });
                 (Place {
                     value,
-                    align: element_layout.align.abi
+                    align: element_layout.align
                 }, element)
             }
             None => unreachable!()
@@ -464,13 +455,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     let value = args[idx];
                     let value = self.lower_operand(value.operand);
 
-                    let layout = self.generator.tcx.layout_of(param.ty).ok().unwrap();
+                    let layout = self.generator.tcx.layout_of(param.ty).unwrap();
                     match (value.kind, layout.repr) {
                         (ValueKind::Immediate(value), type_ir::BackendRepr::Scalar(..)) =>
-                            arguments.push(value.try_into().unwrap()),
+                            arguments.push(value.force_into()),
                         (ValueKind::Pair(value1, value2), type_ir::BackendRepr::ScalarPair(..)) => {    
-                            arguments.push(value1.try_into().unwrap());
-                            arguments.push(value2.try_into().unwrap());
+                            arguments.push(value1.force_into());
+                            arguments.push(value2.force_into());
                         }
                         (ValueKind::Ref(place), type_ir::BackendRepr::Memory) => {
                             // copy the place to a temporary location, so that mutations done in
@@ -493,7 +484,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     },
                     _ => panic!("{ty:?} is not callable")
                 };
-                let result_layout = self.generator.tcx.layout_of(result_ty).ok().unwrap();
+                let result_layout = self.generator.tcx.layout_of(result_ty).unwrap();
 
                 let mut ll_result = None;
                 let mut mem_argload = None;
@@ -568,8 +559,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     (lhs_ty, rhs_ty, BinaryOp::Mul | BinaryOp::Add | BinaryOp::Sub) 
                         if let Ty(TyKind::Int(_, signed)) = lhs_ty && lhs_ty == rhs_ty => {
                         // this is a normal integer addition, mutliplication or subtraction
-                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::IntValue<'ll> = lhs.force_into();
+                        let rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         let res = base_case_handler! {
                             "build_int_"
@@ -596,8 +587,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     (lhs_ty, _rhs_ty, BinaryOp::Div | BinaryOp::Rem) 
                         if let Ty(TyKind::Int(_, signed)) = lhs_ty => {
                         // this is a normal integer division and remainder
-                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::IntValue<'ll> = lhs.force_into();
+                        let rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         let res = base_case_handler! {
                             "build_int_"
@@ -622,8 +613,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Shr) 
                         if let Ty(TyKind::Int(_, signed)) = lhs_ty => {
-                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::IntValue<'ll> = lhs.force_into();
+                        let rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         let res = ensure!(self.builder.build_right_shift(lhs, rhs, *signed, ""));
                         let res = Value {
@@ -634,8 +625,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Shl | BinaryOp::Xor | BinaryOp::Or | BinaryOp::And) 
                         if let Ty(TyKind::Int(..)) = lhs_ty => {
-                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::IntValue<'ll> = lhs.force_into();
+                        let rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         let res = base_case_handler! {
                             "build_"
@@ -658,8 +649,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Eq | BinaryOp::Ne) 
                         if let Ty(TyKind::Int(..)) = lhs_ty => {
-                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::IntValue<'ll> = lhs.force_into();
+                        let rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         let predicate = match op {
                             BinaryOp::Eq => ll::IntPredicate::EQ,
@@ -676,8 +667,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le) 
                         if let Ty(TyKind::Int(.., signed)) = lhs_ty => {
-                        let lhs: ll::IntValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::IntValue<'ll> = lhs.force_into();
+                        let rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         let predicate = base_case_handler! {
                             ""
@@ -705,8 +696,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem | BinaryOp::Add | BinaryOp::Sub) 
                         if let Ty(TyKind::Float(_)) = lhs_ty => {
-                        let lhs: ll::FloatValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::FloatValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::FloatValue<'ll> = lhs.force_into();
+                        let rhs: ll::FloatValue<'ll> = rhs.force_into();
 
                         let res = base_case_handler! {
                             "build_float_"
@@ -730,8 +721,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le) 
                         if let Ty(TyKind::Float(_)) = lhs_ty => {
-                        let lhs: ll::FloatValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::FloatValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::FloatValue<'ll> = lhs.force_into();
+                        let rhs: ll::FloatValue<'ll> = rhs.force_into();
 
                         let predicate = match op {
                             BinaryOp::Eq => ll::FloatPredicate::OEQ,
@@ -751,8 +742,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, rhs_ty, BinaryOp::Add | BinaryOp::Sub) 
                         if let Ty(TyKind::Refrence(ref_ty)) = lhs_ty && let Ty(TyKind::Int(..)) = rhs_ty => {
-                        let lhs: ll::PointerValue<'ll> = lhs.try_into().unwrap();
-                        let mut rhs: ll::IntValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::PointerValue<'ll> = lhs.force_into();
+                        let mut rhs: ll::IntValue<'ll> = rhs.force_into();
 
                         if op == BinaryOp::Sub {
                             rhs = ensure!(self.builder.build_int_nsw_sub(rhs.get_type().const_int(0, false), rhs, ""));
@@ -760,7 +751,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                         let llvm_ty = match ref_ty {
                             Ty(TyKind::Void) => self.generator.context.i8_type().as_basic_type_enum(),
-                            _ => ref_ty.llvm_type(self.generator).try_into().unwrap()
+                            _ => ref_ty.llvm_type(self.generator).force_into()
                         };
 
                         let res = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_ty, lhs, &[rhs], "") });
@@ -772,8 +763,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, rhs_ty, BinaryOp::Sub) 
                         if let Ty(TyKind::Refrence(_)) = lhs_ty && lhs_ty == rhs_ty => {
-                        let lhs: ll::PointerValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::PointerValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::PointerValue<'ll> = lhs.force_into();
+                        let rhs: ll::PointerValue<'ll> = rhs.force_into();
 
                         let res = ensure!(self.builder.build_int_sub(lhs, rhs, ""));
                         let res = Value {
@@ -784,8 +775,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     (lhs_ty, _rhs_ty, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Gt | BinaryOp::Ge | BinaryOp::Lt | BinaryOp::Le) 
                         if let Ty(TyKind::Refrence(_)) = lhs_ty => {
-                        let lhs: ll::PointerValue<'ll> = lhs.try_into().unwrap();
-                        let rhs: ll::PointerValue<'ll> = rhs.try_into().unwrap();
+                        let lhs: ll::PointerValue<'ll> = lhs.force_into();
+                        let rhs: ll::PointerValue<'ll> = rhs.force_into();
 
                         let predicate = match op {
                             BinaryOp::Eq => ll::IntPredicate::EQ,
@@ -814,26 +805,23 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 };
                 let res = match (val_ty, res_ty) {
                     (Ty(TyKind::Int(..)), Ty(TyKind::Int(_, signed))) => {
-                        let int_value: ll::IntValue<'ll> = llvm_value.try_into().unwrap();
+                        let int_value: ll::IntValue<'ll> = llvm_value.force_into();
                         let int_type: ll::IntType<'ll> = res_ty.llvm_type(self.generator)
-                            .try_into()
-                            .unwrap();
+                            .force_into();
                         ensure!(self.builder.build_int_cast_sign_flag(int_value, int_type, *signed, ""))
                             .as_any_value_enum()
                     }
                     (Ty(TyKind::Float(..)), Ty(TyKind::Float(..))) => {
-                        let float_value: ll::FloatValue<'ll> = llvm_value.try_into().unwrap();
+                        let float_value: ll::FloatValue<'ll> = llvm_value.force_into();
                         let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.generator)
-                            .try_into()
-                            .unwrap();
+                            .force_into();
                         ensure!(self.builder.build_float_cast(float_value, float_type, ""))
                             .as_any_value_enum()
                     }
                     (Ty(TyKind::Int(_, signed)), Ty(TyKind::Float(..))) => {
-                        let int_value: ll::IntValue<'ll> = llvm_value.try_into().unwrap();
+                        let int_value: ll::IntValue<'ll> = llvm_value.force_into();
                         let float_type: ll::FloatType<'ll> = res_ty.llvm_type(self.generator)
-                            .try_into()
-                            .unwrap();
+                            .force_into();
 
                         let res = base_case_handler! {
                             "build_"
@@ -932,7 +920,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         is_struct: bool
     ) {
         let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator).force_into();
-        let ty_layout = self.generator.tcx.layout_of(ty).ok().unwrap();
+        let ty_layout = self.generator.tcx.layout_of(ty).unwrap();
         for init in initializers {
             let value = self.lower_operand(init.1.operand);
             let (element_pointer, element_ty, align) = if is_struct {
@@ -942,14 +930,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 };
                 let field = strct.get_field(init.0);
                 let field_ty = self.generator.tcx.type_of(field.def);
-                let field_layout = self.generator.tcx.layout_of(field_ty).ok().unwrap();
+                let field_layout = self.generator.tcx.layout_of(field_ty).unwrap();
 
-                (ptr, field_ty, field_layout.align.abi)
+                (ptr, field_ty, field_layout.align)
             } else {
                 let idx = self.generator.context.i32_type().const_int(init.0.raw() as u64, false);
                 let ptr = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_ty, dest.value, &[idx], "") });
 
-                (ptr, ty, ty_layout.align.abi)
+                (ptr, ty, ty_layout.align)
             };
             let place = Place {
                 value: element_pointer,
@@ -969,7 +957,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         }
 
         let llvm_element: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.generator).force_into();
-        let element_layout = self.generator.tcx.layout_of(ty).ok().unwrap();
+        let element_layout = self.generator.tcx.layout_of(ty).unwrap();
         let llvm_index: ll::IntType<'ll> = self.generator.tcx.basic_types.nuint.llvm_type(self.generator).force_into();
 
         let begin = self.builder.get_insert_block().unwrap();
@@ -987,7 +975,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         let idx_pointer = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_element, dest.value, &[idx], "") });
         let idx_place = Place {
             value: idx_pointer,
-            align: element_layout.align.abi
+            align: element_layout.align
         };
         default.store(idx_place, ty, self);
 
@@ -1022,7 +1010,6 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             }
             intermediate::TerminatorKind::Return { value } => {
                 let layout = self.generator.tcx.layout_of(signature.returns)
-                    .ok()
                     .unwrap();
                 match layout.repr {
                     type_ir::BackendRepr::Scalar(_) => {
@@ -1030,7 +1017,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let Value { kind: ValueKind::Immediate(value), .. } = value else {
                             panic!("ValueKind should match BackendRepr");
                         };
-                        let value: ll::BasicValueEnum<'ll> = value.try_into().unwrap();
+                        let value: ll::BasicValueEnum<'ll> = value.force_into();
                         ensure!(self.builder.build_return(Some(&value)));
                     }
                     type_ir::BackendRepr::ScalarPair(_scalar1, scalar2) => {
@@ -1042,9 +1029,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                         let argument: ll::PointerValue<'ll> = self.function.get_last_param()
                             .unwrap()
-                            .try_into()
-                            .unwrap();
-                        let align = scalar2.align(self.generator).abi;
+                            .force_into();
+                        let align = scalar2.align(self.generator);
                         let place = Place { value: argument, align };
                         let scalar2_ty = scalar2.get_type(self.generator.tcx);
                         let value2 = Value {
@@ -1065,9 +1051,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                             let argument: ll::PointerValue<'ll> = self.function.get_last_param()
                                 .unwrap()
-                                .try_into()
-                                .unwrap();
-                            let place = Place { value: argument, align: layout.align.abi };
+                                .force_into();
+                            let place = Place { value: argument, align: layout.align };
                             let value = Value {
                                 kind: ValueKind::Ref(value),
                                 ty: signature.returns
@@ -1127,7 +1112,6 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         for (idx, param) in signature.params.iter().enumerate() {
             let idx = intermediate::RegisterId::from_usize(idx);
             let param_layout = self.generator.tcx.layout_of(param.ty)
-                .ok()
                 .unwrap();
             let reg = &body.local_registers[idx];
             debug_assert_eq!(reg.kind, intermediate::RegKind::Param);
@@ -1168,9 +1152,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 type_ir::BackendRepr::Memory => {
                     let argument: ll::PointerValue<'ll> = self.function.get_nth_param(arg_idx)
                         .unwrap()
-                        .try_into()
-                        .unwrap();
-                    let align = self.generator.tcx.layout_of(param.ty).ok().unwrap().align.abi;
+                        .force_into();
+                    let align = self.generator.tcx.layout_of(param.ty).unwrap().align;
                     let place = Place { value: argument, align };
                     self.reg_translations[idx] = LocalKind::Place { place, ty: param.ty };
                 }
@@ -1395,9 +1378,7 @@ impl<'tcx> Ty<'tcx> {
             return *cached;
         }
 
-        let layout = ctxt.tcx.layout_of(*self)
-            .ok()
-            .expect("Ty should have valid layout at codegen stage");
+        let layout = ctxt.tcx.layout_of(*self).unwrap();
 
         let ll_type = llvm_lower_type_and_layout(*self, layout, ctxt);
         ctxt.type_translation_cache.borrow_mut().insert(*self, ll_type);
@@ -1431,19 +1412,18 @@ fn llvm_lower_type_and_layout<'ll, 'tcx>(ty: Ty<'tcx>, layout: TypeLayout<'tcx>,
 
             let result_ty = signature.returns;
             let result_layout = ctxt.tcx.layout_of(result_ty)
-                .ok()
                 .unwrap();
 
             let mut param_tys = Vec::<ll::BasicMetadataTypeEnum<'ll>>::with_capacity(signature.params.len());
             for param in signature.params {
-                let layout = ctxt.tcx.layout_of(param.ty).ok().unwrap();
+                let layout = ctxt.tcx.layout_of(param.ty).unwrap();
                 match layout.repr {
                     type_ir::BackendRepr::Scalar(scalar) => { 
-                        param_tys.push(llvm_lower_scalar(scalar, ctxt).try_into().unwrap());
+                        param_tys.push(llvm_lower_scalar(scalar, ctxt).force_into());
                     }
                     type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {    
-                        param_tys.push(llvm_lower_scalar(scalar1, ctxt).try_into().unwrap());
-                        param_tys.push(llvm_lower_scalar(scalar2, ctxt).try_into().unwrap());
+                        param_tys.push(llvm_lower_scalar(scalar1, ctxt).force_into());
+                        param_tys.push(llvm_lower_scalar(scalar2, ctxt).force_into());
                     }
                     type_ir::BackendRepr::Memory => {
                         param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
@@ -1452,13 +1432,13 @@ fn llvm_lower_type_and_layout<'ll, 'tcx>(ty: Ty<'tcx>, layout: TypeLayout<'tcx>,
             }
             return match result_layout.repr {
                 type_ir::BackendRepr::Scalar(_) => {
-                    let ret_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(ctxt).try_into().unwrap();
+                    let ret_ty: ll::BasicTypeEnum<'ll> = result_ty.llvm_type(ctxt).force_into();
                     ll::AnyTypeEnum::FunctionType(ret_ty.fn_type(&param_tys, false))
                 }
                 type_ir::BackendRepr::ScalarPair(scalar1, _) => {
                     // scalar1 is the result_ty, scalar2 passed as an out pointer argument
                     param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
-                    let ret_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, ctxt).try_into().unwrap();
+                    let ret_ty: ll::BasicTypeEnum<'ll> = llvm_lower_scalar(scalar1, ctxt).force_into();
                     ll::AnyTypeEnum::FunctionType(ret_ty.fn_type(&param_tys, false))
                 }
                 type_ir::BackendRepr::Memory => {
@@ -1485,7 +1465,7 @@ fn llvm_lower_type_and_layout<'ll, 'tcx>(ty: Ty<'tcx>, layout: TypeLayout<'tcx>,
     match layout.fields {
         type_ir::Fields::Scalar => unreachable!(),
         type_ir::Fields::Array { count, .. } => {
-            let base_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(ctxt).try_into().unwrap();
+            let base_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(ctxt).force_into();
             ll::AnyTypeEnum::ArrayType(base_ty.array_type(count as u32))
         }
         type_ir::Fields::Struct { ref fields } =>
@@ -1527,11 +1507,8 @@ fn llvm_lower_fields<'ll, 'tcx>(ty: Ty<'tcx>, _field_offsets: impl Iterator<Item
     let field_tys = match ty {
         Ty(TyKind::String | TyKind::Slice(..)) => {
             name = None;
-            let nuint = llvm_lower_scalar(
-                type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false),
-                ctxt)
-                .try_into()
-                .unwrap();
+            let nuint = llvm_lower_scalar(type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false), ctxt)
+                .force_into();
 
             let mut fields = vec![];
             fields.push(ll::BasicTypeEnum::PointerType(ctxt.context.ptr_type(ll::AddressSpace::from(0)))); // void *data;
@@ -1540,11 +1517,8 @@ fn llvm_lower_fields<'ll, 'tcx>(ty: Ty<'tcx>, _field_offsets: impl Iterator<Item
         }
         Ty(TyKind::DynamicArray(..)) => {
             name = None;
-            let nuint = llvm_lower_scalar(
-                type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false),
-                ctxt)
-                .try_into()
-                .unwrap();
+            let nuint = llvm_lower_scalar(type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false), ctxt)
+                .force_into();
 
             let mut fields = vec![];
             fields.push(ll::BasicTypeEnum::PointerType(ctxt.context.ptr_type(ll::AddressSpace::from(0)))); // void *items;
@@ -1557,7 +1531,7 @@ fn llvm_lower_fields<'ll, 'tcx>(ty: Ty<'tcx>, _field_offsets: impl Iterator<Item
             strct.fields()
                 .map(|(_, data)| {
                     let ty = ctxt.tcx.type_of(data.def);
-                    ty.llvm_type(ctxt).try_into().expect("struct fields should be LLVM BasicTypes")
+                    ty.llvm_type(ctxt).force_into()
                 })
                 .collect::<Vec<_>>()
         }

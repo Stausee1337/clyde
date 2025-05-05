@@ -773,7 +773,7 @@ impl Integer {
         }
     }
 
-    pub fn align(&self, provider: &impl DataLayoutExt) -> LLVMAlign {
+    pub fn align(&self, provider: &impl DataLayoutExt) -> Align {
         let data_layout = provider.data_layout();
         use Integer::*;
         match self {
@@ -917,7 +917,7 @@ impl Float {
         }
     }
 
-    pub fn align(&self, provider: &impl DataLayoutExt) -> LLVMAlign {
+    pub fn align(&self, provider: &impl DataLayoutExt) -> Align {
         let data_layout = provider.data_layout();
         match self {
             Float::F32 => data_layout.f32_align,
@@ -1028,29 +1028,6 @@ impl std::fmt::Debug for Align {
     }
 }
 
-/// A special LLVM version of an `Align` containing one `abi` and one `pref` alignment
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LLVMAlign {
-    pub abi: Align,
-    pub pref: Align
-}
-
-impl LLVMAlign {
-    pub const fn from_bits(bits: u64) -> Self {
-        Self {
-            abi: Align::from_bits(bits),
-            pref: Align::from_bits(bits),
-        }
-    }
-
-    pub const fn from_align(align: Align) -> Self {
-        Self {
-            abi: align,
-            pref: align,
-        } 
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Size {
     pub in_bytes: u64
@@ -1103,7 +1080,7 @@ pub enum Scalar {
 }
 
 impl Scalar {
-    pub fn align(&self, provider: &impl DataLayoutExt) -> LLVMAlign {
+    pub fn align(&self, provider: &impl DataLayoutExt) -> Align {
         match self {
             Scalar::Int(int, _) => int.align(provider),
             Scalar::Float(float) => float.align(provider),
@@ -1147,7 +1124,7 @@ pub enum BackendRepr {
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct LayoutData {
     pub size: Size,
-    pub align: LLVMAlign,
+    pub align: Align,
     pub fields: Fields,
     pub repr: BackendRepr
 }
@@ -1164,12 +1141,12 @@ impl<'tcx> std::ops::Deref for TypeLayout<'tcx> {
 }
 
 impl<'tcx> TypeLayout<'tcx> {
-    fn new(tcx: TyCtxt<'tcx>, size: Size, align: LLVMAlign, fields: Fields, repr: BackendRepr) -> Self {
+    fn new(tcx: TyCtxt<'tcx>, size: Size, align: Align, fields: Fields, repr: BackendRepr) -> Self {
         tcx.intern_layout(LayoutData { size, align, fields, repr })
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum LayoutError {
     /// The Ty was erroneous to begin with (TyKind::Error), no sensible layout can be computed
     Erroneous,
@@ -1248,15 +1225,15 @@ impl<'tcx> LayoutCtxt<'tcx> {
     }
 
     fn layout_for_struct(&self, fields: IndexVec<FieldIdx, TypeLayout<'tcx>>) -> TypeLayout<'tcx> {
-        let mut abi = Align::ONE;
+        let mut align = Align::ONE;
         let mut offset = 0;
         let mut offsets = IndexVec::new();
         let mut size = 0;
         for field in &fields {
             size += field.size.in_bytes;
-            abi = std::cmp::max(abi, field.align.abi);
-            if offset % field.align.abi.in_bytes() != 0 {
-                offset = align_up(offset, field.align.abi);
+            align = std::cmp::max(align, field.align);
+            if offset % field.align.in_bytes() != 0 {
+                offset = align_up(offset, field.align);
             }
             offsets.push(offset);
         }
@@ -1281,7 +1258,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         TypeLayout::new(
             self.tcx,
             Size::from_bytes(size),
-            LLVMAlign::from_align(abi),
+            align,
             Fields::Struct { fields: offsets },
             repr
         )
@@ -1314,7 +1291,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 TypeLayout::new(
                     self.tcx,
                     Size::from_bytes(0),
-                    LLVMAlign::from_align(Align::ONE),
+                    Align::ONE,
                     Fields::Struct { fields: IndexVec::new() },
                     BackendRepr::Memory
                 ),
@@ -1395,7 +1372,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 TypeLayout::new(
                     self.tcx,
                     Size::from_bytes(0),
-                    LLVMAlign::from_align(Align::ONE),
+                    Align::ONE,
                     Fields::Struct { fields: IndexVec::new() },
                     BackendRepr::Memory
                 ),

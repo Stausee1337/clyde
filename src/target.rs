@@ -2,39 +2,39 @@ use std::str::FromStr;
 
 use inkwell::targets::{self as ll, TargetTriple};
 
-use crate::type_ir::{Align, LLVMAlign, Endianness, Size};
+use crate::type_ir::{Align, Endianness, Size};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub struct TargetDataLayout {
     pub endian: Endianness,
 
-    pub i8_align: LLVMAlign,
-    pub i16_align: LLVMAlign,
-    pub i32_align: LLVMAlign,
-    pub i64_align: LLVMAlign,
+    pub i8_align: Align,
+    pub i16_align: Align,
+    pub i32_align: Align,
+    pub i64_align: Align,
 
-    pub f32_align: LLVMAlign,
-    pub f64_align: LLVMAlign,
+    pub f32_align: Align,
+    pub f64_align: Align,
 
     pub ptr_size: Size,
-    pub ptr_align: LLVMAlign,
+    pub ptr_align: Align,
 }
 
 impl Default for TargetDataLayout {
     fn default() -> Self {
         Self {
             endian: Endianness::Little,
-            i8_align: LLVMAlign::from_bits(8),
-            i16_align: LLVMAlign::from_bits(16),
-            i32_align: LLVMAlign::from_bits(32),
-            i64_align: LLVMAlign::from_bits(64),
+            i8_align: Align::from_bits(8),
+            i16_align: Align::from_bits(16),
+            i32_align: Align::from_bits(32),
+            i64_align: Align::from_bits(64),
 
-            f32_align: LLVMAlign::from_bits(32),
-            f64_align: LLVMAlign::from_bits(64),
+            f32_align: Align::from_bits(32),
+            f64_align: Align::from_bits(64),
 
             ptr_size: Size::from_bits(64),
-            ptr_align: LLVMAlign::from_bits(64),
+            ptr_align: Align::from_bits(64),
         }
     }
 }
@@ -67,16 +67,9 @@ impl TargetDataLayout {
             ($expr:expr) =>  { u64::from_str($expr).map_err(|_| ()) }
         }
 
-        fn parse_llvm_align(abi: &str, pref: Option<&&str>) -> Result<LLVMAlign, ()> {
+        fn parse_llvm_align(abi: &str) -> Result<Align, ()> {
             let abi = u64_from_str!(abi)?;
-            let Some(pref) = pref else {
-                return Ok(LLVMAlign::from_bits(abi));
-            };
-            let pref = u64_from_str!(pref)?;
-            Ok(LLVMAlign {
-                abi: Align::from_bits(abi),
-                pref: Align::from_bits(pref)
-            })
+            Ok(Align::from_bits(abi))
         }
 
         for spec in specs {
@@ -84,27 +77,27 @@ impl TargetDataLayout {
             match *comps {
                 ["e", ..] => this.endian = Endianness::Little,
                 ["E", ..] => this.endian = Endianness::Big,
-                ["p", size, abi, ref pref @ ..] => {
+                ["p", size, abi] => {
                     let size = u64_from_str!(size)?;
                     let size = Size::from_bits(size);
 
-                    let align = parse_llvm_align(abi, pref.first())?;
+                    let align = parse_llvm_align(abi)?;
                     this.ptr_size = size;
                     this.ptr_align = align;
                 }
-                [i, abi, ref pref @ ..] if i.starts_with("i") => {
+                [i, abi] if i.starts_with("i") => {
                     let size = u64::from_str(&i[1..]).map_err(|_| ())?;
                     let size = Size::from_bits(size);
 
-                    let align = parse_llvm_align(abi, pref.first())?;
+                    let align = parse_llvm_align(abi)?;
 
                     *match_from_size!(int size) = align; 
                 }
-                [f, abi, ref pref @ ..] if f.starts_with("f") => {
+                [f, abi] if f.starts_with("f") => {
                     let size = u64::from_str(&f[1..]).map_err(|_| ())?;
                     let size = Size::from_bits(size);
 
-                    let align = parse_llvm_align(abi, pref.first())?;
+                    let align = parse_llvm_align(abi)?;
 
                     *match_from_size!(float size) = align; 
                 }
