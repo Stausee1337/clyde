@@ -132,7 +132,7 @@ define_queries! {
     fn build_ir(key: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
 
     #[handle_cycle_error]
-    fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TypeLayout<'tcx>, type_ir::LayoutError>;
+    fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TyLayoutTuple<'tcx>, type_ir::LayoutError>;
 }
 
 macro_rules! define_query_caches {
@@ -356,7 +356,7 @@ define_internables! {
     into adt_defs intern intern_adt(type_ir::AdtKind) -> type_ir::AdtDef<'tcx>;
     into tys      intern intern_ty(type_ir::TyKind<'tcx>) -> type_ir::Ty<'tcx>;
     into consts   intern intern_const(type_ir::ConstKind<'tcx>) -> type_ir::Const<'tcx>;
-    into layouts  intern intern_layout(type_ir::LayoutData) -> type_ir::TypeLayout<'tcx>;
+    into layouts  intern intern_layout(type_ir::LayoutData) -> type_ir::Layout<'tcx>;
 }
 
 macro_rules! define_interners {

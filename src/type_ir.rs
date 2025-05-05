@@ -1129,10 +1129,24 @@ pub struct LayoutData {
     pub repr: BackendRepr
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct TypeLayout<'tcx>(pub &'tcx LayoutData);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TyLayoutTuple<'tcx> {
+    pub ty: Ty<'tcx>,
+    pub layout: Layout<'tcx>
+}
 
-impl<'tcx> std::ops::Deref for TypeLayout<'tcx> {
+impl<'tcx> std::ops::Deref for TyLayoutTuple<'tcx> {
+    type Target = LayoutData;
+
+    fn deref(&self) -> &Self::Target {
+        self.layout.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Layout<'tcx>(pub &'tcx LayoutData);
+
+impl<'tcx> std::ops::Deref for Layout<'tcx> {
     type Target = LayoutData;
 
     fn deref(&self) -> &Self::Target {
@@ -1140,7 +1154,7 @@ impl<'tcx> std::ops::Deref for TypeLayout<'tcx> {
     }
 }
 
-impl<'tcx> TypeLayout<'tcx> {
+impl<'tcx> Layout<'tcx> {
     fn new(tcx: TyCtxt<'tcx>, size: Size, align: Align, fields: Fields, repr: BackendRepr) -> Self {
         tcx.intern_layout(LayoutData { size, align, fields, repr })
     }
@@ -1154,7 +1168,7 @@ pub enum LayoutError {
     Cyclic
 }
 
-impl<'tcx> FromCycleError<'tcx> for Result<TypeLayout<'tcx>, LayoutError> {
+impl<'tcx> FromCycleError<'tcx> for Result<TyLayoutTuple<'tcx>, LayoutError> {
     fn from_cycle_error(_tcx: TyCtxt<'tcx>) -> Self {
         Result::Err(LayoutError::Cyclic)
     }
@@ -1173,7 +1187,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         }
     }
 
-    fn layout_for_array_like(&self, dynamic_sized: bool) -> TypeLayout<'tcx> {
+    fn layout_for_array_like(&self, dynamic_sized: bool) -> Layout<'tcx> {
         let data_layout = self.data_layout();
         let align = data_layout.ptr_align;
         let ptr_size = data_layout.ptr_size;
@@ -1187,7 +1201,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             fields.push(ptr_size.in_bytes * 2);
         }
 
-        TypeLayout::new(
+        Layout::new(
             self.tcx,
             Size::from_bytes(ptr_size.in_bytes * (2 + dynamic_sized as u64)),
             align,
@@ -1200,10 +1214,10 @@ impl<'tcx> LayoutCtxt<'tcx> {
         )
     }
 
-    fn layout_for_integer(&self, integer: Integer, signedness: bool) -> TypeLayout<'tcx> {
+    fn layout_for_integer(&self, integer: Integer, signedness: bool) -> Layout<'tcx> {
         let size = integer.size(self);
         let align = integer.align(self);
-        TypeLayout::new(
+        Layout::new(
             self.tcx,
             size,
             align,
@@ -1212,10 +1226,10 @@ impl<'tcx> LayoutCtxt<'tcx> {
         )
     }
 
-    fn layout_for_float(&self, float: Float) -> TypeLayout<'tcx> {
+    fn layout_for_float(&self, float: Float) -> Layout<'tcx> {
         let size = float.size();
         let align = float.align(self);
-        TypeLayout::new(
+        Layout::new(
             self.tcx,
             size,
             align,
@@ -1224,7 +1238,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         )
     }
 
-    fn layout_for_struct(&self, fields: IndexVec<FieldIdx, TypeLayout<'tcx>>) -> TypeLayout<'tcx> {
+    fn layout_for_struct(&self, fields: IndexVec<FieldIdx, Layout<'tcx>>) -> Layout<'tcx> {
         let mut align = Align::ONE;
         let mut offset = 0;
         let mut offsets = IndexVec::new();
@@ -1255,7 +1269,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
         }
 
 
-        TypeLayout::new(
+        Layout::new(
             self.tcx,
             Size::from_bytes(size),
             align,
@@ -1264,31 +1278,31 @@ impl<'tcx> LayoutCtxt<'tcx> {
         )
     }
 
-    fn layout_for_array(&self, ty: Ty<'tcx>, count: u64) -> Result<TypeLayout<'tcx>, LayoutError> {
-        let layout = match self.tcx.layout_of(ty) {
-            Ok(layout) => layout,
+    fn layout_for_array(&self, ty: Ty<'tcx>, count: u64) -> Result<Layout<'tcx>, LayoutError> {
+        let tuple = match self.tcx.layout_of(ty) {
+            Ok(tuple) => tuple,
             Err(LayoutError::Cyclic) => {
                 // A type refrencing itself like this should only be possible using type aliases 
                 // (NOTE: in the future maybe through compile-time meta programming)
                 // TODO: once type aliases become a thing: unintern the Ty IR into it's AST Node
                 todo!("type alias cyclic types");
             }
-            err @ Err(_) => return err
+            Err(err) => return Err(err)
         };
-        let align = layout.align;
-        Ok(TypeLayout::new(
+        let align = tuple.layout.align;
+        Ok(Layout::new(
             self.tcx,
-            Size { in_bytes: count * layout.size.in_bytes },
+            Size { in_bytes: count * tuple.layout.size.in_bytes },
             align,
-            Fields::Array { stride: layout.size.in_bytes, count },
+            Fields::Array { stride: tuple.layout.size.in_bytes, count },
             BackendRepr::Memory
         ))
     }
 
-    fn calculate_layout_for_ty(&self, ty: Ty<'tcx>) -> Result<TypeLayout<'tcx>, LayoutError> {
+    fn calculate_layout_for_ty(&self, ty: Ty<'tcx>) -> Result<TyLayoutTuple<'tcx>, LayoutError> {
         let layout = match ty {
             Ty(TyKind::Void) | Ty(TyKind::Never) =>
-                TypeLayout::new(
+                Layout::new(
                     self.tcx,
                     Size::from_bytes(0),
                     Align::ONE,
@@ -1296,9 +1310,9 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     BackendRepr::Memory
                 ),
             Ty(TyKind::Bool) =>
-                self.tcx.layout_of(self.tcx.basic_types.byte)?,
+                return self.tcx.layout_of(self.tcx.basic_types.byte),
             Ty(TyKind::Char) =>
-                self.tcx.layout_of(self.tcx.basic_types.uint)?,
+                return self.tcx.layout_of(self.tcx.basic_types.uint),
             Ty(TyKind::String) =>
                 self.layout_for_array_like(false),
 
@@ -1311,8 +1325,8 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     AdtDef(AdtKind::Struct(strct)) => {
                         let mut fields = IndexVec::new();
                         for field in strct.fields.iter() {
-                            let layout = match self.tcx.layout_of(self.tcx.type_of(field.def)) {
-                                Ok(layout) => layout,
+                            let tuple = match self.tcx.layout_of(self.tcx.type_of(field.def)) {
+                                Ok(tuple) => tuple,
                                 err @ Err(LayoutError::Cyclic) => {
                                     let ast::Node::Item(item) = self.tcx.node_by_def_id(strct.def) else { unreachable!() };
                                     let ast::Node::FieldDef(def) = self.tcx.node_by_def_id(field.def) else { unreachable!() };
@@ -1321,7 +1335,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                                 }
                                 err @ Err(_) => return err
                             };
-                            fields.push(layout); 
+                            fields.push(tuple.layout); 
                         }
                         self.layout_for_struct(fields)
                     }
@@ -1331,7 +1345,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
             }
             Ty(TyKind::Refrence(..)) => {
                 let data_layout = self.data_layout();
-                TypeLayout::new(
+                Layout::new(
                     self.tcx,
                     data_layout.ptr_size,
                     data_layout.ptr_align,
@@ -1352,8 +1366,8 @@ impl<'tcx> LayoutCtxt<'tcx> {
             Ty(TyKind::Tuple(tys)) => {
                 let mut fields = IndexVec::new();
                 for ty in tys.iter() {
-                    let layout = match self.tcx.layout_of(*ty) {
-                        Ok(layout) => layout,
+                    let tuple = match self.tcx.layout_of(*ty) {
+                        Ok(tuple) => tuple,
                         Err(LayoutError::Cyclic) => {
                             // A type refrencing itself like this should only be possible using type aliases 
                             // (NOTE: in the future maybe through compile-time meta programming)
@@ -1362,14 +1376,14 @@ impl<'tcx> LayoutCtxt<'tcx> {
                         }
                         err @ Err(_) => return err
                     };
-                    fields.push(layout); 
+                    fields.push(tuple.layout); 
                 }
                 self.layout_for_struct(fields)
             },
             Ty(TyKind::DynamicArray(_)) =>
                 self.layout_for_array_like(true),
             Ty(TyKind::Function(..)) => 
-                TypeLayout::new(
+                Layout::new(
                     self.tcx,
                     Size::from_bytes(0),
                     Align::ONE,
@@ -1378,7 +1392,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 ),
             Ty(TyKind::Err) => return Err(LayoutError::Erroneous),
         };
-        Ok(layout)
+        Ok(TyLayoutTuple { ty, layout })
     }
 
     fn report_cycle_error(&self, item_span: Span, recursion_span: Span, kind: std::fmt::Arguments) {
@@ -1395,7 +1409,7 @@ impl<'tcx> DataLayoutExt for LayoutCtxt<'tcx> {
     }
 }
 
-pub fn layout_of<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Result<TypeLayout<'tcx>, LayoutError> {
+pub fn layout_of<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Result<TyLayoutTuple<'tcx>, LayoutError> {
     let ctxt = LayoutCtxt::new(tcx);
     ctxt.calculate_layout_for_ty(ty)
 }
