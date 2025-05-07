@@ -3,7 +3,7 @@ use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHashe
 use foldhash::quality::FixedState;
 use hashbrown::hash_table::{HashTable, Entry as TableEntry, VacantEntry, OccupiedEntry};
 
-use crate::{analysis::{intermediate, resolve::ResolutionResults, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::ast::{self, DefId, NodeId}, target, type_ir};
+use crate::{analysis::{intermediate, resolve::ResolutionResults, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::{ast::{self, DefId, NodeId}, symbol::Symbol}, target, type_ir};
 
 pub struct GlobalCtxt<'tcx> {
     pub resolutions: ResolutionResults<'tcx>,
@@ -111,10 +111,14 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn module_info(self, module: &'tcx ast::SourceFile<'tcx>) -> ModuleInfo {
         let path = &self.resolutions.node_to_path_map[&module.node_id];
         let file_name = path.file_name().unwrap();
-        let file_name = std::str::from_utf8(file_name.as_encoded_bytes()).unwrap();
-        // _clyHhashF5basic_R5print
+        let source_file_name = std::str::from_utf8(file_name.as_encoded_bytes()).unwrap();
 
-        todo!()
+        let mangled_name = self.resolutions.mangled_names[&module.node_id];
+
+        ModuleInfo { 
+            mangled_name,
+            source_file_name: source_file_name.to_string()
+        }
     }
 }
 
@@ -125,7 +129,7 @@ impl<'tcx> target::DataLayoutExt for TyCtxt<'tcx> {
 }
 
 pub struct ModuleInfo {
-    pub mangled_name: String,
+    pub mangled_name: Symbol,
     pub source_file_name: String
 }
 

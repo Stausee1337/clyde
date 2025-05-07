@@ -1,7 +1,8 @@
 
-use std::{collections::VecDeque, path::{Path, PathBuf}, rc::Rc, str::FromStr, io};
+use std::{collections::VecDeque, ffi::OsString, io, path::{Path, PathBuf}, rc::Rc, str::FromStr, fmt::Write};
 
 use hashbrown::{HashMap, hash_map::Entry};
+use sha1::Digest;
 
 use crate::{diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
 use super::node_visitor::{self, Visitor};
@@ -53,7 +54,7 @@ struct Declaration {
 
 #[derive(Clone)]
 struct Local {
-    site: ast::NodeId,
+    site: NodeId,
     span: Span,
 }
 
@@ -68,7 +69,8 @@ struct ResolutionState<'tcx> {
     diagnostics: &'tcx DiagnosticsCtxt,
     rib_map: HashMap<NodeId, TFGRib>,
     node_to_path_map: HashMap<NodeId, PathBuf>,
-    import_resolutions: HashMap<ast::NodeId, Result<&'tcx ast::SourceFile<'tcx>, ()>>,
+    import_resolutions: HashMap<NodeId, Result<&'tcx ast::SourceFile<'tcx>, ()>>,
+    mangled_names: HashMap<NodeId, Symbol>,
     file_collection_state: HashMap<PathBuf, CollectionState<'tcx>>,
     declarations: index_vec::IndexVec<ast::DefId, Definition>,
 }
@@ -79,6 +81,7 @@ pub struct ResolutionResults<'tcx> {
     pub entry: Option<ast::DefId>,
     pub declarations: index_vec::IndexVec<ast::DefId, Definition>,
     pub node_to_path_map: HashMap<NodeId, PathBuf>,
+    pub mangled_names: HashMap<NodeId, Symbol>,
 }
 
 impl<'tcx> ResolutionState<'tcx> {
@@ -92,6 +95,7 @@ impl<'tcx> ResolutionState<'tcx> {
             rib_map: Default::default(),
             node_to_path_map: Default::default(),
             import_resolutions: Default::default(),
+            mangled_names: Default::default(),
             declarations: Default::default(),
             file_collection_state: Default::default(),
         }
@@ -123,7 +127,8 @@ impl<'tcx> ResolutionState<'tcx> {
             ast_info,
             items: self.items, entry,
             declarations: self.declarations,
-            node_to_path_map: self.node_to_path_map
+            node_to_path_map: self.node_to_path_map,
+            mangled_names: self.mangled_names,
         }
     }
 }
@@ -160,7 +165,7 @@ impl TFGRib {
         &mut self,
         kind: DefinitionKind,
         name: ast::Ident,
-        site: ast::NodeId,
+        site: NodeId,
         scope: ast::Scope,
         resolution: &mut ResolutionState
     ) {
@@ -208,7 +213,10 @@ struct EarlyCollectionPass<'r, 'tcx> {
     resolution: &'r mut ResolutionState<'tcx>,
     queue: VecDeque<PathBuf>,
     ribs: Vec<TFGRib>,
-    current_file: Option<&'tcx ast::SourceFile<'tcx>>
+    current_file: Option<&'tcx ast::SourceFile<'tcx>>,
+    root_hash: u32,
+    root_path: PathBuf,
+    root_file: String
 }
 
 impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
@@ -217,11 +225,39 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
             ribs: vec![],
             queue: Default::default(),
             resolution,
-            current_file: None
+            current_file: None,
+            root_hash: 0,
+            root_path: PathBuf::new(),
+            root_file: String::new(),
         }
     }
 
-    fn get_path(&mut self, module: &'tcx ast::SourceFile<'tcx>) -> &Path {
+    fn mangle_module_name(&mut self, module: &ast::SourceFile) {
+        let node = module.node_id;
+        let module = self.get_path(module).to_owned();
+        let mut common_components = 0;
+        for (a, b) in std::iter::zip(self.root_path.components(), module.components()) {
+            if a != b {
+                panic!("{module:?} is not relative to {:?}, wich is currently not supported", self.root_path);
+            }
+            common_components += 1;
+        }
+        let mut relative_path = PathBuf::new();
+        relative_path.extend(module.components().skip(common_components));
+        relative_path.set_extension("");
+        let mut mangled_name = format!("_clyH{:8x}F{}{}_", self.root_hash, self.root_file.len(), self.root_file);
+        for comp in relative_path.components() {
+            let component = comp.as_os_str().to_string_lossy();
+            let component = component.replace(|ch: char| !ch.is_alphanumeric(), "_");
+            write!(mangled_name, "{}", component.len()).unwrap();
+            mangled_name.push_str(&component);
+        }
+
+        let mangled_name = Symbol::intern(&mangled_name);
+        self.resolution.mangled_names.insert(node, mangled_name);
+    }
+
+    fn get_path(&mut self, module: &ast::SourceFile) -> &Path {
         let file_cacher = self.resolution.file_cacher.clone();
         match self.resolution.node_to_path_map.entry(module.node_id) {
             Entry::Vacant(entry) => {
@@ -275,9 +311,36 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
         ast_info: &'tcx ast::AstInfo<'tcx>,
     ) {
         let path = self.get_path(entry).to_owned();
+        
+        {
+            self.root_path.push(&path);
+            self.root_path.pop();
+
+            let mut sha1 = sha1::Sha1::default();
+            for component in self.root_path.components() {
+                let bytes = component.as_os_str().as_encoded_bytes();
+                sha1.update(bytes);
+            }
+
+            let mut root_hash = [0u8; 4];
+
+            let hash = sha1.finalize();
+            root_hash.copy_from_slice(&hash[0..4]);
+
+            self.root_hash = u32::from_le_bytes(root_hash);
+
+            let mut file_name = PathBuf::from(path.file_name().unwrap());
+            file_name.set_extension("");
+            let component = file_name.as_os_str().to_string_lossy();
+            let component = component.replace(|ch: char| !ch.is_alphanumeric(), "_");
+
+            self.root_file = component;
+        }
+
         self.current_file.replace(entry);
         self.visit(entry);
         self.current_file.take();
+
         self.resolution.file_collection_state.insert(path, CollectionState::Resolved(entry));
 
         while let Some(path) = self.queue.pop_front() {
@@ -313,7 +376,7 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
         }
     }
 
-    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: ast::NodeId, scope: ast::Scope) {
+    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: NodeId, scope: ast::Scope) {
         let rib = self.ribs.last_mut().expect(".define neeeds to be called in valid TFGRib");
         rib.define(kind, name, site, scope, self.resolution);
     }
@@ -334,6 +397,7 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
 
 impl<'r, 'tcx> Visitor for EarlyCollectionPass<'r, 'tcx> {
     fn visit(&mut self, tree: &ast::SourceFile) {
+        self.mangle_module_name(tree);
         self.with_rib(tree.node_id, |this| {
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
             node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
@@ -442,7 +506,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         self.ribs.pop().unwrap();
     }
 
-    fn enter_loop_ctxt<F: FnOnce(&mut Self)>(&mut self, owner: ast::NodeId, do_work: F) {
+    fn enter_loop_ctxt<F: FnOnce(&mut Self)>(&mut self, owner: NodeId, do_work: F) {
         self.loop_owners.push(owner);
         do_work(self);
         self.loop_owners.pop();
@@ -452,7 +516,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         self.ribs.len() > 0
     }
 
-    fn define(&mut self, name: ast::Ident, site: ast::NodeId) {
+    fn define(&mut self, name: ast::Ident, site: NodeId) {
         assert!(self.has_rib(), "NameResolutionPass::define() called outside of vaild scope");
         let symbol = name.symbol;
         if let Some(decl) = self.ribs.last().and_then(|rib| rib.symspace.get(&symbol)) {

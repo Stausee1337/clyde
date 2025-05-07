@@ -1338,7 +1338,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
     }
 
     fn create_module_by_info(info: ModuleInfo, context: &'ll ll::Context, arena: &'ll bumpalo::Bump) -> &'ll ll::Module<'ll> {
-        let module = context.create_module(&info.mangled_name);
+        let module = context.create_module(info.mangled_name.get());
         module.set_source_file_name(&info.source_file_name);
         arena.alloc(module)
     }

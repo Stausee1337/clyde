@@ -27,6 +27,7 @@ phf = { version = "0.11.2", features = ["macros"] }
 inkwell = { path = "crates/inkwell", version = "0.6.0", default-features = false, features = ["llvm18-1", "target-x86"] }
 tinyvec = "1.8.0"
 bytemuck = { version = "1.22.0", features = ["derive"] }
+sha1 = "0.10.6"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "0.38.37", features = ["mm"] }
