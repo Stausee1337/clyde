@@ -17,11 +17,11 @@ Ordered (by priority):
     √ Refactor Consts
     √ Parser Recovery and Tree-like AST Node ownership
 - Directives (`#if`, `#include`, etc ...)
-    - Files and Imports -> Namespaces
-      AND propper Name mangling for clyde functions
+    - Files and Imports AND propper Name mangling for clyde functions
     - `#c_call` for non-mangled names
     - Behavioural tests (and testing suite) to have some foundational test cases
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
+    - Namespaces
     - Enums
 - Generic Functions and Adts
     - Monomorphization

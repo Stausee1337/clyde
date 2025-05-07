@@ -1261,7 +1261,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         }
 
         let node = self.tcx.node_by_def_id(def);
-        let ast::Node::Item(item @ ast::Item { kind: ast::ItemKind::Function(..), .. }) = node else {
+        let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node else {
             panic!("CodegenCtxt::push_dependency is exclusive to functions");
         };
 
@@ -1276,10 +1276,10 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         let ty = self.tcx.type_of(def);
         let layout = self.tcx.layout_of(ty).unwrap();
 
-        let clyde_name = item.ident().symbol;
+        let mangled_name = self.tcx.resolutions.mangled_names[&node.node_id()];
         let function = module
             .add_function(
-                &format!("clyde${}", clyde_name.get()),
+                mangled_name.get(),
                 layout.llvm_type(self).into_function_type(),
                 Some(ll::Linkage::External)
             );

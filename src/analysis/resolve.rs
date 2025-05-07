@@ -4,7 +4,7 @@ use std::{collections::VecDeque, ffi::OsString, io, path::{Path, PathBuf}, rc::R
 use hashbrown::{HashMap, hash_map::Entry};
 use sha1::Digest;
 
-use crate::{diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
+use crate::{diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, IntoNode, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
 use super::node_visitor::{self, Visitor};
 
 /// AST (&tree) 
@@ -73,6 +73,7 @@ struct ResolutionState<'tcx> {
     mangled_names: HashMap<NodeId, Symbol>,
     file_collection_state: HashMap<PathBuf, CollectionState<'tcx>>,
     declarations: index_vec::IndexVec<ast::DefId, Definition>,
+    ast_info: &'tcx ast::AstInfo<'tcx>,
 }
 
 pub struct ResolutionResults<'tcx> {
@@ -85,7 +86,7 @@ pub struct ResolutionResults<'tcx> {
 }
 
 impl<'tcx> ResolutionState<'tcx> {
-    fn new(session: &'tcx Session) -> ResolutionState<'tcx> {
+    fn new(session: &'tcx Session, ast_info: &'tcx ast::AstInfo<'tcx>) -> ResolutionState<'tcx> {
         let file_cacher = session.file_cacher();
         let diagnostics = session.diagnostics();
         ResolutionState {
@@ -98,6 +99,7 @@ impl<'tcx> ResolutionState<'tcx> {
             mangled_names: Default::default(),
             declarations: Default::default(),
             file_collection_state: Default::default(),
+            ast_info
         }
     }
 
@@ -120,11 +122,11 @@ impl<'tcx> ResolutionState<'tcx> {
         (types, functions, globals)
     }
 
-    fn results(self, entry: NodeId, ast_info: &'tcx ast::AstInfo<'tcx>) -> ResolutionResults<'tcx> {
+    fn results(self, entry: NodeId) -> ResolutionResults<'tcx> {
         let entry_module = &self.rib_map[&entry];
         let entry = entry_module.functions.get(&sym::main).map(|decl| decl.site); 
         ResolutionResults {
-            ast_info,
+            ast_info: self.ast_info,
             items: self.items, entry,
             declarations: self.declarations,
             node_to_path_map: self.node_to_path_map,
@@ -214,7 +216,7 @@ struct EarlyCollectionPass<'r, 'tcx> {
     queue: VecDeque<PathBuf>,
     ribs: Vec<TFGRib>,
     current_file: Option<&'tcx ast::SourceFile<'tcx>>,
-    root_hash: u32,
+    root_hash: String,
     root_path: PathBuf,
     root_file: String
 }
@@ -226,13 +228,13 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
             queue: Default::default(),
             resolution,
             current_file: None,
-            root_hash: 0,
+            root_hash: String::new(),
             root_path: PathBuf::new(),
             root_file: String::new(),
         }
     }
 
-    fn mangle_module_name(&mut self, module: &ast::SourceFile) {
+    fn mangle_module_name(&mut self, module: &'tcx ast::SourceFile<'tcx>) {
         let node = module.node_id;
         let module = self.get_path(module).to_owned();
         let mut common_components = 0;
@@ -245,7 +247,7 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
         let mut relative_path = PathBuf::new();
         relative_path.extend(module.components().skip(common_components));
         relative_path.set_extension("");
-        let mut mangled_name = format!("_clyH{:8x}F{}{}_", self.root_hash, self.root_file.len(), self.root_file);
+        let mut mangled_name = format!("_clyH{}{}F{}{}_", self.root_hash.len(), self.root_hash, self.root_file.len(), self.root_file);
         for comp in relative_path.components() {
             let component = comp.as_os_str().to_string_lossy();
             let component = component.replace(|ch: char| !ch.is_alphanumeric(), "_");
@@ -257,7 +259,25 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
         self.resolution.mangled_names.insert(node, mangled_name);
     }
 
-    fn get_path(&mut self, module: &ast::SourceFile) -> &Path {
+    fn mangle_item_name(&mut self, item: &'tcx ast::Item<'tcx>) {
+        let mut node = item.into_node();
+        {
+            let owners = self.resolution.ast_info.global_owners.borrow();
+            loop {
+                if let ast::Node::SourceFile(..) = node {
+                    break;
+                }
+                node = owners[node.node_id().owner].node;
+            }
+        }
+        let mangled_file_name = self.resolution.mangled_names[&node.node_id()];
+        let ident = item.ident();
+        let name = ident.symbol.get();
+        let name = format!("{}{}{}", mangled_file_name.get(), name.len(), name);
+        self.resolution.mangled_names.insert(item.node_id, Symbol::intern(&name));
+    }
+
+    fn get_path(&mut self, module: &'tcx ast::SourceFile<'tcx>) -> &Path {
         let file_cacher = self.resolution.file_cacher.clone();
         match self.resolution.node_to_path_map.entry(module.node_id) {
             Entry::Vacant(entry) => {
@@ -322,12 +342,12 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
                 sha1.update(bytes);
             }
 
-            let mut root_hash = [0u8; 4];
+            let mut root_hash = [0u8; 8];
 
             let hash = sha1.finalize();
-            root_hash.copy_from_slice(&hash[0..4]);
+            root_hash.copy_from_slice(&hash[0..8]);
 
-            self.root_hash = u32::from_le_bytes(root_hash);
+            self.root_hash = base62::encode(u64::from_le_bytes(root_hash));
 
             let mut file_name = PathBuf::from(path.file_name().unwrap());
             file_name.set_extension("");
@@ -337,9 +357,7 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
             self.root_file = component;
         }
 
-        self.current_file.replace(entry);
         self.visit(entry);
-        self.current_file.take();
 
         self.resolution.file_collection_state.insert(path, CollectionState::Resolved(entry));
 
@@ -352,9 +370,7 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
                 }
             };
 
-            self.current_file.replace(module);
             self.visit(module);
-            self.current_file.take();
 
             self.resolution.file_collection_state.insert(path, CollectionState::Resolved(module));
         }
@@ -395,23 +411,25 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
     }
 }
 
-impl<'r, 'tcx> Visitor for EarlyCollectionPass<'r, 'tcx> {
-    fn visit(&mut self, tree: &ast::SourceFile) {
+impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
+    fn visit(&mut self, tree: &'tcx ast::SourceFile<'tcx>) {
+        self.current_file.replace(tree);
         self.mangle_module_name(tree);
         self.with_rib(tree.node_id, |this| {
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
             node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
         });
+        self.current_file.take();
     }
 
-    fn visit_import(&mut self, import: &ast::Import) {
+    fn visit_import(&mut self, import: &'tcx ast::Import) {
         if let Ok(ref string) = import.path {
             let file = self.current_file.expect("visit_import should be operating within source file");
             self.push_import(file, string, import.node_id, import.span);
         }
     }
 
-    fn visit_item(&mut self, item: &ast::Item) {
+    fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
         match &item.kind {
             ast::ItemKind::Struct(stc) => {
                 self.define(DefinitionKind::Struct, stc.ident, item.node_id, item.scope);
@@ -433,22 +451,23 @@ impl<'r, 'tcx> Visitor for EarlyCollectionPass<'r, 'tcx> {
                 self.visit_ty_expr(global.ty);
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
             }
-            ast::ItemKind::Err => ()
+            ast::ItemKind::Err => return
         }
+        self.mangle_item_name(item);
     }
 
-    fn visit_field_def(&mut self, field_def: &ast::FieldDef) {
+    fn visit_field_def(&mut self, field_def: &'tcx ast::FieldDef<'tcx>) {
         self.visit_ty_expr(field_def.ty);
         node_visitor::visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
         field_def.def_id.set(self.declare(field_def.node_id, DefinitionKind::Field)).unwrap();
     }
 
-    fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
+    fn visit_variant_def(&mut self, variant_def: &'tcx ast::VariantDef<'tcx>) {
         node_visitor::visit_option(variant_def.sset, |sset| self.visit_nested_const(sset));
         variant_def.def_id.set(self.declare(variant_def.node_id, DefinitionKind::Variant)).unwrap();
     }
 
-    fn visit_nested_const(&mut self, expr: &ast::NestedConst) {
+    fn visit_nested_const(&mut self, expr: &'tcx ast::NestedConst<'tcx>) {
         self.visit_expr(expr.expr);
         expr.def_id.set(self.declare(expr.node_id, DefinitionKind::NestedConst)).unwrap();
     }
@@ -586,15 +605,15 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
     }
 }
 
-impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
-    fn visit(&mut self, tree: &ast::SourceFile) {
+impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
+    fn visit(&mut self, tree: &'tcx ast::SourceFile<'tcx>) {
         self.with_tbg_rib(tree.node_id, |this| {
             node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
         });
     }
 
-    fn visit_import(&mut self, import: &ast::Import) {
+    fn visit_import(&mut self, import: &'tcx ast::Import) {
         // FIXME: catch importing ourselves and at the very least warn
         let module = self.resolution.import_resolutions[&import.node_id];
         match module {
@@ -609,7 +628,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn visit_item(&mut self, item: &ast::Item) {
+    fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
         match &item.kind {
             ast::ItemKind::Function(function) => {
                 if function.sig.generics.len() > 0 {
@@ -657,7 +676,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
+    fn visit_variant_def(&mut self, variant_def: &'tcx ast::VariantDef<'tcx>) {
         if let Some(sset) = &variant_def.sset {
             Message::fatal("setting explicit enum tag values is not supported yet")
                 .at(Span::new(sset.span.start, sset.span.end))
@@ -665,7 +684,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn visit_field_def(&mut self, field_def: &ast::FieldDef) {
+    fn visit_field_def(&mut self, field_def: &'tcx ast::FieldDef<'tcx>) {
         if let Some(default_init) = &field_def.default_init {
             Message::fatal("struct default initalizers are not supported yet")
                 .at(Span::new(default_init.span.start, field_def.span.end))
@@ -675,7 +694,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         node_visitor::visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
     }
 
-    fn visit_stmt(&mut self, stmt: &ast::Stmt) {
+    fn visit_stmt(&mut self, stmt: &'tcx ast::Stmt<'tcx>) {
         match &stmt.kind {
             ast::StmtKind::Local(local) => {
                 node_visitor::visit_option(local.ty, |ret_ty| self.visit_ty_expr(ret_ty));
@@ -707,7 +726,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn visit_control_flow(&mut self, control_flow: &ast::ControlFlow) {
+    fn visit_control_flow(&mut self, control_flow: &'tcx ast::ControlFlow) {
         let Some(owner) = self.loop_owners.last() else {
             Message::error(format!("`{}` found outside of loop", control_flow.kind))
                 .at(control_flow.span)
@@ -719,11 +738,11 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         control_flow.destination.set(Ok(*owner)).unwrap();
     }
 
-    fn visit_name(&mut self, name: &ast::Name) {
+    fn visit_name(&mut self, name: &'tcx ast::Name) {
         self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], name);
     }
 
-    fn visit_expr(&mut self, expr: &ast::Expr) {
+    fn visit_expr(&mut self, expr: &'tcx ast::Expr<'tcx>) {
         match &expr.kind {
             ast::ExprKind::Name(name) =>
                 self.visit_name(name),
@@ -774,7 +793,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn visit_param(&mut self, param: &ast::Param) {
+    fn visit_param(&mut self, param: &'tcx ast::Param<'tcx>) {
         self.visit_ty_expr(&param.ty);
 
         if !self.has_rib() {
@@ -784,7 +803,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         self.define(param.ident.clone(), param.node_id);
     }
 
-    fn visit_ty_expr(&mut self, ty: &ast::TypeExpr) {
+    fn visit_ty_expr(&mut self, ty: &'tcx ast::TypeExpr<'tcx>) {
         match &ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
             ast::TypeExprKind::Name(name) => {
@@ -813,7 +832,7 @@ pub fn resolve_from_entry<'tcx>(
     entry: &'tcx ast::SourceFile<'tcx>,
     ast_info: &'tcx ast::AstInfo<'tcx>
 ) -> ResolutionResults<'tcx> {
-    let mut resolution = ResolutionState::new(session);
+    let mut resolution = ResolutionState::new(session, ast_info);
 
     let rpass = EarlyCollectionPass::new(&mut resolution);
     rpass.collect_bfs(entry, session, ast_info);
@@ -821,6 +840,6 @@ pub fn resolve_from_entry<'tcx>(
     let mut rpass = NameResolutionPass::new(&mut resolution);
     rpass.resolve();
 
-    resolution.results(entry.node_id, ast_info)
+    resolution.results(entry.node_id)
 }
 

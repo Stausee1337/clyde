@@ -28,6 +28,7 @@ inkwell = { path = "crates/inkwell", version = "0.6.0", default-features = false
 tinyvec = "1.8.0"
 bytemuck = { version = "1.22.0", features = ["derive"] }
 sha1 = "0.10.6"
+base62 = "2.2.1"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "0.38.37", features = ["mm"] }
