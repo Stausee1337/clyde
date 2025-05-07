@@ -5,7 +5,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, AnyValue, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::TyCtxt, session::OptimizationLevel, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -1322,22 +1322,25 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         }
         match self.module_map.entry(node.node_id()) {
             Entry::Vacant(entry) => {
-                let module = Self::create_module(node, self.context, self.arena);
+                let module = Self::create_module(node, self.tcx, self.context, self.arena);
                 entry.insert(module)
             }
             Entry::Occupied(entry) => entry.into_mut()
         }
     }
 
-    fn create_module(node: ast::Node<'tcx>, context: &'ll ll::Context, arena: &'ll bumpalo::Bump) -> &'ll ll::Module<'ll> {
+    fn create_module(node: ast::Node<'tcx>, tcx: TyCtxt<'tcx>, context: &'ll ll::Context, arena: &'ll bumpalo::Bump) -> &'ll ll::Module<'ll> {
         let ast::Node::SourceFile(module) = node else {
             panic!("non source-level module in CodegenCtxt::create_module");
         };
-        Self::create_module_by_name(module.name.get(), context, arena)
+        let info = tcx.module_info(module);
+        Self::create_module_by_info(info, context, arena)
     }
 
-    fn create_module_by_name(name: &str, context: &'ll ll::Context, arena: &'ll bumpalo::Bump) -> &'ll ll::Module<'ll> {
-        arena.alloc(context.create_module(name))
+    fn create_module_by_info(info: ModuleInfo, context: &'ll ll::Context, arena: &'ll bumpalo::Bump) -> &'ll ll::Module<'ll> {
+        let module = context.create_module(&info.mangled_name);
+        module.set_source_file_name(&info.source_file_name);
+        arena.alloc(module)
     }
 }
 

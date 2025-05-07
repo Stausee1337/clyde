@@ -107,12 +107,26 @@ impl<'tcx> TyCtxt<'tcx> {
         let def = &self.resolutions.declarations[id];
         def.kind
     }
+
+    pub fn module_info(self, module: &'tcx ast::SourceFile<'tcx>) -> ModuleInfo {
+        let path = &self.resolutions.node_to_path_map[&module.node_id];
+        let file_name = path.file_name().unwrap();
+        let file_name = std::str::from_utf8(file_name.as_encoded_bytes()).unwrap();
+        // _clyHhashF5basic_R5print
+
+        todo!()
+    }
 }
 
 impl<'tcx> target::DataLayoutExt for TyCtxt<'tcx> {
     fn data_layout(&self) -> &target::TargetDataLayout {
         self.session.target.data_layout()
     }
+}
+
+pub struct ModuleInfo {
+    pub mangled_name: String,
+    pub source_file_name: String
 }
 
 macro_rules! define_queries {

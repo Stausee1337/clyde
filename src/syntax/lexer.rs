@@ -98,6 +98,10 @@ macro_rules! Token {
     [true] => { crate::syntax::lexer::Keyword::True };
     [false] => { crate::syntax::lexer::Keyword::False };
     [null] => { crate::syntax::lexer::Keyword::Null };
+
+    [#scope] => { crate::syntax::lexer::Directive::Scope };
+    [#c_call] => { crate::syntax::lexer::Directive::CCall };
+    [#include] => { crate::syntax::lexer::Directive::Include };
 }
 
 macro_rules! must {
@@ -996,7 +1000,7 @@ pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Res
     let contents = match source_file.contents() {
         Ok(contents) => contents,
         Err(Utf8Error) => {
-            eprintln!("ERROR: couldn't read {}: stream contains invalid UTF-8", source_file.path());
+            eprintln!("ERROR: couldn't read {}: stream contains invalid UTF-8", source_file.str_path());
             return Err(());
         }
     };
@@ -1253,9 +1257,10 @@ impl Tokenish for Keyword {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, LexFromString)]
 pub enum Directive {
+    #[str = "scope"]
+    Scope,
     #[str = "c_call"]
     CCall,
-
     #[str = "include"]
     Include,
 }

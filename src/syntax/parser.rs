@@ -3,7 +3,7 @@ use std::{cell::OnceCell, fmt::Write, ops::ControlFlow, path::Path};
 use index_vec::IndexVec;
 
 use super::{
-    ast::{self, IntoNode, Literal, LocalId, NodeId, OwnerId}, lexer::{self, AssociotiveOp, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::Symbol
+    ast::{self, IntoNode, Literal, LocalId, NodeId, OwnerId}, lexer::{self, AssociotiveOp, Directive, Keyword, LiteralKind, NumberMode, Operator, Punctuator, Span, StringKind, StringParser, Token, TokenKind, TokenStream, Tokenish}, symbol::{sym, Symbol}
 };
 
 use crate::{diagnostics::{DiagnosticsCtxt, Message}, session::Session, Token};
@@ -160,6 +160,17 @@ impl Parsable for Punctuator {
     }
 }
 
+impl Parsable for Directive {
+    const CLASSNAME: Option<&'static str> = Some("<directive>");
+
+    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
+        if let TokenKind::Directive(directive) = token.kind {
+            return Some(directive);
+        }
+        None
+    }
+}
+
 impl Parsable for ast::Ident {
     const CLASSNAME: Option<&'static str> = Some("<ident>");
 
@@ -233,6 +244,33 @@ impl Parsable for Literal {
             }
             _ => None
         }
+    }
+}
+
+impl Parsable for String {
+    const CLASSNAME: Option<&'static str> = Some("<string>");
+
+    fn from_token<'a>(token: Token<'a>) -> Option<Self> {
+        if let TokenKind::Literal(repr, LiteralKind::String) = token.kind {
+            let mut parser = StringParser::new(StringKind::String);
+            let mut buffer = String::new();
+            for char in repr[1..].chars() {
+                match parser.feed(char) {
+                    Ok(out) => {
+                        if let Some(out) = out {
+                            buffer.push(out);
+                        }
+                        if parser.ended() {
+                            break;
+                        }
+                    }
+                    Err(string_error) => 
+                        unreachable!("unreachable string error in parser: {string_error:?} (should have been handled at lexing stage)"),
+                }
+            }
+            return Some(buffer);
+        }
+        None
     }
 }
 
@@ -332,6 +370,7 @@ pub struct Parser<'src, 'ast> {
     owners: &'src mut IndexVec<OwnerId, ast::Owner<'ast>>,
     owner_stack: Vec<OwnerId>,
     local_ids: IndexVec<LocalId, ast::Node<'ast>>,
+    currrent_item_scope: ast::Scope,
     diagnostics: &'ast DiagnosticsCtxt
 }
 
@@ -383,6 +422,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             diagnostics,
             owners,
             owner_stack: vec![],
+            currrent_item_scope: Default::default(),
             local_ids: IndexVec::new(),
         }
     }
@@ -465,7 +505,17 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.create_node_id(|this, node_id| this.alloc(ast::Item {
             kind,
             span,
+            scope: this.currrent_item_scope,
             node_id
+        }))
+    }
+
+    fn make_import(&mut self, path: Result<String, ()>, span: Span) -> &'ast ast::Import {
+        self.create_node_id(|this, node_id| this.alloc(ast::Import {
+            path,
+            span,
+            node_id,
+            resolution: OnceCell::new()
         }))
     }
 
@@ -1824,21 +1874,102 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(item)
     }
 
-    fn parse_source_file(&mut self, name: Symbol, file_span: Span) -> &'ast ast::SourceFile<'ast> {
+    fn parse_import_directive(&mut self) -> PRes<(String, Span)> {
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let path = self.expect_any::<String>();
+        self.cursor.advance();
+
+        self.expect_one(Token![;])?;
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        Ok((path?, Span::interpolate(start, end)))
+    }
+
+    fn parse_scope_directive(&mut self) -> PRes<ast::Scope> {
+        self.cursor.advance();
+
+        self.expect_one(Punctuator::LParen)?;
+        self.cursor.advance();
+
+        let scope = match self.match_on::<ast::Ident>() {
+            Some(ast::Ident { symbol: sym::export, .. }) => Ok(ast::Scope::Export),
+            Some(ast::Ident { symbol: sym::module, .. }) => Ok(ast::Scope::Module),
+            Some(_) | None => {
+                let span = self.cursor.span();
+                Message::error(format!("expected scope specifier, found {}", self.cursor.current()))
+                    .at(span)
+                    .note("valid scope specifiers are `export` and `module`")
+                    .push(self.diagnostics);
+                Err(span)
+            }
+        };
+        self.cursor.advance();
+
+        self.expect_one(Punctuator::RParen)?;
+        self.cursor.advance();
+
+        self.expect_one(Token![;])?;
+        self.cursor.advance();
+
+        Ok(scope?)
+    }
+
+    fn parse_item_or_directive(&mut self, items: &mut Vec<&'ast ast::Item<'ast>>, imports: &mut Vec<&'ast ast::Import>) {
+        if let Some(directive) = self.match_on::<Directive>() {
+            match directive {
+                Token![#include] => {
+                    let span;
+                    let path = match self.parse_import_directive() {
+                        Ok((path, s)) => {
+                            span = s;
+                            Ok(path)
+                        }
+                        Err(s) => {
+                            span = s;
+                            Err(())
+                        }
+                    };
+                    imports.push(self.make_import(path, span));
+                }
+                Token![#scope] =>
+                    self.currrent_item_scope = self.parse_scope_directive().unwrap_or_default(),
+                _ => {
+                    let span = self.cursor.span();
+                    self.cursor.advance();
+                    Message::error(format!("directive `{directive}` is not valid at module level"))
+                        .at(span)
+                        .note("valid directives are `#include` and `#scope`")
+                        .push(self.diagnostics);
+                    // TODO: compliation is erroneous now
+                }
+            }
+
+            return;
+        }
+        let item = self.parse_item().unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
+        items.push(item);
+    }
+
+    fn parse_source_file(&mut self, file_span: Span) -> &'ast ast::SourceFile<'ast> {
         let res = self.with_owner(|this| {
             let mut items = vec![];
+            let mut imports = vec![];
 
             while !this.cursor.is_eos() {
-                items.push(
-                    this.parse_item()
-                        .unwrap_or_else(|span| this.make_item(ast::ItemKind::Err, span))
-                );
+                this.parse_item_or_directive(&mut items, &mut imports);
             }
 
             let items = this.alloc_slice(&items);
+            let imports = this.alloc_slice(&imports);
 
             Ok(this.create_node_id(|this, node_id| this.alloc(ast::SourceFile {
-                name, items, node_id, span: file_span
+                items,
+                imports,
+                node_id,
+                span: file_span
             })))
         });
         let (source, owner_id, children) = res.unwrap();
@@ -1853,9 +1984,8 @@ pub fn parse_file<'a, 'tcx>(
     path: &Path,
     ast_info: &'tcx ast::AstInfo<'tcx>) -> Result<&'tcx ast::SourceFile<'tcx>, ()> {
     let diagnostics = session.diagnostics();
-    let source = session.file_cacher().load_file(path)?;
-
-    let name = mangle_path(source.path());
+    let source = session.file_cacher().load_file(path)
+        .expect("io error should have been handled already");
 
     let stream = lexer::tokenize(&source, diagnostics)?;
     if stream.tainted_with_errors() {
@@ -1866,15 +1996,15 @@ pub fn parse_file<'a, 'tcx>(
     let source_file = if !stream.is_empty() {
         let arena = &ast_info.arena;
         let mut parser = Parser::new(stream, arena, &mut owners, diagnostics);
-        parser.parse_source_file(name, source.byte_span)
+        parser.parse_source_file(source.byte_span)
     } else {
         let owner_id = owners.len_idx();
         let owner_id = owners.push(ast::Owner::new(owner_id));
         let node = ast_info.arena.alloc(ast::SourceFile {
-            name,
             items: &[],
+            imports: &[],
             node_id: NodeId { owner: owner_id, local: LocalId::from_raw(0) },
-            span: Span::NULL
+            span: source.byte_span
         });
         let node = &*node;
         owners[owner_id].initialize(ast::Node::SourceFile(node), IndexVec::new());
@@ -1884,7 +2014,3 @@ pub fn parse_file<'a, 'tcx>(
     Ok(source_file)
 }
 
-fn mangle_path(_path: &str) -> Symbol {
-    // FIXME: mangle path into actual name
-    Symbol::intern("dummy_module_name")
-}

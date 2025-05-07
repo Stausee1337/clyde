@@ -20,6 +20,7 @@ pub enum Node<'ast> {
     Variant(&'ast VariantDef<'ast>),
     Param(&'ast Param<'ast>),
     GenericParam(&'ast GenericParam<'ast>),
+    Import(&'ast Import),
 }
 
 impl<'ast> Node<'ast> {
@@ -65,6 +66,7 @@ impl<'ast> Node<'ast> {
             Node::Variant(variant) => variant.node_id,
             Node::Param(param) => param.node_id,
             Node::GenericParam(param) => param.node_id,
+            Node::Import(import) => import.node_id,
         }
     }
 
@@ -202,8 +204,8 @@ impl Name {
 
 #[derive(Debug)]
 pub struct SourceFile<'ast> {
-    pub name: Symbol,
     pub items: &'ast [&'ast Item<'ast>],
+    pub imports: &'ast [&'ast Import],
     pub span: Span,
     pub node_id: NodeId,
 }
@@ -214,9 +216,28 @@ impl<'ast> IntoNode<'ast> for SourceFile<'ast>  {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FileError;
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub path: Result<String, ()>,
+    pub resolution: OnceCell<Result<NodeId, FileError>>,
+    pub node_id: NodeId,
+    pub span: Span,
+}
+
+
+impl<'ast> IntoNode<'ast> for Import  {
+    fn into_node(&'ast self) -> Node<'ast> {
+        Node::Import(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Item<'ast> {
     pub kind: ItemKind<'ast>,
+    pub scope: Scope,
     pub span: Span,
     pub node_id: NodeId
 }
@@ -233,7 +254,7 @@ impl<'ast> Item<'ast> {
             ItemKind::Enum(enm) => enm.ident,
             ItemKind::Struct(strct) => strct.ident,
             ItemKind::Function(func) => func.ident,
-            ItemKind::GlobalVar(var) => var.ident,
+            ItemKind::GlobalVar(var) => var.ident, 
             ItemKind::Err => unreachable!()
         }
     }
@@ -246,6 +267,13 @@ pub enum ItemKind<'ast> {
     Enum(Enum<'ast>),
     GlobalVar(GlobalVar<'ast>),
     Err
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub enum Scope {
+    #[default]
+    Export,
+    Module
 }
 
 #[derive(Debug, Clone, Copy)]

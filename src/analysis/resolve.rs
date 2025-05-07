@@ -1,7 +1,9 @@
 
-use hashbrown::HashMap;
+use std::{collections::VecDeque, path::{Path, PathBuf}, rc::Rc, str::FromStr, io};
 
-use crate::{syntax::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, lexer::Span, symbol::Symbol}, diagnostics::{DiagnosticsCtxt, Message}};
+use hashbrown::{HashMap, hash_map::Entry};
+
+use crate::{diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
 use super::node_visitor::{self, Visitor};
 
 /// AST (&tree) 
@@ -41,9 +43,10 @@ impl TryFrom<DefinitionKind> for NameSpace {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Declaration {
     site: ast::DefId,
+    scope: ast::Scope,
     kind: DefinitionKind,
     span: Span,
 }
@@ -61,141 +64,341 @@ pub struct Definition {
 
 struct ResolutionState<'tcx> {
     items: Vec<ast::DefId>,
+    file_cacher: Rc<files::FileCacher>,
     diagnostics: &'tcx DiagnosticsCtxt,
-    types: HashMap<Symbol, Declaration>,
-    functions: HashMap<Symbol, Declaration>,
-    globals: HashMap<Symbol, Declaration>,
-    declarations: index_vec::IndexVec<ast::DefId, Definition>
+    rib_map: HashMap<NodeId, TFGRib>,
+    node_to_path_map: HashMap<NodeId, PathBuf>,
+    import_resolutions: HashMap<ast::NodeId, Result<&'tcx ast::SourceFile<'tcx>, ()>>,
+    file_collection_state: HashMap<PathBuf, CollectionState<'tcx>>,
+    declarations: index_vec::IndexVec<ast::DefId, Definition>,
 }
 
 pub struct ResolutionResults<'tcx> {
     pub ast_info: &'tcx ast::AstInfo<'tcx>,
     pub items: Vec<ast::DefId>,
     pub entry: Option<ast::DefId>,
-    pub declarations: index_vec::IndexVec<ast::DefId, Definition>
+    pub declarations: index_vec::IndexVec<ast::DefId, Definition>,
+    pub node_to_path_map: HashMap<NodeId, PathBuf>,
 }
 
 impl<'tcx> ResolutionState<'tcx> {
-    fn new(diagnostics: &'tcx DiagnosticsCtxt) -> ResolutionState<'tcx> {
+    fn new(session: &'tcx Session) -> ResolutionState<'tcx> {
+        let file_cacher = session.file_cacher();
+        let diagnostics = session.diagnostics();
         ResolutionState {
             diagnostics,
+            file_cacher,
             items: Default::default(),
-            types: Default::default(),
-            functions: Default::default(),
-            globals: Default::default(),
-            declarations: Default::default()
+            rib_map: Default::default(),
+            node_to_path_map: Default::default(),
+            import_resolutions: Default::default(),
+            declarations: Default::default(),
+            file_collection_state: Default::default(),
         }
     }
 
-    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: ast::NodeId) {
-        let space = match kind {
-            DefinitionKind::Struct | DefinitionKind::Enum => &mut self.types,
-            DefinitionKind::Function => &mut self.functions,
-            DefinitionKind::Static | DefinitionKind::Const => &mut self.globals,
-            _ => unreachable!("invalid Definition in define")
-        };
+    fn get_exports(&self, node: NodeId) -> (Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>) {
+        let rib = &self.rib_map[&node];
+        macro_rules! for_scope {
+            ($scope:ident) => {        
+                rib.$scope
+                    .iter()
+                    .filter_map(|(sym, decl)| match decl.scope {
+                        ast::Scope::Export => Some((*sym, *decl)),
+                        ast::Scope::Module => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+        }
+        let types = for_scope!(types);
+        let functions = for_scope!(functions);
+        let globals = for_scope!(globals);
+        (types, functions, globals)
+    }
+
+    fn results(self, entry: NodeId, ast_info: &'tcx ast::AstInfo<'tcx>) -> ResolutionResults<'tcx> {
+        let entry_module = &self.rib_map[&entry];
+        let entry = entry_module.functions.get(&sym::main).map(|decl| decl.site); 
+        ResolutionResults {
+            ast_info,
+            items: self.items, entry,
+            declarations: self.declarations,
+            node_to_path_map: self.node_to_path_map
+        }
+    }
+}
+
+/// Types, Functions, Globals Rib
+#[derive(Default)]
+struct TFGRib {
+    types: HashMap<Symbol, Declaration>,
+    functions: HashMap<Symbol, Declaration>,
+    globals: HashMap<Symbol, Declaration>,
+}
+
+impl TFGRib {
+    fn import(
+        &mut self,
+        (types, functions, globals): (Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>),
+        span: Span,
+        diagnostics: &DiagnosticsCtxt,
+    ) {
+        macro_rules! for_scope {
+            ($scope:ident) => {
+                for (symbol, mut declaration) in $scope {
+                    declaration.span = span;
+                    self.define_with_declaration(symbol, declaration, diagnostics);
+                }         
+            };
+        }
+        for_scope!(types);
+        for_scope!(functions);
+        for_scope!(globals);
+    }
+
+    fn define(
+        &mut self,
+        kind: DefinitionKind,
+        name: ast::Ident,
+        site: ast::NodeId,
+        scope: ast::Scope,
+        resolution: &mut ResolutionState
+    ) {
         let declaration = Declaration {
-            site: self.declarations.push(Definition {
+            scope,
+            site: resolution.declarations.push(Definition {
                 node: site,
                 kind
             }), 
             kind,
             span: name.span
         };
-        self.items.push(declaration.site);
-        if let Some(prev) = space.insert(name.symbol, declaration) {
-            let space: NameSpace = kind.try_into()
+        resolution.items.push(declaration.site);
+        self.define_with_declaration(name.symbol, declaration, resolution.diagnostics);
+    }
+
+    fn define_with_declaration(&mut self, symbol: Symbol, declaration: Declaration, diagnostics: &DiagnosticsCtxt) {
+        let kind = declaration.kind;
+        let space = match kind {
+            DefinitionKind::Struct | DefinitionKind::Enum => &mut self.types,
+            DefinitionKind::Function => &mut self.functions,
+            DefinitionKind::Static | DefinitionKind::Const => &mut self.globals,
+            _ => unreachable!("invalid Definition in define")
+        };
+        if let Some(prev) = space.insert(symbol, declaration) {
+            let namespace: NameSpace = kind.try_into()
                 .expect("invalid Definition in define");
-            Message::error(format!("redeclaration of {space} {name:?}", name = name.symbol.get()))
-                .at(name.span)
-                .hint(format!("previous declaration of {name:?} here", name = name.symbol.get()), prev.span)
-                .push(self.diagnostics);
-        }
-    }
-
-    fn results(self, ast_info: &'tcx ast::AstInfo<'tcx>) -> ResolutionResults<'tcx> {
-        let entry = self.functions.get(&Symbol::intern("main")).map(|decl| decl.site);
-        ResolutionResults {
-            ast_info,
-            items: self.items, entry,
-            declarations: self.declarations
+            Message::error(format!("redeclaration of {namespace} {name:?}", name = symbol.get()))
+                .at(declaration.span)
+                .hint(format!("previous declaration of {name:?} here", name = symbol.get()), prev.span)
+                .push(diagnostics);
+            space.insert(symbol, prev);
         }
     }
 }
 
-struct TypeResolutionPass<'r, 'tcx> {
+#[derive(Debug)]
+enum CollectionState<'tcx> {
+    Pending,
+    Resolved(&'tcx ast::SourceFile<'tcx>),
+    Erroneous,
+}
+
+struct EarlyCollectionPass<'r, 'tcx> {
     resolution: &'r mut ResolutionState<'tcx>,
+    queue: VecDeque<PathBuf>,
+    ribs: Vec<TFGRib>,
+    current_file: Option<&'tcx ast::SourceFile<'tcx>>
 }
 
-impl<'r, 'tcx> TypeResolutionPass<'r, 'tcx> {
+impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
     fn new(resolution: &'r mut ResolutionState<'tcx>) -> Self {
-        Self { resolution }
+        Self {
+            ribs: vec![],
+            queue: Default::default(),
+            resolution,
+            current_file: None
+        }
     }
 
-    fn resolve(&mut self, tree: &ast::SourceFile) {
-        self.visit(tree);
+    fn get_path(&mut self, module: &'tcx ast::SourceFile<'tcx>) -> &Path {
+        let file_cacher = self.resolution.file_cacher.clone();
+        match self.resolution.node_to_path_map.entry(module.node_id) {
+            Entry::Vacant(entry) => {
+                let file = file_cacher.lookup_file(module.span.start);
+                let path = file.path().canonicalize().unwrap();
+                entry.insert(path)
+            }
+            Entry::Occupied(entry) =>
+                entry.into_mut()
+        }
+    }
+
+    fn normalize_path(&mut self, relative: &'tcx ast::SourceFile<'tcx>, segment: &str) -> Result<PathBuf, io::Error> {
+        let path = PathBuf::from_str(segment).unwrap();
+        if path.is_absolute() {
+            return path.canonicalize();
+        }
+
+        let mut relative_path = self.get_path(relative).to_owned();
+        relative_path.pop();
+        relative_path.push(path);
+        relative_path.canonicalize()
+    }
+
+    fn push_import(&mut self, relative: &'tcx ast::SourceFile<'tcx>, segment: &str, node: NodeId, span: Span) {
+        let path = if let Some(ref path) = self.resolution.node_to_path_map.get(&node) {
+            (**path).to_owned()
+        } else {
+            let path = self.normalize_path(relative, segment)
+                .map_err(|err| {
+                    Message::error(format!("cannot import file: {segment}: {err}"))
+                        .at(span)
+                        .push(self.resolution.diagnostics);
+                });
+            let Ok(path) = path else {
+                return;
+            };
+            self.resolution.node_to_path_map.insert(node, path.clone());
+            path
+        };
+        if let Some(..) = self.resolution.file_collection_state.get(&path) {
+            return;
+        }
+        self.queue.push_back(path.clone());
+        self.resolution.file_collection_state.insert(path, CollectionState::Pending);
+    }
+
+    fn collect_bfs(mut self, 
+        entry: &'tcx ast::SourceFile<'tcx>,
+        session: &'tcx Session,
+        ast_info: &'tcx ast::AstInfo<'tcx>,
+    ) {
+        let path = self.get_path(entry).to_owned();
+        self.current_file.replace(entry);
+        self.visit(entry);
+        self.current_file.take();
+        self.resolution.file_collection_state.insert(path, CollectionState::Resolved(entry));
+
+        while let Some(path) = self.queue.pop_front() {
+            let module = match parser::parse_file(session, &path, ast_info) {
+                Ok(module) => module,
+                Err(()) => {
+                    self.resolution.file_collection_state.insert(path, CollectionState::Erroneous);
+                    continue;
+                }
+            };
+
+            self.current_file.replace(module);
+            self.visit(module);
+            self.current_file.take();
+
+            self.resolution.file_collection_state.insert(path, CollectionState::Resolved(module));
+        }
+
+        for (node, path) in self.resolution.node_to_path_map.iter() {
+            let Some(state) = self.resolution.file_collection_state.get(path) else {
+                continue;
+            };
+            match state {
+                CollectionState::Resolved(module) => {
+                    self.resolution.import_resolutions.insert(*node, Ok(module));
+                }
+                CollectionState::Erroneous => {
+                    self.resolution.import_resolutions.insert(*node, Err(()));
+                }
+                CollectionState::Pending =>
+                    unreachable!("CollectionState::Pending at the end of collect_bfs")
+            }
+        }
+    }
+
+    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: ast::NodeId, scope: ast::Scope) {
+        let rib = self.ribs.last_mut().expect(".define neeeds to be called in valid TFGRib");
+        rib.define(kind, name, site, scope, self.resolution);
     }
 
     fn declare(&mut self, node: NodeId, kind: DefinitionKind) -> ast::DefId {
         self.resolution.declarations.push(Definition { node, kind })
     }
+
+    fn with_rib<F: FnOnce(&mut Self)>(&mut self, node: NodeId, do_work: F) {
+        self.ribs.push(TFGRib::default());
+        do_work(self);
+        let rib = self.ribs.pop().unwrap();
+        if let Some(_) = self.resolution.rib_map.insert(node, rib) {
+            panic!("tried to collect same rib twice {node:?}");
+        }
+    }
 }
 
-impl<'r, 'tcx> Visitor for TypeResolutionPass<'r, 'tcx> {
+impl<'r, 'tcx> Visitor for EarlyCollectionPass<'r, 'tcx> {
+    fn visit(&mut self, tree: &ast::SourceFile) {
+        self.with_rib(tree.node_id, |this| {
+            node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
+            node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
+        });
+    }
+
+    fn visit_import(&mut self, import: &ast::Import) {
+        if let Ok(ref string) = import.path {
+            let file = self.current_file.expect("visit_import should be operating within source file");
+            self.push_import(file, string, import.node_id, import.span);
+        }
+    }
+
     fn visit_item(&mut self, item: &ast::Item) {
         match &item.kind {
             ast::ItemKind::Struct(stc) => {
-                self.resolution.define(DefinitionKind::Struct, stc.ident, item.node_id);
+                self.define(DefinitionKind::Struct, stc.ident, item.node_id, item.scope);
                 node_visitor::visit_slice(stc.fields, |field_def| self.visit_field_def(field_def));
                 node_visitor::visit_slice(stc.generics, |generic| self.visit_generic_param(generic));
             }, 
             ast::ItemKind::Enum(en) => {
-                self.resolution.define(DefinitionKind::Enum, en.ident, item.node_id);
+                self.define(DefinitionKind::Enum, en.ident, item.node_id, item.scope);
                 node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
-                self.resolution.define(DefinitionKind::Function, function.ident, item.node_id);
+                self.define(DefinitionKind::Function, function.ident, item.node_id, item.scope);
                 node_visitor::visit_fn(function, self);
             },
             ast::ItemKind::GlobalVar(global) => {
-                self.resolution.define(
+                self.define(
                     if global.constant {DefinitionKind::Static} else {DefinitionKind::Const},
-                    global.ident, item.node_id);
+                    global.ident, item.node_id, item.scope);
                 self.visit_ty_expr(global.ty);
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Err => ()
-        } 
+        }
     }
 
     fn visit_field_def(&mut self, field_def: &ast::FieldDef) {
         self.visit_ty_expr(field_def.ty);
         node_visitor::visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
-        field_def.def_id.set(self.declare(field_def.node_id, DefinitionKind::Field))
-            .unwrap();
+        field_def.def_id.set(self.declare(field_def.node_id, DefinitionKind::Field)).unwrap();
     }
 
     fn visit_variant_def(&mut self, variant_def: &ast::VariantDef) {
         node_visitor::visit_option(variant_def.sset, |sset| self.visit_nested_const(sset));
-        variant_def.def_id.set(self.declare(variant_def.node_id, DefinitionKind::Variant))
-            .unwrap();
+        variant_def.def_id.set(self.declare(variant_def.node_id, DefinitionKind::Variant)).unwrap();
     }
 
     fn visit_nested_const(&mut self, expr: &ast::NestedConst) {
         self.visit_expr(expr.expr);
-        expr.def_id.set(self.declare(expr.node_id, DefinitionKind::NestedConst))
-            .unwrap();
+        expr.def_id.set(self.declare(expr.node_id, DefinitionKind::NestedConst)).unwrap();
     }
 }
 
 #[derive(Default)]
-struct Rib {
+struct LocalRib {
     symspace: HashMap<Symbol, Local>,
 }
 
 struct NameResolutionPass<'r, 'tcx> {
     resolution: &'r mut ResolutionState<'tcx>,
-    ribs: Vec<Rib>,
+    ribs: Vec<LocalRib>,
+    tfg_ribs: Vec<NodeId>,
     loop_owners: Vec<NodeId>
 }
 
@@ -204,14 +407,39 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         Self {
             resolution,
             ribs: Default::default(),
+            tfg_ribs: Default::default(),
             loop_owners: Vec::new()
         }
     }
 
-    fn with_rib<F: FnOnce(&mut Self)>(&mut self, do_work: F) {
-        self.ribs.push(Rib::default());
+    fn resolve(&mut self) {
+        let modules = self.resolution.file_collection_state
+            .iter()
+            .filter_map(|(_, module)| match module {
+                CollectionState::Resolved(module) => Some(*module),
+                CollectionState::Erroneous => None,
+                CollectionState::Pending =>
+                    unreachable!("CollectionState::Pending is invalid at name resolution")
+            })
+            .collect::<Vec<_>>();
+        for module in modules {
+            self.visit(module);
+        }
+    }
+
+    fn with_tbg_rib<F: FnOnce(&mut Self)>(&mut self, node: NodeId, do_work: F) {
+        let Some(..) = self.resolution.rib_map.get(&node) else {
+            panic!("{node:?} at doesn't have a TFGRib associated at name resolution");
+        };
+        self.tfg_ribs.push(node);
         do_work(self);
-        self.ribs.pop();
+        self.tfg_ribs.pop().unwrap();
+    }
+
+    fn with_rib<F: FnOnce(&mut Self)>(&mut self, do_work: F) {
+        self.ribs.push(LocalRib::default());
+        do_work(self);
+        self.ribs.pop().unwrap();
     }
 
     fn enter_loop_ctxt<F: FnOnce(&mut Self)>(&mut self, owner: ast::NodeId, do_work: F) {
@@ -251,14 +479,16 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         None
     }
 
-    fn resolve(&self, space: NameSpace, name: &ast::Name, report_error: bool) -> bool {
+    fn resolve_name_in_space(&self, space: NameSpace, name: &ast::Name, report_error: bool) -> bool {
         if name.resolution().is_some() {
             return true;
         }
+        let rib = *self.tfg_ribs.last().expect(".resolve() called without valid TFGRib");
+        let rib = &self.resolution.rib_map[&rib];
         let decl = match space {
-            NameSpace::Type => self.resolution.types.get(&name.ident.symbol),
-            NameSpace::Function => self.resolution.functions.get(&name.ident.symbol),
-            NameSpace::Variable => self.resolution.globals.get(&name.ident.symbol)
+            NameSpace::Type => rib.types.get(&name.ident.symbol),
+            NameSpace::Function => rib.functions.get(&name.ident.symbol),
+            NameSpace::Variable => rib.globals.get(&name.ident.symbol)
         };
         if let Some(decl) = decl {
             name.resolve(Resolution::Def(decl.site, decl.kind));
@@ -280,7 +510,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
 
     fn resolve_priority(&self, pspaces: &[NameSpace], name: &ast::Name) -> bool {
         for space in pspaces {
-            if self.resolve(*space, name, false) {
+            if self.resolve_name_in_space(*space, name, false) {
                 return true;
             }
         }
@@ -293,6 +523,28 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
 }
 
 impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
+    fn visit(&mut self, tree: &ast::SourceFile) {
+        self.with_tbg_rib(tree.node_id, |this| {
+            node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
+            node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
+        });
+    }
+
+    fn visit_import(&mut self, import: &ast::Import) {
+        // FIXME: catch importing ourselves and at the very least warn
+        let module = self.resolution.import_resolutions[&import.node_id];
+        match module {
+            Ok(module) => {
+                let exports = self.resolution.get_exports(module.node_id);
+                let current_rib = *self.tfg_ribs.last().expect("visit_import neeeds to be called in valid TFGRib");
+                let current_rib = self.resolution.rib_map.get_mut(&current_rib).unwrap();
+                current_rib.import(exports, import.span, self.resolution.diagnostics,);
+                import.resolution.set(Ok(module.node_id)).unwrap();
+            }
+            Err(()) => import.resolution.set(Err(ast::FileError)).unwrap(),
+        }
+    }
+
     fn visit_item(&mut self, item: &ast::Item) {
         match &item.kind {
             ast::ItemKind::Function(function) => {
@@ -415,7 +667,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_slice(ty_init.initializers, |field| self.visit_type_init(field));
                 match &ty_init.ty.kind {
                     ast::TypeExprKind::Name(name) => {
-                        self.resolve(NameSpace::Type, name, true);
+                        self.resolve_name_in_space(NameSpace::Type, name, true);
                     },
                     ast::TypeExprKind::Array(array) => {
                         self.visit_ty_expr(ty_init.ty);
@@ -472,7 +724,7 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
         match &ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
             ast::TypeExprKind::Name(name) => {
-                self.resolve(NameSpace::Type, name, true);
+                self.resolve_name_in_space(NameSpace::Type, name, true);
             },
             ast::TypeExprKind::Generic(..) => {
                 Message::fatal("generic types are not supported yet")
@@ -487,24 +739,24 @@ impl<'r, 'tcx> Visitor for NameResolutionPass<'r, 'tcx> {
                     ast::ArrayCapacity::Infer | ast::ArrayCapacity::Dynamic => ()
                 }
             }
-            k @ _ => node_visitor::noop_visit_ty_expr_kind(k, self)
+            kind => node_visitor::noop_visit_ty_expr_kind(kind, self)
         }
     }
 }
 
 pub fn resolve_from_entry<'tcx>(
-    diagnostics: &'tcx DiagnosticsCtxt,
+    session: &'tcx Session,
     entry: &'tcx ast::SourceFile<'tcx>,
     ast_info: &'tcx ast::AstInfo<'tcx>
 ) -> ResolutionResults<'tcx> {
-    let mut resolution = ResolutionState::new(diagnostics);
+    let mut resolution = ResolutionState::new(session);
 
-    let mut rpass = TypeResolutionPass::new(&mut resolution);
-    rpass.resolve(&entry);
+    let rpass = EarlyCollectionPass::new(&mut resolution);
+    rpass.collect_bfs(entry, session, ast_info);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.visit(&entry);
+    rpass.resolve();
 
-    resolution.results(ast_info)
+    resolution.results(entry.node_id, ast_info)
 }
 

@@ -68,7 +68,10 @@ Symbols! {
     double,
     char,
     string,
-    tuple
+    tuple,
+    export,
+    module,
+    main
 }
 
 macro_rules! define_symbols {

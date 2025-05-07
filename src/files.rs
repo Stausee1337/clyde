@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fs, io::Read, path::{Path, PathBuf}, process::abort, rc::Rc};
+use std::{cell::RefCell, fs, io::{self, Read}, path::{Path, PathBuf}, process::abort, rc::Rc};
 
 #[cfg(target_family = "unix")]
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
@@ -8,7 +8,7 @@ use windows::Win32::System::Memory::{VirtualAlloc, /*VirtualFree, MEM_RELEASE,*/
 
 use crate::{syntax::lexer::Span, string_internals::{next_code_point, run_utf8_validation}};
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Utf8Error;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -20,6 +20,7 @@ impl std::fmt::Debug for RelativePosition {
     }
 }
 
+#[derive(Debug)]
 pub struct File {
     path: PathBuf,
     contents: Result<&'static [u8], Utf8Error>,
@@ -54,7 +55,11 @@ impl File {
         self.contents
     }
 
-    pub fn path(&self) -> &str {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn str_path(&self) -> &str {
         FileCacher::decode_path(&self.path)
     }
 
@@ -118,6 +123,7 @@ impl File {
     }
 }
 
+#[derive(Debug)]
 struct MultibyteChar {
     pos: RelativePosition,
     len: u8
@@ -171,7 +177,7 @@ impl FileCacher {
         }
     }
 
-    pub fn load_file(&self, path: &Path) -> Result<Rc<File>, ()> {
+    pub fn load_file(&self, path: &Path) -> Result<Rc<File>, io::Error> {
         let mut storage = self.storage.borrow_mut();
         let (contents, pos, len) = fs::File::open(path)
             .and_then(|mut f| {
@@ -199,10 +205,6 @@ impl FileCacher {
                     buf[0] = b'\n';
                 }
                 Ok((buf, pos as u32, size as u32))
-            })
-            .map_err(|err| {
-                let file = FileCacher::decode_path(path);
-                eprintln!("ERROR: couldn't read {file}: {err}");
             })?;
         let mut files = self.files.borrow_mut();
         let source = Rc::new(File::new(path.to_owned(), contents, Span::new(pos, pos + len)));
@@ -212,8 +214,8 @@ impl FileCacher {
     }
 
     pub fn lookup_file(&self, needle: u32) -> Rc<File> {
-        let files = self.files.borrow() ;
-        let idx = files.partition_point(|source| !source.byte_span.contains(needle));
+        let files = self.files.borrow();
+        let idx = files.partition_point(|source| source.byte_span.contains(needle)) -1;
         files[idx].clone()
     }
 

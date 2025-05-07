@@ -1008,8 +1008,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             (Ty(Int(..)), Ty(Bool)) => true,
             (Ty(Bool), Ty(Int(..))) => true,
 
-            (Ty(Int(Integer::I32, false)), Ty(Char)) => true,
-            (Ty(Char), Ty(Int(Integer::I32, false))) => true,
+            (Ty(Int(Integer::I32 | Integer::I8, false)), Ty(Char)) => true,
+            (Ty(Char), Ty(Int(Integer::I32 | Integer::I8, false))) => true,
             _ => false
         };
     }

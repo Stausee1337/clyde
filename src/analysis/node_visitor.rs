@@ -1,10 +1,12 @@
 
-use crate::syntax::ast::{self, Block, Literal, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Item, ItemKind, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
+use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Import, Item, ItemKind, Literal, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
 
 
 pub trait Visitor: Sized {
-    fn visit(&mut self, tree: &SourceFile) {
-        visit_slice(&tree.items, |item| self.visit_item(item));
+    fn visit(&mut self, tree: &SourceFile);
+
+    fn visit_import(&mut self, import: &Import) {
+        noop(import);
     }
 
     fn visit_item(&mut self, item: &Item) {

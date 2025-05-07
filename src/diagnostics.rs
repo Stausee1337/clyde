@@ -35,7 +35,7 @@ impl DiagnosticsCtxtInner {
 
             let (row, col) = file.decode_to_file_pos(file_realtive_span.0);
             eprintln!("{}:{row}:{col}: {}: {}",
-                file.path(),
+                file.str_path(),
                 message.kind,
                 message.message);
 

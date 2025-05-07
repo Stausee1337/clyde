@@ -62,8 +62,8 @@ impl Session {
         &self.diagnostics
     }
 
-    pub fn file_cacher(&self) -> &files::FileCacher {
-        &self.file_cacher
+    pub fn file_cacher(&self) -> Rc<files::FileCacher> {
+        self.file_cacher.clone()
     }
 
     pub fn global_ctxt<F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> Result<R, ()>, R>(&self, f: F) -> Result<R, ()> {
@@ -73,10 +73,7 @@ impl Session {
             tainted_with_errors: Cell::new(None)
         };
         let entry = parser::parse_file(&self, &self.input, &ast_info)?;
-        let resolutions = resolve::resolve_from_entry(
-            &self.diagnostics,
-            entry, &ast_info
-        );
+        let resolutions = resolve::resolve_from_entry(&self, entry, &ast_info);
 
         let providers = Providers {
             type_of: typecheck::type_of,
@@ -193,7 +190,17 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
 
     let input_file = match &matches.free[..] {
         [input_file] => {
-            Some(PathBuf::from_str(input_file))
+            let file = PathBuf::from_str(input_file).unwrap();
+            let res;
+            if file.is_absolute() {
+                res = file.canonicalize();
+            } else {
+                let mut path = working_dir.clone();
+                path.push(file);
+                res = path.canonicalize();
+            }
+
+            Some(res.map_err(|err| (input_file, err)))
         },
         _ => None
     };
@@ -212,18 +219,19 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
 
     match input_file {
         Some(Ok(input)) => options.input = input,
-        other => {
-            match other {
-                Some(Err(err)) =>
-                    eprintln!("ERROR: {err}"),
-                None if matches.free.len() == 0 =>
-                    eprintln!("ERROR: no input files provided"),
-                None if matches.free.len() > 1 =>
-                    eprintln!("ERROR: provided multiple input files"),
-                _ => unreachable!()
-            }
+        Some(Err((input_file, err))) => {
+            eprintln!("ERROR: couldn't read {input_file}: {err}");
             return Err(ExitCode::FAILURE);
         }
+        None if matches.free.len() == 0 => {
+            eprintln!("ERROR: no input files provided");
+            return Err(ExitCode::FAILURE);
+        }
+        None if matches.free.len() > 1 => {
+            eprintln!("ERROR: provided multiple input files");
+            return Err(ExitCode::FAILURE);
+        }
+        _ => unreachable!()
     }
 
     Ok(options)
