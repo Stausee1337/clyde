@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::fmt::Write;
 use std::hash::Hash;
 
 use index_vec::IndexVec;
@@ -605,10 +606,75 @@ pub enum Literal {
     String(String)
 }
 
+impl std::fmt::Display for Literal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Literal::Null => f.write_str("null"),
+            Literal::Integer(i) => write!(f, "{i}"),
+            Literal::Floating(fp) => write!(f, "{fp}"),
+            Literal::Boolean(b) => write!(f, "{b}"),
+            Literal::Char(c) => write!(f, "{c}"),
+            Literal::String(s) => write!(f, "{s:?}"),
+        }
+    }
+}
+
+impl TryFrom<Literal> for u64 {
+    type Error = &'static str;
+
+    fn try_from(literal: Literal) -> Result<Self, Self::Error> {
+        if let Literal::Integer(int) = literal && !int.signed {
+            return Ok(int.value);
+        }
+        Err("unsigned integer")
+    }
+}
+
+impl TryFrom<Literal> for i128 {
+    type Error = &'static str;
+
+    fn try_from(literal: Literal) -> Result<Self, Self::Error> {
+        if let Literal::Integer(int) = literal {
+            return Ok((int.value as i128) * if int.signed { -1 } else { 1 });
+        }
+        Err("integer")
+    }
+}
+
+macro_rules! impl_literal_conversion {
+    ($variant:ident -> $res:ty) => {
+        impl TryFrom<Literal> for $res {
+            type Error = &'static str;
+
+            fn try_from(literal: Literal) -> Result<$res, Self::Error> {
+                if let Literal::$variant(res) = literal {
+                    return Ok(res);
+                }
+                Err(stringify!($res))
+            }
+        }
+    };
+}
+
+impl_literal_conversion!(Floating -> f64);
+impl_literal_conversion!(Boolean -> bool);
+impl_literal_conversion!(Char -> char);
+impl_literal_conversion!(String -> String);
+
+
 #[derive(Debug, Clone, Copy)]
 pub struct Integer {
     pub value: u64,
     pub signed: bool
+}
+
+impl std::fmt::Display for Integer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.signed {
+            f.write_str("-").unwrap();
+        }
+        write!(f, "{}", self.value)
+    }
 }
 
 #[derive(Debug, Clone)]

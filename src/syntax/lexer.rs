@@ -100,8 +100,10 @@ macro_rules! Token {
     [null] => { crate::syntax::lexer::Keyword::Null };
 
     [#scope] => { crate::syntax::lexer::Directive::Scope };
+    [#link] => { crate::syntax::lexer::Directive::Link };
     [#c_call] => { crate::syntax::lexer::Directive::CCall };
     [#include] => { crate::syntax::lexer::Directive::Include };
+    [#compiler_intrinsic] => { crate::syntax::lexer::Directive::CompilerIntrinsic };
 }
 
 macro_rules! must {
@@ -349,8 +351,17 @@ impl StringParser {
     }
 }
 
-pub(crate) trait Tokenish: std::fmt::Display {
+pub trait Tokenish: std::fmt::Display {
     fn matches(&self, tok: Token) -> bool;
+}
+
+impl Tokenish for Symbol {
+    fn matches(&self, tok: Token) -> bool {
+        if let TokenKind::Symbol(sym) = tok.kind {
+            return *self == sym;
+        }
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1261,6 +1272,10 @@ pub enum Directive {
     Scope,
     #[str = "c_call"]
     CCall,
+    #[str = "link"]
+    Link,
+    #[str = "compiler_intrinsic"]
+    CompilerIntrinsic,
     #[str = "include"]
     Include,
 }

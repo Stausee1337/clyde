@@ -96,23 +96,19 @@ impl<'src> TokenCursor<'src> {
         unsafe { self.current = self.current.add(1) };
     }
 
-    fn try_error_advance(&mut self) {
-        if self.end <= self.current {
-            return;
-        }
-        if let TokenKind::Punctuator(
-            Punctuator::LParen | Punctuator::LBracket | Punctuator::LCurly |
-            Punctuator::RParen | Punctuator::RBracket | Punctuator::RCurly
-        ) = self.current().kind {
-            return; // never adanvce over delimiter
-        }
-        unsafe { self.current = self.current.add(1) };
-    }
-
     fn advance_to(&mut self, pos: &Token<'src>) {
         let pos = (&raw const *pos) as *mut _;
         if (self.current..=self.end).contains(&pos) {
             self.current = pos;
+        }
+    }
+
+    fn skip_while(&mut self, mut p: impl FnMut(Token) -> bool) {
+        while !self.is_eos() {
+            if !p(self.current()) {
+                break;
+            }
+            self.advance();
         }
     }
 
@@ -242,6 +238,8 @@ impl Parsable for Literal {
                 }
                 return Some(Literal::String(buffer));
             }
+            TokenKind::Keyword(Token![true]) => Some(Literal::Boolean(true)),
+            TokenKind::Keyword(Token![false]) => Some(Literal::Boolean(false)),
             _ => None
         }
     }
@@ -357,6 +355,101 @@ impl Parsable for NumberLiteral {
                 Some(NumberLiteral::Integer(ast::Integer { value, signed: false }))
             }
             _ => None
+        }
+    }
+}
+
+enum DirectiveTree {
+    Ident(ast::Ident),
+    Value(Literal, Span),
+    KeyValue {
+        key: ast::Ident,
+        value: (Literal, Span)
+    }
+}
+
+impl DirectiveTree {
+    fn span(&self) -> Span {
+        match self {
+            DirectiveTree::Ident(ident) => ident.span,
+            DirectiveTree::Value(_, span) => *span,
+            DirectiveTree::KeyValue { key, value } => Span::interpolate(key.span, value.1)
+        }
+    }
+}
+
+impl std::fmt::Display for DirectiveTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DirectiveTree::Ident(ident) => write!(f, "{}", ident.symbol),
+            DirectiveTree::Value(literal, _) => write!(f, "{}", literal),
+            DirectiveTree::KeyValue { key, value } => write!(f, "{}={}", key.symbol, value.0),
+        }
+    }
+}
+
+/// A list containing a nonzero amount of directive trees
+struct DirectiveTrees(Vec<DirectiveTree>);
+
+impl DirectiveTrees {
+    /// expects one of `symbols` to be in the directive tree and errors if there are more than one
+    /// tree or none of the symbols can be found at all
+    fn expect_either(mut self, symbols: &[Symbol], parser: &mut Parser) -> PRes<Symbol> {
+        let erroneous = self.0.len() > 1;
+        let mut found = None;
+        for (idx, tree) in self.0.iter().enumerate() {
+            if let DirectiveTree::Ident(ast::Ident { symbol, .. }) = tree && symbols.contains(symbol) && found.is_none() {
+                found = Some((idx, *symbol));
+            }
+        }
+        if let Some((idx, _)) = found {
+            self.0.remove(idx);
+        }
+        if erroneous || found.is_none() {
+            let tree = self.0.first().unwrap();
+            let mut message = Message::error(format!("unexpected directive tree `{}`", tree))
+                .at(tree.span());
+            if found.is_none() {
+                message = message.note(format!("expected {}", TokenJoiner(symbols)));
+            }
+            message.push(parser.diagnostics);
+            return Err(tree.span());
+        }
+        Ok(found.unwrap().1)
+    }
+
+    fn get<R: TryFrom<Literal, Error = &'static str>>(mut self, key: Symbol, single: bool, parser: &mut Parser) -> PRes<R> {
+        let erroneous = self.0.len() > 1 && single;
+        let mut found = None;
+        for (idx, tree) in self.0.iter().enumerate() {
+            if let DirectiveTree::KeyValue { key: ast::Ident { symbol, .. }, value } = tree && key == *symbol && found.is_none() {
+                found = Some((idx, value.clone()));
+            }
+        }
+        if let Some((idx, _)) = found {
+            self.0.remove(idx);
+        }
+        if erroneous || found.is_none() {
+            let tree = self.0.first().unwrap();
+            let mut message = Message::error(format!("unexpected directive tree `{}`", tree))
+                .at(tree.span());
+            if found.is_none() {
+                message = message.note(format!("expected `{}=...`", key));
+            }
+            message.push(parser.diagnostics);
+            return Err(tree.span());
+        }
+        let (literal, span) = found.unwrap().1;
+        match R::try_from(literal) {
+            Ok(res) => return Ok(res),
+            Err(ty) => {
+                Message::error("directive tree value is of wrong type")
+                    .at(span)
+                    .note(format!("expected {} value", ty.to_lowercase()))
+                    .push(parser.diagnostics);
+
+                return Err(span);
+            }
         }
     }
 }
@@ -596,7 +689,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             .at(span)
             .push(self.diagnostics);
 
-        self.cursor.try_error_advance();
+        if !self.cursor.is_eos() {
+            self.cursor.advance();
+        }
         Err(span)
     }
 
@@ -614,7 +709,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
-        self.cursor.try_error_advance();
+        if !self.cursor.is_eos() {
+            self.cursor.advance();
+        }
         Err(span)
     }
 
@@ -624,7 +721,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Message::error(message)
             .at(span)
             .push(self.diagnostics);
-        self.cursor.try_error_advance();
+        if !self.cursor.is_eos() {
+            self.cursor.advance();
+        }
         Err(span)
     }
 
@@ -1790,6 +1889,36 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let params = self.alloc_slice(&params);
 
+        while let Some(directive) = self.match_on::<Directive>() {
+            let start = self.cursor.span();
+            self.cursor.advance();
+            match directive {
+                Token![#c_call] => {
+                    if self.matches(Punctuator::LParen) {
+                        let trees = self.parse_directive_trees()?;
+                        let literal: String = trees.get(sym::link_name, true, self)?;
+                    }
+                }
+                Token![#link] => {
+
+                }
+                Token![#compiler_intrinsic] => {
+
+                }
+                _ => {
+                    let mut end = start;
+                    if self.matches(Punctuator::LParen) {
+                        self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
+                        end = self.cursor.span();
+                        self.cursor.advance();
+                    }
+                    Message::error(format!("directive `#{}` cannot be applied to function", directive))
+                        .at(Span::interpolate(start, end))
+                        .push(self.diagnostics);
+                }
+            }
+        }
+
         let sig = ast::FnSignature {
             returns: ty,
             generics,
@@ -1874,6 +2003,46 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(item)
     }
 
+    fn parse_directive_trees(&mut self) -> PRes<DirectiveTrees> {
+        let start = self.cursor.span();
+        self.cursor.advance();
+
+        let mut trees = vec![];
+        while !self.matches(Punctuator::RParen) {
+            let span = self.cursor.span();
+            let tree = if let Some(ident) = self.bump_on::<ast::Ident>() {
+                if let Some(..) = self.bump_if(Token![=]) {
+                    let literal = self.expect_any::<Literal>()?;
+                    let span = self.cursor.span();
+                    self.cursor.advance();
+                    DirectiveTree::KeyValue { key: ident, value: (literal, span) }
+                } else {
+                    DirectiveTree::Ident(ident)
+                }
+            } else if let Some(literal) = self.bump_on::<Literal>() {
+                DirectiveTree::Value(literal, span)
+            } else {
+                self.unexpected("`<ident>`, `<literal>` or `key=<value>` pair")?
+            };
+            trees.push(tree);
+            self.expect_either(&[Token![,], Punctuator::RParen])?;
+            self.bump_if(Token![,]);
+        }
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        if trees.is_empty() {
+            let span = Span::interpolate(start, end);
+            Message::error("invalid empty directive tree")
+                .at(span)
+                .note("remove empty tree")
+                .push(self.diagnostics);
+            return Err(span);
+        }
+
+        Ok(DirectiveTrees(trees))
+    }
+
     fn parse_import_directive(&mut self) -> PRes<(String, Span)> {
         let start = self.cursor.span();
         self.cursor.advance();
@@ -1892,29 +2061,19 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.cursor.advance();
 
         self.expect_one(Punctuator::LParen)?;
-        self.cursor.advance();
 
-        let scope = match self.match_on::<ast::Ident>() {
-            Some(ast::Ident { symbol: sym::export, .. }) => Ok(ast::Scope::Export),
-            Some(ast::Ident { symbol: sym::module, .. }) => Ok(ast::Scope::Module),
-            Some(_) | None => {
-                let span = self.cursor.span();
-                Message::error(format!("expected scope specifier, found {}", self.cursor.current()))
-                    .at(span)
-                    .note("valid scope specifiers are `export` and `module`")
-                    .push(self.diagnostics);
-                Err(span)
-            }
-        };
-        self.cursor.advance();
-
-        self.expect_one(Punctuator::RParen)?;
-        self.cursor.advance();
-
+        let trees = self.parse_directive_trees()?;
+        let symbol = trees.expect_either(&[sym::export, sym::module], self);
         self.expect_one(Token![;])?;
         self.cursor.advance();
 
-        Ok(scope?)
+        let scope = match symbol? {
+            sym::export => ast::Scope::Export,
+            sym::module => ast::Scope::Module,
+            _ => unreachable!()
+        };
+
+        Ok(scope)
     }
 
     fn parse_item_or_directive(&mut self, items: &mut Vec<&'ast ast::Item<'ast>>, imports: &mut Vec<&'ast ast::Import>) {

@@ -1467,10 +1467,10 @@ impl<'tcx> TyLayoutTuple<'tcx> {
     }
 
     fn lower_fields<'ll>(&self, _field_offsets: impl Iterator<Item = (type_ir::FieldIdx, u64)>, ctxt: &CodegenCtxt<'ll, 'tcx>) -> ll::AnyTypeEnum<'ll> {
-        let name;
+        let def;
         let field_tys = match self.ty {
             Ty(TyKind::String | TyKind::Slice(..)) => {
-                name = None;
+                def = None;
                 let nuint = type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false).llvm_type(ctxt)
                     .force_into();
 
@@ -1480,7 +1480,7 @@ impl<'tcx> TyLayoutTuple<'tcx> {
                 fields
             }
             Ty(TyKind::DynamicArray(..)) => {
-                name = None;
+                def = None;
                 let nuint = type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false).llvm_type(ctxt).force_into();
 
                 let mut fields = vec![];
@@ -1490,7 +1490,7 @@ impl<'tcx> TyLayoutTuple<'tcx> {
                 fields
             }
             Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)))) => {
-                name = Some(strct.name);
+                def = Some(strct.def);
                 strct.fields()
                     .map(|(_, data)| {
                         let ty = ctxt.tcx.type_of(data.def);
@@ -1508,8 +1508,10 @@ impl<'tcx> TyLayoutTuple<'tcx> {
         // calculated offsets. For now they should be equal
 
         let strct;
-        if let Some(name) = name {
-            strct = ctxt.context.opaque_struct_type(name.get());
+        if let Some(def) = def {
+            let node_id = ctxt.tcx.resolutions.declarations[def].node;
+            let mangled_name = ctxt.tcx.resolutions.mangled_names[&node_id];
+            strct = ctxt.context.opaque_struct_type(mangled_name.get());
             strct.set_body(&field_tys, false);
         } else {
             strct = ctxt.context.struct_type(&field_tys, false);

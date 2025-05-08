@@ -1,7 +1,5 @@
 use std::{
-    mem::{ManuallyDrop, transmute},
-    cell::RefCell,
-    fmt::Debug
+    cell::RefCell, fmt::{Debug, Display}, mem::{transmute, ManuallyDrop}
 };
 
 use bumpalo::Bump;
@@ -71,7 +69,8 @@ Symbols! {
     tuple,
     export,
     module,
-    main
+    main,
+    link_name
 }
 
 macro_rules! define_symbols {
@@ -115,6 +114,12 @@ pub struct Symbol(u32);
 impl Debug for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Symbol({})", self.get())
+    }
+}
+
+impl Display for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get())
     }
 }
 
