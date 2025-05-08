@@ -172,10 +172,6 @@ impl Span {
         Self { start, end }
     }
 
-    pub fn contains(&self, pos: u32) -> bool {
-        return self.start <= pos && pos < self.end;
-    }
-
     pub const fn zero() -> Span {
         Span::new(0, 0)
     }

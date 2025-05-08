@@ -1439,51 +1439,100 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx);
 
-    match node {
-        ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) => {
-            let mut returns = ctxt.lower_ty(&func.sig.returns);
-            let mut has_errors = false;
-            if returns.is_incomplete() {
-                Message::error(
-                    format!("type {returns} is incomplete, incomplete types are not allowed in function signatures"))
-                    .at(func.sig.returns.span)
-                    .push(tcx.diagnostics());
-                returns = Ty::new_error(tcx);
-                has_errors = true;
-            }
+    let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node else {
+        panic!("non-function definition in fn_sig")
+    };
 
-            let mut params = Vec::new();
-            for param in func.sig.params {
-                let mut ty = ctxt.lower_ty(&param.ty);
-                let name = param.ident.symbol;
+    let mut returns = ctxt.lower_ty(&func.sig.returns);
+    let mut has_errors = false;
+    if returns.is_incomplete() {
+        Message::error(
+            format!("type {returns} is incomplete, incomplete types are not allowed in function signatures"))
+            .at(func.sig.returns.span)
+            .push(tcx.diagnostics());
+        returns = Ty::new_error(tcx);
+        has_errors = true;
+    }
 
-                if ty.is_incomplete() {
-                    Message::error(format!("type {ty} is incomplete, incomplete types are not allowed in function signatures"))
-                        .at(param.ty.span)
-                        .push(tcx.diagnostics());
-                    ty = Ty::new_error(tcx);
-                    has_errors = true;
-                }
+    let mut params = Vec::new();
+    for param in func.sig.params {
+        let mut ty = ctxt.lower_ty(&param.ty);
+        let name = param.ident.symbol;
 
-
-                params.push(type_ir::Param {
-                    name,
-                    ty,
-                    node_id: param.node_id
-                });
-            }
-            let params: Box<[type_ir::Param]> = params.into_boxed_slice();
-            let params: &'_ [type_ir::Param] = tcx.arena.alloc(params);
-
-            type_ir::Signature {
-                name: func.ident.symbol,
-                params,
-                returns,
-                has_errors
-            }
+        if ty.is_incomplete() {
+            Message::error(format!("type {ty} is incomplete, incomplete types are not allowed in function signatures"))
+                .at(param.ty.span)
+                .push(tcx.diagnostics());
+            ty = Ty::new_error(tcx);
+            has_errors = true;
         }
-        _ => {
-            panic!("non-function definition in fn_sig")
+
+
+        params.push(type_ir::Param {
+            name,
+            ty,
+            node_id: param.node_id
+        });
+    }
+
+    let params: Box<[type_ir::Param]> = params.into_boxed_slice();
+    let params: &'_ [type_ir::Param] = tcx.arena.alloc(params);
+
+    let header = &func.sig.header;
+    if func.body.is_none() && header.link.is_none() && header.compiler_intrinsic.is_none() {
+        Message::warning(format!("function `{}` doesn't have a body but isn't linked externally either", func.ident.symbol))
+            .at(func.span)
+            .note("add `#link` directive to signfify external linking")
+            .push(tcx.diagnostics());
+        has_errors = true;
+    }
+
+    if let Some(span) = header.link && header.compiler_intrinsic.is_some() {
+        Message::error("cannot specify `#link` and `#compiler_intrinsic` for the same function")
+            .at(span)
+            .note("remove `#link`")
+            .push(tcx.diagnostics());
+        has_errors = true;
+    }
+
+    if let Some(span) = header.link && func.body.is_some() {
+        Message::error("the directive `#link` can only be specified for bodyless functions")
+            .at(span)
+            .note("remove `#link`")
+            .push(tcx.diagnostics());
+        has_errors = true;
+    }
+
+    if let Some(span) = header.compiler_intrinsic && func.body.is_some() {
+        Message::error("the directive `#compiler_intrinsic` can only be specified for bodyless functions")
+            .at(span)
+            .note("remove `#compiler_intrinsic`")
+            .push(tcx.diagnostics());
+        has_errors = true;
+    }
+
+    match (header.link, header.c_call) {
+        (Some(span), Some(_)) if func.body.is_some() => {
+            Message::error("cannot specify `#link` and `#c_call` for the same function")
+                .at(span)
+                .note("remove `#link`, as `#c_call` is enough to make a function C-visible")
+                .push(tcx.diagnostics());
+            has_errors = true;
         }
+        (Some(_), Some(c_call)) if func.body.is_none() => {
+            Message::error("cannot specify `#link` and `#c_call` for the same function")
+                .at(c_call.span)
+                .note("remove `#c_call`, as `#link` is enough to link an external function")
+                .push(tcx.diagnostics());
+            has_errors = true;
+        }
+        _ => ()
+    }
+
+    type_ir::Signature {
+        name: func.ident.symbol,
+        params,
+        returns,
+        has_errors
     }
 }

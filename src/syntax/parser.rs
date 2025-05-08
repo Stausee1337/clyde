@@ -452,6 +452,12 @@ impl DirectiveTrees {
             }
         }
     }
+
+    fn span(&self) -> Span {
+        let start = self.0.first().unwrap().span();
+        let end = self.0.last().unwrap().span();
+        Span::interpolate(start, end)
+    }
 }
 
 type PRes<T> = Result<T, Span>;
@@ -1889,21 +1895,31 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let params = self.alloc_slice(&params);
 
+        let mut header = ast::FnHeader::default();
         while let Some(directive) = self.match_on::<Directive>() {
-            let start = self.cursor.span();
+            let span = self.cursor.span();
             self.cursor.advance();
+            
             match directive {
                 Token![#c_call] => {
+                    let mut c_call = ast::CCall {
+                        link_name: None,
+                        span
+                    };
                     if self.matches(Punctuator::LParen) {
                         let trees = self.parse_directive_trees()?;
+                        let span = trees.span();
                         let literal: String = trees.get(sym::link_name, true, self)?;
+                        c_call.span = Span::interpolate(c_call.span, span);
+                        c_call.link_name = Some((span, Symbol::intern(&literal)));
                     }
+                    header.c_call = Some(c_call);
                 }
                 Token![#link] => {
-
+                    header.link = Some(span);
                 }
                 Token![#compiler_intrinsic] => {
-
+                    header.compiler_intrinsic = Some(span);
                 }
                 _ => {
                     let mut end = start;
@@ -1920,6 +1936,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         let sig = ast::FnSignature {
+            header,
             returns: ty,
             generics,
             params

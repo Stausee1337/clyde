@@ -5,7 +5,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, AnyValue, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::ast, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::{ast, symbol}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -1261,7 +1261,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         }
 
         let node = self.tcx.node_by_def_id(def);
-        let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node else {
+        let ast::Node::Item(func @ ast::Item { kind: ast::ItemKind::Function(..), .. }) = node else {
             panic!("CodegenCtxt::push_dependency is exclusive to functions");
         };
 
@@ -1276,7 +1276,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         let ty = self.tcx.type_of(def);
         let layout = self.tcx.layout_of(ty).unwrap();
 
-        let mangled_name = self.tcx.resolutions.mangled_names[&node.node_id()];
+        let mangled_name = func.get_name(self.tcx);
         let function = module
             .add_function(
                 mangled_name.get(),
@@ -1509,9 +1509,8 @@ impl<'tcx> TyLayoutTuple<'tcx> {
 
         let strct;
         if let Some(def) = def {
-            let node_id = ctxt.tcx.resolutions.declarations[def].node;
-            let mangled_name = ctxt.tcx.resolutions.mangled_names[&node_id];
-            strct = ctxt.context.opaque_struct_type(mangled_name.get());
+            let ast::Node::Item(item) = ctxt.tcx.node_by_def_id(def) else { panic!("def should be struct"); };
+            strct = ctxt.context.opaque_struct_type(item.get_name(ctxt.tcx).get());
             strct.set_body(&field_tys, false);
         } else {
             strct = ctxt.context.struct_type(&field_tys, false);
@@ -1551,11 +1550,33 @@ impl Scalar {
     }
 }
 
+impl<'tcx> ast::Item<'tcx> {
+    fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
+        if let ast::ItemKind::Function(func) = self.kind {
+            let header = &func.sig.header;
+            if let Some(c_call) = header.c_call {
+                if let Some((_, name)) = c_call.link_name {
+                    return name;
+                }
+                return func.ident.symbol;
+            }
+            if let Some(_) = header.link {
+                return func.ident.symbol;
+            }
+            if let Some(_) = header.compiler_intrinsic {
+                panic!("intrinsics should not be handled like this");
+            }
+        }
+
+        tcx.resolutions.mangled_names[&self.node_id]
+    }
+}
+
 pub struct CodegenResults;
 
 const LINKER: &'static str = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\link.exe";
 
-const BASIC_ARGS: [&'static str; 9] = [
+const BASIC_ARGS: [&'static str; 8] = [
     r"-defaultlib:libcmt",
     r"-defaultlib:oldnames",
     r"-libpath:C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\lib\x64",
@@ -1564,7 +1585,6 @@ const BASIC_ARGS: [&'static str; 9] = [
     r"-libpath:C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64",
     r"-libpath:C:\Program Files\LLVM\lib\clang\20\lib\windows",
     r"-nologo",
-    r"bootstrap.o"
 ];
 
 pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
@@ -1574,6 +1594,13 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
 
     let mut ctxt = CodegenCtxt::new(tcx, &arena);
     ctxt.push_dependency(entry);
+
+    for def in &tcx.resolutions.items {
+        let node = tcx.node_by_def_id(*def);
+        if let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node && func.sig.header.c_call.is_some() {
+            ctxt.push_dependency(*def);
+        }
+    }
 
     ctxt.generate_code_bfs();
 

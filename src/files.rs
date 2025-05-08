@@ -215,7 +215,7 @@ impl FileCacher {
 
     pub fn lookup_file(&self, needle: u32) -> Rc<File> {
         let files = self.files.borrow();
-        let idx = files.partition_point(|source| source.byte_span.contains(needle)) -1;
+        let idx = files.partition_point(|source| source.byte_span.start <= needle) - 1;
         files[idx].clone()
     }
 

@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::fmt::Write;
 use std::hash::Hash;
 
 use index_vec::IndexVec;
@@ -339,7 +338,21 @@ pub struct Function<'ast> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct CCall {
+    pub link_name: Option<(Span, Symbol)>,
+    pub span: Span 
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FnHeader {
+    pub c_call: Option<CCall>,
+    pub link: Option<Span>,
+    pub compiler_intrinsic: Option<Span>
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct FnSignature<'ast> {
+    pub header: FnHeader,
     pub returns: &'ast TypeExpr<'ast>,
     pub params: &'ast [&'ast Param<'ast>],
     pub generics: &'ast [&'ast GenericParam<'ast>],
