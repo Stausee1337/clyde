@@ -4,7 +4,7 @@ use std::{cell::OnceCell, fmt::Write};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::TyCtxt, type_ir::{Const, FieldIdx, Ty, TyKind}};
+use crate::{context::TyCtxt, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Global, Const, FieldIdx, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
 pub struct Body<'tcx> {
@@ -101,7 +101,7 @@ pub enum TerminatorKind<'tcx> {
         false_target: BlockId
     },
     Return {
-        value: Operand<'tcx>
+        value: Option<Operand<'tcx>>
     }
 }
 
@@ -115,6 +115,12 @@ pub enum TerminatorKind<'tcx> {
 #[derive(Clone, Copy)]
 pub enum Place<'tcx> {
     Register(RegisterId),
+    // FIXME: this is the bane of our problems right now, as eventhough statics are a place
+    // somewhere, they don't really fit well into the model of Places here and at the codgen stage.
+    // Eventhough they're always pointers eventhough we handle thier types as if they were values,
+    // this crates the meriad of problems and bugs we are facing and will need to be addresssed at
+    // IR rather than at codegen stage
+    Global(Global<'tcx>),
     Deref(RegisterId),
     Field {
         target: RegisterId,
@@ -136,6 +142,7 @@ impl<'tcx> std::fmt::Debug for Place<'tcx> {
             Place::Deref(reg) => write!(f, "*{reg:?}"),
             Place::Field { target, field, ty: _ty } => write!(f, "({target:?}).{}", field.raw()),
             Place::Index { target, idx } => write!(f, "{target:?}[{idx:?}]"),
+            Place::Global(global) => write!(f, "{global:?}")
         }
     }
 }
@@ -144,6 +151,7 @@ impl<'tcx> std::fmt::Debug for Place<'tcx> {
 pub enum Operand<'tcx> {
     Copy(RegisterId),
     Const(Const<'tcx>),
+    Global(Global<'tcx>),
 }
 
 impl<'tcx> std::fmt::Debug for Operand<'tcx> {
@@ -151,6 +159,7 @@ impl<'tcx> std::fmt::Debug for Operand<'tcx> {
         match self {
             Operand::Copy(reg) => write!(f, "copy {reg:?}"),
             Operand::Const(cnst) => write!(f, "const {cnst:?}"),
+            Operand::Global(global) => write!(f, "{global:?}")
        }
     }
 }
@@ -199,6 +208,7 @@ impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
     fn from(value: Operand<'tcx>) -> Self {
         match value {
             Operand::Copy(reg) => RValue::Read(Place::Register(reg)),
+            Operand::Global(global) => RValue::Read(Place::Global(global)),
             Operand::Const(cnst) => RValue::Const(cnst),
         }
     }
@@ -494,9 +504,13 @@ impl<'tcx> TranslationCtxt<'tcx> {
             },
             ast::StmtKind::Return(ret) => {
                 let op;
-                (block, op) = ret.map(|expr| self.expr_as_operand(block, expr))
-                    .unwrap_or_else(|| (block, Operand::Const(Const::void_value(self.tcx))));
-                self.ret(block, op.with_span(stmt.span));
+                (block, op) = ret.map_or_else(
+                    || (block, None),
+                    |expr| {
+                        let (block, op) = self.expr_as_operand(block, expr);
+                        (block, Some(op))
+                    });
+                self.ret(block, op, stmt.span);
                 block
             }
             ast::StmtKind::Yeet(yeet) => {
@@ -977,6 +991,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
         let res = match &expr.kind {
             ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() =>
                 (block, Place::Register(self.register_lookup[local])),
+            ast::ExprKind::Name(name) if let Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Function)) = name.resolution() =>
+                (block, Place::Global(Global::from_definition(self.tcx, *def_id))),
             ast::ExprKind::Subscript(subscript) => {
                 debug_assert_eq!(subscript.args.len(), 1);
                 let target;
@@ -1029,7 +1045,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 
     fn expr_as_place(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> (BlockId, Place<'tcx>) {
-        self.try_expr_as_place(block, expr).expect("expr has a place")
+        self.try_expr_as_place(block, expr).expect("expr should have a place")
     }
 
     fn expr_as_operand(
@@ -1040,7 +1056,13 @@ impl<'tcx> TranslationCtxt<'tcx> {
         match &expr.kind {
             ast::ExprKind::Literal(literal) => {
                 let ty = self.typecheck.associations[&expr.node_id];
-                (block, Operand::Const(Const::from_literal(self.tcx, ty, literal).unwrap()))
+                if let Ty(TyKind::String) = ty {
+                    let ast::Literal::String(str) = literal else { unreachable!() };
+                    let global = Global::from_array_with_ty(self.tcx, str.as_bytes(), self.tcx.basic_types.byte, ty);
+                    (block, Operand::Global(global))
+                } else {
+                    (block, Operand::Const(Const::from_literal(self.tcx, ty, literal).unwrap()))
+                }
             }
             ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() => {
                 // FIXME: remove duplication with Place and Temporaray handling
@@ -1063,8 +1085,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 (block, Operand::Copy(reg))
             }
             ast::ExprKind::Name(name) => match name.resolution() {
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::Function)) =>
+                Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
                     (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
+                Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Function)) =>
+                    (block, Operand::Global(Global::from_definition(self.tcx, *def_id))),
                 Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
                 Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
                 Some(ast::Resolution::Local(..)) => unreachable!(),
@@ -1078,10 +1102,10 @@ impl<'tcx> TranslationCtxt<'tcx> {
         }
     }
 
-    fn ret(&mut self, block: BlockId, op: SpanOperand<'tcx>) {
+    fn ret(&mut self, block: BlockId, op: Option<Operand<'tcx>>, span: Span) {
         let terminator = Terminator {
-            kind: TerminatorKind::Return { value: op.operand },
-            span: op.span
+            kind: TerminatorKind::Return { value: op },
+            span
         };
         if let Err(..) = self.blocks[block].terminator.set(terminator) {
             panic!("terminating terminated block");
@@ -1155,8 +1179,8 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
             if !ctxt.is_terminated(block) {
                 ctxt.ret(
                     block,
-                    Operand::Const(Const::void_value(tcx))
-                        .with_span(Span::NULL)
+                    None,
+                    Span::NULL
                 );
             }
 
@@ -1167,7 +1191,7 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
             let (block, result);
             entry = ctxt.create_block();
             (block, result) = ctxt.expr_as_operand(entry, body.body);
-            ctxt.ret(block, result.with_span(Span::NULL));
+            ctxt.ret(block, Some(result), Span::NULL);
 
             tcx.type_of(def_id)
         }

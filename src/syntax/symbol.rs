@@ -1,15 +1,11 @@
-use std::{
-    cell::RefCell, fmt::{Debug, Display}, mem::{transmute, ManuallyDrop}
-};
+use std::{cell::RefCell, fmt::{Debug, Display}, mem::{transmute, ManuallyDrop}};
 
 use bumpalo::Bump;
 use foldhash::quality::RandomState;
 
-type StringSet = indexmap::IndexSet<&'static str, RandomState>;
-
 struct StringInterner {
     arena: ManuallyDrop<Bump>,
-    strings: StringSet
+    strings: indexmap::IndexSet<&'static str, RandomState>
 }
 
 impl StringInterner {

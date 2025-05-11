@@ -446,7 +446,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             },
             ast::ItemKind::GlobalVar(global) => {
                 self.define(
-                    if global.constant {DefinitionKind::Static} else {DefinitionKind::Const},
+                    if global.constant {DefinitionKind::Const} else {DefinitionKind::Static},
                     global.ident, item.node_id, item.scope);
                 self.visit_ty_expr(global.ty);
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
@@ -573,10 +573,10 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             NameSpace::Function => rib.functions.get(&name.ident.symbol),
             NameSpace::Variable => rib.globals.get(&name.ident.symbol)
         };
-        if let Some(decl) = decl {
-            name.resolve(Resolution::Def(decl.site, decl.kind));
-        } else if let Some(local) = self.resolve_local(name.ident.symbol) {
+        if let Some(local) = self.resolve_local(name.ident.symbol) {
             name.resolve(Resolution::Local(local.site));
+        } else if let Some(decl) = decl {
+            name.resolve(Resolution::Def(decl.site, decl.kind));
         } else if name.ident.symbol.is_primitive_ty() && space == NameSpace::Type {
             name.resolve(Resolution::Primitive);
         } else {

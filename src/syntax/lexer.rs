@@ -530,6 +530,12 @@ impl<'a> SourceCursor<'a> {
         }
     }
 
+    #[doc(hidden)]
+    fn _lookahead(&mut self) -> Option<char> {
+        let mut clone = self.clone();
+        clone._step()
+    }
+
     fn length(&self) -> usize {
         self._length
     }
@@ -594,13 +600,11 @@ impl<'a> Iterator for SourceCursor<'a> {
     }
 }
 
-
 struct Tokenizer<'a> {
     offset: u32,
     bol: usize,
     cursor: SourceCursor<'a>,
     current: Option<char>,
-    lookahead_map: Option<char>,
     token: Token<'a>
 }
 
@@ -611,7 +615,6 @@ impl<'a> Tokenizer<'a> {
             bol: 0,
             current: cursor._step(),
             cursor,
-            lookahead_map: None,
             token: Token {
                 kind: TokenKind::Punctuator(Punctuator::Dot),
                 span: Span::zero()
@@ -857,7 +860,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn comment(&mut self) -> Result<LexState, LexErrorKind> {
-        let multiline_comment = self.matches(2, b"/*");
+        let multiline_comment = self.matches(1, b"/*");
         self.bump();
         let mut level = multiline_comment as u32;
         let mut current = self.bump();
@@ -961,16 +964,11 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn lookahead(&mut self) -> Option<char> {
-        if let None = self.lookahead_map {
-            self.lookahead_map = self.cursor._step();
-        }
-        self.lookahead_map
+        self.cursor._lookahead()
     }
 
     fn bump(&mut self) -> Option<char> {
-        self.current = self.lookahead_map
-            .take()
-            .or_else(|| self.cursor._step());
+        self.current = self.cursor._step();
         self.current
     }
 

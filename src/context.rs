@@ -375,6 +375,7 @@ define_internables! {
     into tys      intern intern_ty(type_ir::TyKind<'tcx>) -> type_ir::Ty<'tcx>;
     into consts   intern intern_const(type_ir::ConstKind<'tcx>) -> type_ir::Const<'tcx>;
     into layouts  intern intern_layout(type_ir::LayoutData) -> type_ir::Layout<'tcx>;
+    into globals  intern intern_global(type_ir::GlobalKind<'tcx>) -> type_ir::Global<'tcx>;
 }
 
 macro_rules! define_interners {

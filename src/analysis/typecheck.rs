@@ -987,7 +987,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_valid_cast(&self, from: Ty<'tcx>, to: Ty<'tcx>) -> bool {
-        use type_ir::TyKind::{Err, Never, Int, Refrence, Float, Char, Bool};
+        use type_ir::TyKind::{Err, Never, Int, Refrence, Array, Float, Char, Bool};
         if let Ty(Err | Never) = from {
             return true;
         }
@@ -1002,14 +1002,14 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             return true;
         }
 
-        // int <-> bool conversions +
-        // u32 <-> char conversions
         return match (from, to) {
             (Ty(Int(..)), Ty(Bool)) => true,
             (Ty(Bool), Ty(Int(..))) => true,
 
             (Ty(Int(Integer::I32 | Integer::I8, false)), Ty(Char)) => true,
             (Ty(Char), Ty(Int(Integer::I32 | Integer::I8, false))) => true,
+
+            (Ty(Array(aty, _)), Ty(Refrence(rty))) if aty == rty => true,
             _ => false
         };
     }
@@ -1038,6 +1038,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                         format!("no cast is defined from {expr_ty} to {ty}"))
                         .at(span)
                         .push(self.diagnostics());
+                    self.last_error.set(Some(()));
                 }
             }
             ast::TypeConversion::Transmute => {

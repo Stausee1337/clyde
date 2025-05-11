@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, ffi::OsString, hash::{BuildHashe
 
 use foldhash::quality::FixedState;
 use index_vec::IndexVec;
-use ll::{BasicType, AnyValue, BasicValue};
+use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
 use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::{ast, symbol}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
@@ -27,9 +27,15 @@ struct Place<'ll> {
 
 #[derive(Debug, Clone, Copy)]
 enum ValueKind<'ll> {
-     Ref(Place<'ll>),
-     Immediate(ll::AnyValueEnum<'ll>),
-     Pair(ll::AnyValueEnum<'ll>, ll::AnyValueEnum<'ll>),
+    /// represents a value that MUST not fit into a usual llvm immediate, but has to be
+    /// represented by a place to a stack pointer. i.e. BackendRepr must be Memory
+    Ref(Place<'ll>),
+    /// represents a value that MUST always fit into an llvm immediate
+    /// i.e. BackendRepr must be Scalar
+    Immediate(ll::BasicValueEnum<'ll>),
+    /// represents a value that MUST always fit into two llvm immediates
+    /// i.e. BackendRepr must be ScalarPair
+    Pair(ll::BasicValueEnum<'ll>, ll::BasicValueEnum<'ll>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -201,7 +207,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     .set_alignment(place.align.in_bytes() as u32)
                     .unwrap();
                 Value {
-                    kind: ValueKind::Immediate(value.as_any_value_enum()),
+                    kind: ValueKind::Immediate(value.as_basic_value_enum()),
                     layout
                 }
             }
@@ -238,7 +244,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     .unwrap();
 
                 Value {
-                    kind: ValueKind::Pair(value1.as_any_value_enum(), value2.as_any_value_enum()),
+                    kind: ValueKind::Pair(value1.as_basic_value_enum(), value2.as_basic_value_enum()),
                     layout
                 }
             }
@@ -269,6 +275,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
     fn lower_place(&mut self, ir_place: intermediate::Place<'tcx>) -> (Place<'ll>, TyLayoutTuple<'tcx>) {
         use intermediate::Place::*;
+        if let intermediate::Place::Global(global) = ir_place {
+            return self.lower_global(global);
+        }
         let (Register(target) | Deref(target) | Field { target, .. } | Index { target, .. }) = ir_place else {
             panic!("Place::None is not supported here");
         };
@@ -311,6 +320,12 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         };
                         value.force_into()
                     }
+                    Ty(TyKind::Refrence(..)) => {
+                        let Value { kind: ValueKind::Immediate(value), .. } = self.load_value(cg_place, ty) else {
+                            panic!("Place::Index: pointers always fit into immediates");
+                        };
+                        value.force_into()
+                    }
                     _ => cg_place.value
                 };
                 let llvm_element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.cctxt).force_into();
@@ -325,7 +340,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     align: element.align
                 }, element)
             }
-            None => unreachable!()
+            intermediate::Place::Global(_) | None => unreachable!()
         }
     }
 
@@ -334,7 +349,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         // system instead of this match here (downcast to `LLVMConstValueConversion` or a better name
         // for this trait)
         match cnst {
-            Const(ConstKind::Definition(def)) => {
+            /*Const(ConstKind::Definition(def)) => {
                 let node = self.tcx.node_by_def_id(*def);
                 let ll_value = if let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(..), .. }) = node {
                     let function = self.cctxt.push_dependency(*def);
@@ -348,43 +363,124 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     kind: ValueKind::Immediate(ll_value),
                     layout
                 }
-            }
+            }*/
             Const(ConstKind::Value(value)) => {
                 let layout = self.tcx.layout_of(value.ty).unwrap();
                 let ll_ty = layout.llvm_type(self.cctxt);
-                if let ll::AnyTypeEnum::IntType(int_ty) = ll_ty {
-                    // should take care of Bool, Char and any Integer
-                    let value = value.downcast_unsized::<dyn num_traits::ToPrimitive>()
-                        .unwrap()
-                        .to_i128()
-                        .unwrap();
-                    let value = ll::AnyValueEnum::IntValue(int_ty.const_int(value as u64, false));
-                    return Value {
-                        kind: ValueKind::Immediate(value),
-                        layout
-                    };
+                match ll_ty {
+                    ll::AnyTypeEnum::IntType(int_ty) => {
+                        // should take care of Bool, Char and any Integer
+                        let sign_extend = if let Ty(TyKind::Int(_integer, signed)) = layout.ty {
+                            *signed
+                        } else {
+                            false
+                        };
+                        let value = value.downcast_unsized::<dyn num_traits::ToPrimitive>()
+                            .unwrap()
+                            .to_i128()
+                            .unwrap();
+                        let value = int_ty.const_int(value as u64, sign_extend).as_basic_value_enum();
+                        return Value {
+                            kind: ValueKind::Immediate(value),
+                            layout
+                        };
+                    }
+                    ll::AnyTypeEnum::FloatType(float_ty) => {
+                        let value = value.downcast_unsized::<dyn num_traits::ToPrimitive>()
+                            .unwrap()
+                            .to_f64()
+                            .unwrap();
+                        let value = float_ty.const_float(value).as_basic_value_enum();
+                        return Value {
+                            kind: ValueKind::Immediate(value),
+                            layout
+                        };
+                    }
+                    _ => panic!("these types are more like aggregates and should be handled via global_alloc"),
                 }
-                if let Ty(TyKind::String) = layout.ty {
-                    let string_data = value.as_bytes();
-                    let nuint_layout = self.tcx.layout_of(self.tcx.basic_types.nuint).unwrap();
 
-
-                    let nuint_type = nuint_layout.llvm_type(self.cctxt).into_int_type();
-
-                    let data = self.cctxt.allocate_string_data(self.module, string_data);
-                    let size = nuint_type.const_int(string_data.len() as u64, false);
-
-                    return Value {
-                        kind: ValueKind::Pair(data.as_any_value_enum(), size.as_any_value_enum()),
-                        layout,
-                    };
-                }
-
-                todo!("other kinds of constant values are currently unsupported")
             }
             Const(ConstKind::Err | ConstKind::Infer) =>
                 panic!("ConstKind::Err, ConstKind::Infer are invalid at Codegen phase")
         }
+    }
+
+    fn handle_dependency(&mut self, global: type_ir::Global<'tcx>) -> DependencyKind<'ll> {
+        let name = global.get_name(self.tcx);
+        let global_value = if global.is_function() {
+            self.module.get_function(name.get()).map(DependencyKind::Function)
+        } else {
+            self.module.get_global(name.get()).map(DependencyKind::Value)
+        };
+
+        if let Some(global_value) = global_value {
+            return global_value;
+        }
+
+        if let Some(def) = global.definition() {
+            return self.cctxt.push_dependency(def, global.initializer(), Some(self.module));
+        }
+
+        let name = global.get_name(self.tcx);
+        let type_ir::Global(type_ir::GlobalKind::Indirect { allocation, align, .. }) = global else {
+            unreachable!();
+        };
+        let llvm_ty = self.cctxt.context.i8_type().array_type(allocation.len() as u32);
+
+        let global = self.module.add_global(llvm_ty, None, name.get());
+        global.set_initializer(&self.cctxt.create_array_value(&allocation));
+        global.set_alignment(align.in_bytes() as u32);
+        global.set_linkage(ll::Linkage::Private);
+        DependencyKind::Value(global)
+    }
+
+    /// Loads any global except for functions
+    fn lower_global(&mut self, global: type_ir::Global<'tcx>) -> (Place<'ll>, TyLayoutTuple<'tcx>) { 
+        let DependencyKind::Value(value) = self.handle_dependency(global) else {
+            panic!("lower_global won't lower functions");
+        };
+        let ty = global.ty(self.tcx);
+        let layout = self.tcx.layout_of(ty).unwrap();
+        let value = value.as_pointer_value();
+
+        match ty {
+            Ty(TyKind::String) => {
+                let type_ir::Global(type_ir::GlobalKind::Indirect { allocation, ..}) = global else {
+                    unreachable!()
+                };
+                let nuint_layout = self.tcx.layout_of(self.tcx.basic_types.nuint).unwrap();
+                let nuint_type = nuint_layout.llvm_type(self.cctxt).into_int_type();
+
+                let size = nuint_type.const_int(allocation.len() as u64, false);
+
+                let value = Value {
+                    kind: ValueKind::Pair(value.as_basic_value_enum(), size.as_basic_value_enum()),
+                    layout,
+                };
+                let place = self.alloca_place(layout);
+                value.store(place, layout, self);
+                (place, layout)
+            }
+            _ => {
+                let place = Place {
+                    value,
+                    align: layout.align,
+                };
+                (place, layout)
+            }
+        }
+    }
+
+    fn try_get_function(&mut self, operand: intermediate::Operand<'tcx>) -> Option<(ll::FunctionValue<'ll>, TyLayoutTuple<'tcx>)> {
+        let intermediate::Operand::Global(global) = operand else {
+            return None;
+        };
+        let DependencyKind::Function(function) = self.handle_dependency(global) else {
+            panic!("lower_global won't lower functions");
+        };
+        let ty = global.ty(self.tcx);
+        let layout = self.tcx.layout_of(ty).unwrap();
+        return Some((function, layout));
     }
 
     fn lower_operand(&mut self, operand: intermediate::Operand<'tcx>) -> Value<'ll, 'tcx> {
@@ -397,6 +493,10 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 }
             },
             intermediate::Operand::Const(cnst) => self.lower_const_value(cnst),
+            intermediate::Operand::Global(alloc) => {
+                let (place, layout) = self.lower_global(alloc);
+                self.load_value(place, layout)
+            }
         }
     }
 
@@ -417,7 +517,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let (cg_place, mut layout) = self.lower_place(ir_place);
                 layout = self.tcx.layout_of(Ty::new_refrence(self.tcx, layout.ty)).unwrap();
                 let value = Value {
-                    kind: ValueKind::Immediate(cg_place.value.as_any_value_enum()),
+                    kind: ValueKind::Immediate(cg_place.value.as_basic_value_enum()),
                     layout,
                 };
                 deferred.store_or_init(value, self);
@@ -432,9 +532,10 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 deferred.store_or_init(value, self);
             }
             intermediate::RValue::Call { callee, ref args } => {
-                let Value { kind: ValueKind::Immediate(function), layout } = self.lower_operand(callee) else {
-                    panic!("function value needs to be ValueKind::Immediate");
-                };
+                // FIXME: accept that this is optional and handle cases like fnptrs and intrinsic
+                // calls
+                let (llfunc, layout) = self.try_get_function(callee).unwrap();
+
                 let Ty(TyKind::Function(fndef)) = layout.ty else {
                     panic!("{:?} is not callable", layout.ty);
                 };
@@ -504,13 +605,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                 }
 
-                let result = ensure!(self.builder.build_call(function.into_function_value(), &arguments, ""));
+                let result = ensure!(self.builder.build_call(llfunc, &arguments, ""));
                 let result = ll_result.map(|()| result);
 
                 let value = match (result, mem_argload) {
                     (Some(result), None) => { // scalar return
                         Value {
-                            kind: ValueKind::Immediate(result.as_any_value_enum()),
+                            kind: ValueKind::Immediate(result.try_as_basic_value().unwrap_left()),
                             layout: result_layout
                         }
                     }
@@ -519,8 +620,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                             unreachable!()
                         };
                         Value {
-                            kind: ValueKind::Pair(result.as_any_value_enum(), llval),
-                            layout
+                            kind: ValueKind::Pair(result.try_as_basic_value().unwrap_left(), llval),
+                            layout: result_layout
                         }
                     }
                     (None, Some((memload, layout))) => { // memory return
@@ -791,9 +892,19 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
             }
             intermediate::RValue::Cast { value, ty: res_ty } => {
-                let result_layout = self.tcx.layout_of(res_ty).unwrap();
-                let Value { kind: ValueKind::Immediate(llvm_value), layout: val_layout } = self.lower_operand(value) else {
-                    panic!("RValue::BinaryOp is only valid for ValueKind::Immediate");
+                let result_layout = self.tcx.layout_of(res_ty).unwrap(); 
+                let Value { kind: value_kind, layout: val_layout } = self.lower_operand(value); 
+                let llvm_value = match value_kind {
+                    ValueKind::Immediate(llvm_value) => llvm_value,
+                    ValueKind::Ref(place) if let Ty(TyKind::Array(..)) = val_layout.ty && let Ty(TyKind::Refrence(..)) = res_ty => {
+                        let res = Value {
+                            kind: ValueKind::Immediate(place.value.as_basic_value_enum()),
+                            layout: result_layout
+                        };
+                        deferred.store_or_init(res, self);
+                        return;
+                    }
+                    kind => panic!("RValue::Cast is not defined for {kind:?}"),
                 };
                 let res = match (val_layout.ty, res_ty) {
                     (Ty(TyKind::Int(..)), Ty(TyKind::Int(_, signed))) => {
@@ -801,14 +912,14 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let int_type: ll::IntType<'ll> = result_layout.llvm_type(self.cctxt)
                             .force_into();
                         ensure!(self.builder.build_int_cast_sign_flag(int_value, int_type, *signed, ""))
-                            .as_any_value_enum()
+                            .as_basic_value_enum()
                     }
                     (Ty(TyKind::Float(..)), Ty(TyKind::Float(..))) => {
                         let float_value: ll::FloatValue<'ll> = llvm_value.force_into();
                         let float_type: ll::FloatType<'ll> = result_layout.llvm_type(self.cctxt)
                             .force_into();
                         ensure!(self.builder.build_float_cast(float_value, float_type, ""))
-                            .as_any_value_enum()
+                            .as_basic_value_enum()
                     }
                     (Ty(TyKind::Int(_, signed)), Ty(TyKind::Float(..))) => {
                         let int_value: ll::IntValue<'ll> = llvm_value.force_into();
@@ -825,10 +936,17 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                                 ensure!(self.builder.$token(int_value, float_type, ""))
                             }
                         };
-                        res.as_any_value_enum()
+                        res.as_basic_value_enum()
                     }
                     (Ty(TyKind::Int(type_ir::Integer::I8, false)), Ty(TyKind::Bool)) => llvm_value,
                     (Ty(TyKind::Int(type_ir::Integer::I32, false)), Ty(TyKind::Char)) => llvm_value,
+                    (Ty(TyKind::Refrence(_)), Ty(TyKind::Int(..))) => {
+                        let pointer_value: ll::PointerValue<'ll> = llvm_value.force_into();
+                        let int_type: ll::IntType<'ll> = result_layout.llvm_type(self.cctxt)
+                            .force_into();
+
+                        ensure!(self.builder.build_ptr_to_int(pointer_value, int_type, "")).as_basic_value_enum()
+                    },
                     (val_ty, res_ty) =>
                         panic!("casting is not defined from {val_ty:?} to {res_ty:?} and should not be caught here"),
                 };
@@ -845,7 +963,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let value: ll::IntValue<'ll> = value.force_into();
                 let res = ensure!(self.builder.build_not(value, ""));
                 let res = Value {
-                    kind: ValueKind::Immediate(res.as_any_value_enum()),
+                    kind: ValueKind::Immediate(res.as_basic_value_enum()),
                     layout
                 };
                 deferred.store_or_init(res, self);
@@ -858,12 +976,12 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     Ty(TyKind::Int(..)) => {
                         let value: ll::IntValue<'ll> = value.force_into();
                         let res = ensure!(self.builder.build_int_nsw_sub(value.get_type().const_int(0, false), value, ""));
-                        res.as_any_value_enum()
+                        res.as_basic_value_enum()
                     }
                     Ty(TyKind::Float(_)) => {
                         let value: ll::FloatValue<'ll> = value.force_into();
                         let res = ensure!(self.builder.build_float_neg(value, ""));
-                        res.as_any_value_enum()
+                        res.as_basic_value_enum()
                     }
                     ty => panic!("Cannot negate {ty:?}"),
                 };
@@ -1006,7 +1124,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let layout = self.tcx.layout_of(signature.returns).unwrap();
                 match layout.repr {
                     type_ir::BackendRepr::Scalar(_) => {
-                        let value = self.lower_operand(value);
+                        let value = self.lower_operand(value.unwrap());
                         let Value { kind: ValueKind::Immediate(value), .. } = value else {
                             panic!("ValueKind should match BackendRepr");
                         };
@@ -1015,7 +1133,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     type_ir::BackendRepr::ScalarPair(_scalar1, scalar2) => {
 
-                        let value = self.lower_operand(value);
+                        let value = self.lower_operand(value.unwrap());
                         let Value { kind: ValueKind::Pair(value1, value2), .. } = value else {
                             panic!("ValueKind should match BackendRepr");
                         };
@@ -1037,7 +1155,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     type_ir::BackendRepr::Memory => {
                         if layout.size.in_bytes > 0 {
-                            let value = self.lower_operand(value);
+                            let value = self.lower_operand(value.unwrap());
                             let Value { kind: ValueKind::Ref(value), .. } = value else {
                                 panic!("ValueKind should match BackendRepr");
                             };
@@ -1197,9 +1315,18 @@ enum DependencyState {
     Pending, Done
 }
 
+#[derive(Clone, Copy)]
 struct DependencyData<'ll> {
-    value: ll::FunctionValue<'ll>,
+    mangled_name: symbol::Symbol,
+    module: &'ll ll::Module<'ll>,
+    value: DependencyKind<'ll>,
     state: DependencyState
+}
+
+#[derive(Clone, Copy)]
+enum DependencyKind<'ll> {
+    Function(ll::FunctionValue<'ll>),
+    Value(ll::GlobalValue<'ll>),
 }
 
 struct CodegenCtxt<'ll, 'tcx> {
@@ -1210,7 +1337,6 @@ struct CodegenCtxt<'ll, 'tcx> {
     context: &'ll ll::Context,
     module_map: HashMap<ast::NodeId, &'ll ll::Module<'ll>>,
     dependency_map: HashMap<ast::DefId, DependencyData<'ll>>,
-    string_data_map: HashMap<&'ll [u8], ll::PointerValue<'ll>>,
     type_translation_cache: RefCell<HashMap<TyLayoutTuple<'tcx>, ll::AnyTypeEnum<'ll>>>,
     depedency_queue: VecDeque<ast::DefId>,
     target_data_layout: TargetDataLayout
@@ -1225,47 +1351,68 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
             context,
             module_map: HashMap::new(),
             dependency_map: HashMap::new(),
-            string_data_map: HashMap::new(),
             type_translation_cache: RefCell::new(HashMap::new()),
             depedency_queue: VecDeque::new(),
             target_data_layout: *tcx.data_layout()
         }
     }
 
-    fn allocate_string_data(&mut self, module: &'ll ll::Module<'ll>, string_data: &[u8]) -> ll::PointerValue<'ll> {
-        if let Some(value) = self.string_data_map.get(string_data) {
-            return *value;
-        }
+    fn create_array_value(&mut self, data: &[u8]) -> ll::ArrayValue<'ll> {
+        let byte_type = self.context.i8_type();
 
-        let byte_type = self.tcx.layout_of(self.tcx.basic_types.byte)
-            .unwrap()
-            .llvm_type(self).into_int_type();
-
-        let mut values = Vec::with_capacity(string_data.len());
-        for byte in string_data {
+        let mut values = Vec::with_capacity(data.len());
+        for byte in data {
             values.push(byte_type.const_int(*byte as u64, false));
         }
-        let llvm_array = byte_type.const_array(&values);
-
-        let string_global = module.add_global(byte_type.array_type(values.len() as u32), None, &format!("string_data_{:x}", hash_data(string_data)));
-        string_global.set_initializer(&llvm_array);
-
-        let value = string_global.as_pointer_value();
-        self.string_data_map.insert(self.arena.alloc_slice_copy(string_data), value);
-        value
+        let llvm_value = byte_type.const_array(&values);
+        llvm_value 
     }
 
-    fn push_dependency(&mut self, def: ast::DefId) -> ll::FunctionValue<'ll> {
-        if let Some(DependencyData { value, .. }) = self.dependency_map.get(&def) {
+    fn ensure_delcartion(&mut self, value: DependencyKind<'ll>, mangled_name: symbol::Symbol, relative_module: &'ll ll::Module<'ll>) -> DependencyKind<'ll> {
+        match value {
+            DependencyKind::Function(func) => {
+                if let Some(decl) = relative_module.get_function(mangled_name.get()) {
+                    return DependencyKind::Function(decl);
+                }
+                let decl = relative_module.add_function(
+                    mangled_name.get(),
+                    func.get_type(),
+                    Some(ll::Linkage::External)
+                );
+                DependencyKind::Function(decl)
+            }
+            DependencyKind::Value(global) => {
+                if let Some(decl) = relative_module.get_global(mangled_name.get()) {
+                    return DependencyKind::Value(decl);
+                }
+                let llvm_type: ll::BasicTypeEnum<'ll> = global.get_value_type().force_into();
+                let decl = relative_module.add_global(
+                    llvm_type,
+                    None,
+                    mangled_name.get(),
+                );
+                decl.set_externally_initialized(true);
+                decl.set_linkage(ll::Linkage::External);
+                decl.set_alignment(global.get_alignment());
+                DependencyKind::Value(decl)
+            }
+        }
+    }
+
+    fn push_dependency(&mut self, def: ast::DefId, init: Option<Const<'tcx>>, relative_module: Option<&'ll ll::Module<'ll>>) -> DependencyKind<'ll> {
+        if let Some(DependencyData { value, module, mangled_name, .. }) = self.dependency_map.get(&def) {
+            if let Some(relative_module) = relative_module && relative_module != *module {
+                return self.ensure_delcartion(*value, *mangled_name, relative_module);
+            }
             return *value;
         }
 
         let node = self.tcx.node_by_def_id(def);
-        let ast::Node::Item(func @ ast::Item { kind: ast::ItemKind::Function(..), .. }) = node else {
-            panic!("CodegenCtxt::push_dependency is exclusive to functions");
+        let ast::Node::Item(item) = node else {
+            panic!("CodegenCtxt::push_dependency is only allowed on source-bound items");
         };
 
-        let state = if let Some(..) = node.body() {
+        let state = if let ast::Item { kind: ast::ItemKind::Function(func), .. } = item && func.body.is_some() {
             self.depedency_queue.push_back(def);
             DependencyState::Pending
         } else {
@@ -1276,23 +1423,52 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         let ty = self.tcx.type_of(def);
         let layout = self.tcx.layout_of(ty).unwrap();
 
-        let mangled_name = func.get_name(self.tcx);
-        let function = module
-            .add_function(
-                mangled_name.get(),
-                layout.llvm_type(self).into_function_type(),
-                Some(ll::Linkage::External)
-            );
+        let mangled_name = item.get_name(self.tcx);
+        let value = match item {
+            ast::Item { kind: ast::ItemKind::Function(..), .. } => {
+                let function = module
+                    .add_function(
+                        mangled_name.get(),
+                        layout.llvm_type(self).into_function_type(),
+                        Some(ll::Linkage::External)
+                    );
+                DependencyKind::Function(function)
+            }
+            ast::Item { kind: ast::ItemKind::GlobalVar(..), .. } => {
+                let array_ty = self.context.i8_type().array_type(layout.size.in_bytes as u32);
+                let Some(Const(ConstKind::Value(value))) = init else {
+                    unreachable!()
+                };
+                let global = module
+                    .add_global(
+                        array_ty,
+                        None,
+                        mangled_name.get(),
+                    );
+                global.set_initializer(&self.create_array_value(value.as_bytes()));
+                global.set_linkage(ll::Linkage::External);
+                global.set_alignment(layout.align.in_bytes() as u32);
+                DependencyKind::Value(global)
+            }
+            ast::Item { kind, .. } => panic!("{kind:?} items are invalid in push_dependency")
+        };
+
         let data = DependencyData {
-            value: function, state
+            value, state, module, mangled_name
         };
         self.dependency_map.insert(def, data);
-        function
+
+        if let Some(relative_module) = relative_module && relative_module != module {
+            return self.ensure_delcartion(value, mangled_name, relative_module);
+        }
+        value
     }
 
     fn generate_code_bfs(&mut self) {
         while let Some(element) = self.depedency_queue.pop_front() {
-            let value = self.dependency_map[&element].value;
+            let DependencyKind::Function(value) = self.dependency_map[&element].value else {
+                unreachable!("dependency queue is supposed to only contain functions");
+            };
             let module = self.get_module_for_def(element);
 
             let body = self.tcx.build_ir(element)
@@ -1550,6 +1726,49 @@ impl Scalar {
     }
 }
 
+impl<'tcx> type_ir::Global<'tcx> {
+    fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
+        match self {
+            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) => {
+                let ast::Node::Item(item) = tcx.node_by_def_id(*def) else { unreachable!() };
+                item.get_name(tcx)
+            }
+            type_ir::Global(type_ir::GlobalKind::Indirect { allocation, .. }) => {
+                let id = allocation.as_ptr().addr();
+                symbol::Symbol::intern(&format!("_clyialloc_{id:016x}"))
+            }
+        }
+    }
+
+    fn is_function(&self) -> bool {
+        if let type_ir::Global(type_ir::GlobalKind::Function { .. }) = self {
+            return true;
+        }
+        false
+    }
+
+    fn definition(&self) -> Option<ast::DefId> {
+        if let type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) = self {
+            return Some(*def);
+        }
+        None
+    }
+
+    fn initializer(&self) -> Option<Const<'tcx>> {
+        if let type_ir::Global(type_ir::GlobalKind::Static { initializer, .. }) = self {
+            return Some(*initializer);
+        }
+        None
+    }
+
+    fn ty(&self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
+        match self {
+            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
+            type_ir::Global(type_ir::GlobalKind::Indirect { ty, .. }) => *ty
+        }
+    }
+}
+
 impl<'tcx> ast::Item<'tcx> {
     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
         if let ast::ItemKind::Function(func) = self.kind {
@@ -1576,7 +1795,7 @@ pub struct CodegenResults;
 
 const LINKER: &'static str = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\link.exe";
 
-const BASIC_ARGS: [&'static str; 8] = [
+const BASIC_ARGS: [&'static str; 9] = [
     r"-defaultlib:libcmt",
     r"-defaultlib:oldnames",
     r"-libpath:C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\lib\x64",
@@ -1585,6 +1804,7 @@ const BASIC_ARGS: [&'static str; 8] = [
     r"-libpath:C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64",
     r"-libpath:C:\Program Files\LLVM\lib\clang\20\lib\windows",
     r"-nologo",
+    r"helpers.o",
 ];
 
 pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
@@ -1593,12 +1813,12 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
     let entry = tcx.resolutions.entry.expect("program should have an entrypoint");
 
     let mut ctxt = CodegenCtxt::new(tcx, &arena);
-    ctxt.push_dependency(entry);
+    ctxt.push_dependency(entry, None, None);
 
     for def in &tcx.resolutions.items {
         let node = tcx.node_by_def_id(*def);
         if let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node && func.sig.header.c_call.is_some() {
-            ctxt.push_dependency(*def);
+            ctxt.push_dependency(*def, None, None);
         }
     }
 
@@ -1661,7 +1881,7 @@ mod ll {
         builder::Builder,
         basic_block::BasicBlock,
         types::{AnyTypeEnum, BasicTypeEnum, BasicMetadataTypeEnum, IntType, FloatType, BasicType},
-        values::{IntValue, FloatValue, FunctionValue, AnyValueEnum, PointerValue, BasicValueEnum, BasicValue, AnyValue},
+        values::{IntValue, FloatValue, FunctionValue, GlobalValue, ArrayValue, PointerValue, BasicValueEnum, BasicValue},
         targets::FileType,
         passes::PassBuilderOptions,
         AddressSpace,

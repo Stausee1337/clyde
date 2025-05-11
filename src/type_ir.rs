@@ -1,9 +1,8 @@
-use std::{any::TypeId, marker::Unsize, ops::Deref, ptr::NonNull};
+use std::{any::TypeId, marker::Unsize, ops::Deref};
 
 use bytemuck::Pod;
 use index_vec::IndexVec;
-use inkwell::debug_info::DebugInfoBuilder;
-use num_traits::{Num, ToBytes, ToPrimitive};
+use num_traits::{Num, ToPrimitive};
 
 use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
 
@@ -169,28 +168,6 @@ impl<'tcx> Eraser<'tcx> {
         let slice: &[u8] = bytemuck::cast_slice(slice);
         Erased(slice)
     }
-
-    fn erase_unsized<U: std::ptr::Pointee<Metadata = usize> + ?Sized>(&self, val: &U) -> Erased<'tcx> {
-        let layout = std::alloc::Layout::for_value(val);
-        let (src, size) = (val as *const U).to_raw_parts();
-        if size == 0 {
-            return Erased(&[]);
-        }
-        let dst = self.arena.alloc_layout(layout);
-        let data = unsafe {
-            dst.copy_from(
-                NonNull::new(src as *mut u8)
-                    .expect("expect sized value to have valid pointer"),
-                size
-            );
-            let data = std::ptr::from_raw_parts::<[u8]>(
-                dst.as_ptr() as *const (),
-                size
-            );
-            &*data
-        };
-        Erased(data)
-    }
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -217,6 +194,7 @@ where
 
     let align = std::mem::align_of::<S>();
     assert!(data.addr() & (align - 1) == 0);
+    assert!(erased.0.len() == std::mem::size_of::<S>());
 
     let vtable: std::ptr::DynMetadata<U> = const { get_vtable::<U, S>() };
 
@@ -231,41 +209,9 @@ where
     }
 }
 
-/// Hack because unsized types are really hard to tame, and this is safe for sure.
-/// FIXME: maybe instead of passing refrences through the downcast_unsized system, we could passs
-/// somthing that has dtors, so we wouldn't need to leak here. And dtors seem to make sense in
-/// general
-#[inline]
-fn downcast_debug_string<'a, T>(string: Box<String>) -> Option<&'a T>
-where 
-    T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static
-{
-
-    if TypeId::of::<dyn std::fmt::Debug>() != TypeId::of::<T>() {
-        return None;
-    }
-
-    let vtable: std::ptr::DynMetadata<dyn std::fmt::Debug> = const { get_vtable::<dyn std::fmt::Debug, String>() };
-    let data = Box::leak(string);
-
-    unsafe {
-        let trait_ = std::ptr::from_raw_parts(data, vtable) as *const dyn std::fmt::Debug;
-        let trait_ = &*trait_;
-        Some(std::mem::transmute(trait_))
-    }
-}
-
 impl<'tcx> Value<'tcx> {
-    pub fn from_string(tcx: TyCtxt<'tcx>, value: &str) -> Self {
-        let eraser = Eraser::from_tcx(tcx);
-        let erased = eraser.erase_unsized(value);
-        Self { ty: tcx.basic_types.string, erased }
-    }
-
-    pub fn from_integer<T: Num + ToBytes + Pod + 'static>(tcx: TyCtxt<'tcx>, value: T) -> Self {
-        let ty = int_ty_from_id(tcx, std::any::TypeId::of::<T>());
-        let eraser = Eraser::from_tcx(tcx);
-        let erased = eraser.erase(value);
+    pub fn from_array_with_ty(data: &'tcx [u8], ty: Ty<'tcx>) -> Self {
+        let erased = Erased(data);
         Value { ty, erased }
     }
 
@@ -290,6 +236,12 @@ impl<'tcx> Value<'tcx> {
         Value { ty: tcx.basic_types.nuint, erased }
     }
 
+    pub fn from_float(tcx: TyCtxt<'tcx>, value: f64, float: Float) -> Self {
+        let eraser = Eraser::from_tcx(tcx);
+        let erased = eraser.erase(value);
+        Value { ty: Ty::new_float(tcx, float), erased }
+    }
+
     pub fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
         // NOTE: for Value this could be a query, allowing polymorphic data to be provided from
         // much further than just rust itself, but including compile-time executions (e.g.
@@ -302,10 +254,8 @@ impl<'tcx> Value<'tcx> {
                 Integer::I8.downcast_unsized::<T>(false, self.erased),
             Ty(TyKind::Char) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
                 Integer::I32.downcast_unsized::<T>(false, self.erased),
-            Ty(TyKind::String) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() => {
-                let str = std::str::from_utf8(self.erased.0).unwrap();
-                downcast_debug_string(Box::new(str.to_string()))
-            },
+            Ty(TyKind::Float(float)) =>
+                float.downcast_unsized::<T>(self.erased),
             _ => None
         }
     }
@@ -324,29 +274,6 @@ impl<'tcx> std::fmt::Debug for Value<'tcx> {
     }
 }
 
-fn int_ty_from_id<'tcx>(tcx: TyCtxt<'tcx>, needle: std::any::TypeId) -> Ty<'tcx> {
-    macro_rules! define {
-        ($($prim:ident : $ty:ident),*) => {{
-            let ids = [$(std::any::TypeId::of::<$prim>()),*];
-            let tys = [$(tcx.basic_types.$ty),*];
-            (ids, tys)
-        }};
-    }
-    let (ids, tys) = define! {
-        u8: byte, i8: sbyte,
-        u16: ushort, i16: short,
-        u32: uint, i32: int,
-        u64: ulong, i64: long,
-        usize: nuint, isize: nint
-    };
-    for (id, ty) in ids.iter().zip(tys) {
-        if *id == needle {
-            return ty;
-        }
-    }
-    unreachable!("type doesn't seem to be integer")
-}
-
 const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Pointee>::Metadata { 
     let ptr: *const S = std::ptr::null();
     let ptr: *const T = ptr;
@@ -358,7 +285,6 @@ const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Poin
 #[derive(Hash, PartialEq, Eq)]
 pub enum ConstKind<'tcx> {
     Value(Value<'tcx>),
-    Definition(DefId),
     Infer,
     Err
 }
@@ -367,21 +293,12 @@ pub enum ConstKind<'tcx> {
 pub struct Const<'tcx>(pub &'tcx ConstKind<'tcx>);
 
 impl<'tcx> Const<'tcx> {
-    pub fn void_value(tcx: TyCtxt<'tcx>) -> Const<'tcx> {
-        let void = tcx.basic_types.void;
-        tcx.intern_const(ConstKind::Value(Value { ty: void, erased: Erased(&[]) }))
-    }
-
     pub fn from_definition(tcx: TyCtxt<'tcx>, def_id: DefId) -> Const<'tcx> {
         let ty = tcx.type_of(def_id);
-        if let Ty(TyKind::Function(..)) = ty {
-            return tcx.intern_const(ConstKind::Definition(def_id))
-        }
 
         let node = tcx.node_by_def_id(def_id);
         let body = node.body().expect("const should have a body");
 
-        let ty = tcx.type_of(def_id);
         match Self::try_val_from_simple_expr(tcx, ty, body.body) {
             Some(v) => v,
             None => {
@@ -432,7 +349,8 @@ impl<'tcx> Const<'tcx> {
                 tcx.basic_types.char,
             ast::Literal::Integer(..) =>
                 tcx.basic_types.int,
-            ast::Literal::Floating(..) => todo!(),
+            ast::Literal::Floating(..) =>
+                tcx.basic_types.double,
             ast::Literal::Null => panic!("can't infer type from null")
         }
     }
@@ -452,20 +370,27 @@ impl<'tcx> Const<'tcx> {
         }
     }
 
+    fn new_size(tcx: TyCtxt<'tcx>, size: u64) -> Self {
+        tcx.intern_const(ConstKind::Value(Value::from_size(tcx, size)))
+    }
+
+    fn zeroed(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Self {
+        let layout = tcx.layout_of(ty).unwrap();
+        let data = tcx.arena.alloc_slice_fill_copy(layout.size.in_bytes as usize, 0u8);
+        tcx.intern_const(ConstKind::Value(Value::from_array_with_ty(data, ty)))
+    }
+
     pub fn from_literal(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, literal: &'tcx ast::Literal) -> Result<Self, String> {
         let inner = match (ty.0, literal) {
-            (TyKind::String, ast::Literal::String(str)) => {
-                ConstKind::Value(Value::from_string(tcx, &str))
-            }
             (TyKind::Bool, ast::Literal::Boolean(bool)) =>
                 ConstKind::Value(Value::from_integer_with_ty(tcx, *bool as u8, tcx.basic_types.bool)),
             (TyKind::Char, ast::Literal::Char(char)) =>
-                ConstKind::Value(Value::from_integer(tcx, *char as u32)),
+                ConstKind::Value(Value::from_integer_with_ty(tcx, *char as u32, tcx.basic_types.char)),
             (TyKind::Int(..), ast::Literal::Integer(int)) =>
                 Self::int_to_val(tcx, *int, ty)?,
+            (TyKind::Float(ty), ast::Literal::Floating(float)) =>
+                ConstKind::Value(Value::from_float(tcx, *float, *ty)),
             (TyKind::Refrence(..), ast::Literal::Null) =>
-                // FIXME: `as usize` here will make the size of the scalar depend on the size
-                // of the architecture the compiler was compiled on, not the target usize
                 ConstKind::Value(Value::from_size(tcx, 0)),
             (_, ast::Literal::Null) =>
                 return Err(format!("non refrence-type {ty} cannot be null")),
@@ -483,8 +408,6 @@ impl<'tcx> Const<'tcx> {
     pub fn downcast_unsized<T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self) -> Option<&T> {
         match self {
             Const(ConstKind::Value(value)) => value.downcast_unsized::<T>(),
-            Const(ConstKind::Definition(def)) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
-                downcast_sized_knowingly::<T, dyn std::fmt::Debug, DebugInfoBuilder>(Erased::from_ref(def)),
             _ => None
         }
     }
@@ -494,34 +417,90 @@ impl<'tcx> std::fmt::Debug for Const<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Const(ConstKind::Value(value)) => write!(f, "{value:?}"),
-            Const(ConstKind::Definition(def)) => write!(f, "{:?}", DefinitionDebugWrapper(*def)),
             Const(ConstKind::Infer) => write!(f, "_"),
             Const(ConstKind::Err) => write!(f, "<error>")
         }
     }
 }
 
-struct DefinitionDebugWrapper(DefId);
-
-impl std::fmt::Debug for DefinitionDebugWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
-        let ident = context::with_tcx(|tcx| {
-            let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(self.0);
-            if let ast::Node::Item(item) = node {
-                return item.ident();
-            } else {
-                panic!("non-item in definition");
-            };
-        });
-
-        write!(f, "{}", ident.symbol.get())
+#[derive(Hash, PartialEq, Eq)]
+pub enum GlobalKind<'tcx> {
+    Function {
+        def: DefId
+    },
+    Static {
+        def: DefId,
+        initializer: Const<'tcx>
+    },
+    /// Similar to `GlobalKind::Static`, but it doesn't have a `DefId` associated with it and is
+    /// used e.g. for interning the data of string literals.
+    Indirect {
+        allocation: Box<[u8]>,
+        align: Align,
+        ty: Ty<'tcx>,
     }
 }
 
+#[derive(Hash, Clone, Copy, PartialEq, Eq)]
+pub struct Global<'tcx>(pub &'tcx GlobalKind<'tcx>);
 
-/*impl StaticVtable<dyn std::fmt::Debug> for DefinitionDebugWrapper {
-    const VTABLE: std::ptr::DynMetadata<dyn std::fmt::Debug> = get_vtable::<dyn std::fmt::Debug, Self>();
-}*/
+impl<'tcx> Global<'tcx> {
+    pub fn from_definition(tcx: TyCtxt<'tcx>, def: DefId) -> Self {
+        let node = tcx.node_by_def_id(def);
+        match node {
+            ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(..), .. }) =>
+                tcx.intern_global(GlobalKind::Function { def }),
+            ast::Node::Item(ast::Item { kind: ast::ItemKind::GlobalVar(glob), .. })
+                if !glob.constant => {
+                let ty = tcx.type_of(def);
+                let initializer = glob.init
+                    .map(|expr| Const::try_val_from_simple_expr(tcx, ty, expr))
+                    .flatten()
+                    .unwrap_or_else(|| Const::zeroed(tcx, ty));
+                tcx.intern_global(GlobalKind::Static { def, initializer })
+            }
+            _ => panic!("unexpected Node {node:?} in Global::from_definition"),
+        }
+    }
+
+    pub fn from_array_with_ty(
+        tcx: TyCtxt<'tcx>,
+        data: &[u8],
+        element_ty: Ty<'tcx>,
+        allocation_ty: Ty<'tcx>
+    ) -> Self {
+        let array_ty = Ty::new_array(tcx, element_ty, Const::new_size(tcx, data.len() as u64));
+        let layout = tcx.layout_of(array_ty).unwrap();
+        let allocation = data.to_vec().into_boxed_slice();
+        tcx.intern_global(GlobalKind::Indirect {
+            allocation,
+            align: layout.align,
+            ty: allocation_ty
+        })
+    }
+}
+
+impl<'tcx> std::fmt::Debug for Global<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
+        match self {
+            Global(GlobalKind::Function { def } | GlobalKind::Static { def, .. }) => {
+                let ident = context::with_tcx(|tcx| {
+                    let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(*def);
+                    if let ast::Node::Item(item) = node {
+                        return item.ident();
+                    } else {
+                        panic!("non-item in definition");
+                    };
+                });
+
+                write!(f, "{}", ident.symbol.get())
+            }
+            Global(GlobalKind::Indirect { allocation, .. }) =>
+                // TODO: maybe represent it's layout too
+                write!(f, "{:?}", allocation.escape_ascii())
+        }
+    }
+}
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum TyKind<'tcx> {
@@ -577,7 +556,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Adt(adt) => f.write_str(adt.name().get()),
             TyKind::Refrence(ty) => write!(f, "{ty}*"),
             TyKind::Slice(ty) => write!(f, "{ty}[]"),
-            TyKind::Array(ty, _) => write!(f, "{ty}[_]"),
+            TyKind::Array(ty, cap) => write!(f, "{ty}[{cap:?}]"),
             TyKind::DynamicArray(ty) => write!(f, "{ty}[..]"),
             // TODO: query function name and display it here
             TyKind::Function(_) => write!(f, "function"),
@@ -923,6 +902,26 @@ impl Float {
             Float::F32 => data_layout.f32_align,
             Float::F64 => data_layout.f64_align,
         }
+    }
+
+    fn downcast_unsized<'a, T: std::ptr::Pointee<Metadata = std::ptr::DynMetadata<T>> + ?Sized + 'static>(&self, erased: Erased<'a>) -> Option<&'a T> {
+        macro_rules! downcast_for_every_float {
+            ($trait:ty) => { 
+                match self {
+                    Float::F32 =>
+                        downcast_sized_knowingly::<T, $trait, f32>(erased),
+                    Float::F64 =>
+                        downcast_sized_knowingly::<T, $trait, f64>(erased),
+                }
+            };
+        }
+        let id = TypeId::of::<T>();
+        if id == TypeId::of::<dyn ToPrimitive>() {
+            return downcast_for_every_float!(dyn ToPrimitive);
+        } else if id == TypeId::of::<dyn std::fmt::Debug>() {
+            return downcast_for_every_float!(dyn std::fmt::Debug);
+        }
+        None
     }
 }
 
