@@ -107,8 +107,8 @@ pub enum TerminatorKind<'tcx> {
 
 #[derive(Clone, Copy)]
 pub struct Place<'tcx> {
-    origin: RegisterId,
-    translation_chain: &'tcx [PtrTranslation<'tcx>]
+    pub origin: RegisterId,
+    pub translation_chain: &'tcx [PtrTranslation<'tcx>]
 }
 
 impl<'tcx> Place<'tcx> {
@@ -1016,10 +1016,27 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     .unwrap_or_else(|| self.as_register(block, subscript.expr));
                 let idx;
                 (block, idx) = self.expr_as_operand(block, subscript.args[0]);
+
+                // FIXME: eventhough this is very C-like, refrences (really pointers) shoudn't be
+                // trivially indexable, as this goes against how I imagine the language to become
+                // at the moment:
+                //  - Types should be able to overload the Index operator in order to define thier
+                //  own behaviour, which would get really confusing cosidering indexing into a
+                //  pointer to a type whose Index operator is overloaded
+                //  - Even once refrences are added into the language, as refs and ptrs should be
+                //  able to be used somewhat interchanibly (niether semantically very different
+                //  like in C++, nor refs = safe and ptrs = unsafe like in rust) making ptrs and
+                //  refs behave differently here isn't a solution either
+                // So the idea would be to add an `offset` method to every ptr like so
+                // `*ptr.offset(i) = 42; print(*ptr.offset(i));` but obviously we don't have
+                // methods yet
+
+                let base_ty = self.typecheck.associations[&subscript.expr.node_id];
+                if let Ty(TyKind::Refrence(..) | TyKind::Slice(..) | TyKind::String) = base_ty {
+                    translation_chain.push(PtrTranslation::Deref);
+                }
+
                 translation_chain.push(PtrTranslation::Index { idx });
-                // FIXME: as soon as more advanced operator overloading becomes available we should
-                // change this into more of an intrinsic overloaded call for dynamic arrays and
-                // slices, as they're excpetions during codegen and need to be handled seperately
                 (block, target)
             }
             ast::ExprKind::Field(field) => {

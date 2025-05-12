@@ -274,74 +274,56 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     }
 
     fn lower_place(&mut self, ir_place: intermediate::Place<'tcx>) -> (Place<'ll>, TyLayoutTuple<'tcx>) {
-        use intermediate::Place::*;
-        if let intermediate::Place::Global(global) = ir_place {
-            return self.lower_global(global);
-        }
-        let (Register(target) | Deref(target) | Field { target, .. } | Index { target, .. }) = ir_place else {
-            panic!("Place::None is not supported here");
-        };
-        let (cg_place, ty) = match self.reg_translations[target] {
+        use intermediate::PtrTranslation::*;
+        let target = ir_place.origin;
+        let mut translation_chain = ir_place.translation_chain;
+        let (mut cg_place, mut ty) = match self.reg_translations[target] {
             LocalKind::Place { place, layout: ty } => (place, ty),
             LocalKind::Value(value) => {
-                let Deref(..) = ir_place else {
+                let Some(Deref) = ir_place.translation_chain.first() else {
                     panic!("only Place::Deref makes a LocalKind::Value here");
                 };
-                return value.deref(self);
+                translation_chain = &ir_place.translation_chain[1..];
+                value.deref(self)
             }
             LocalKind::Dangling => panic!("tried to resolve a LocalKind::Dangling")
         };
-        match ir_place {
-            Deref(_) => {
-                let value = self.load_value(cg_place, ty);
-                value.deref(self)
-            },
-            Register(_) => (cg_place, ty),
-            Field { field, ty: res_ty, .. } => {
-                let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.cctxt)
-                    .force_into();
+        for translation in translation_chain {
+            (cg_place, ty) = match translation {
+                Deref => {
+                    let value = self.load_value(cg_place, ty);
+                    value.deref(self)
+                },
+                Field { field, ty: res_ty } => {
+                    let llvm_ty: ll::BasicTypeEnum<'ll> = ty.llvm_type(self.cctxt)
+                        .force_into();
 
-                let value = ensure!(self.builder.build_struct_gep(llvm_ty, cg_place.value, field.raw(), ""));
-                let res_layout = self.tcx.layout_of(res_ty).unwrap();
-                (Place { value, align: res_layout.align }, res_layout)
-            }
-            Index { idx, .. } => {
-                let element = match ty.ty {
-                    Ty(TyKind::Array(element, ..) | TyKind::Slice(element) | TyKind::DynamicArray(element) | TyKind::Refrence(element)) => *element,
-                    Ty(TyKind::String) => self.tcx.basic_types.byte,
-                    _ => panic!("Can't index {ty:?}"),
-                };
-                let element = self.tcx.layout_of(element).unwrap();
-                let ptr = match ty.ty {
-                    Ty(TyKind::DynamicArray(..) | TyKind::Slice(..) | TyKind::String) => {
-                        let fictional_ty = self.tcx.layout_of(Ty::new_refrence(self.tcx, element.ty)).unwrap();
-                        let Value { kind: ValueKind::Immediate(value), .. } = self.load_value(cg_place, fictional_ty) else {
-                            panic!("Place::Index: pointers always fit into immediates");
-                        };
-                        value.force_into()
-                    }
-                    Ty(TyKind::Refrence(..)) => {
-                        let Value { kind: ValueKind::Immediate(value), .. } = self.load_value(cg_place, ty) else {
-                            panic!("Place::Index: pointers always fit into immediates");
-                        };
-                        value.force_into()
-                    }
-                    _ => cg_place.value
-                };
-                let llvm_element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.cctxt).force_into();
-                let Value { kind: ValueKind::Immediate(idx), .. } = self.lower_operand(idx) else {
-                    panic!("ValueKinds other than ValueKind::Immediate is not valid on Place::Index");
-                };
-                let idx: ll::IntValue<'ll> = idx.force_into();
+                    let value = ensure!(self.builder.build_struct_gep(llvm_ty, cg_place.value, field.raw(), ""));
+                    let res_layout = self.tcx.layout_of(*res_ty).unwrap();
+                    (Place { value, align: res_layout.align }, res_layout)
+                }
+                Index { idx } => {
+                    let element = match ty.ty {
+                        Ty(TyKind::Array(element, ..)) => *element,
+                        element => element,
+                    };
+                    let element = self.tcx.layout_of(element).unwrap();
+                    let ptr = cg_place.value;
+                    let llvm_element: ll::BasicTypeEnum<'ll> = element.llvm_type(self.cctxt).force_into();
+                    let Value { kind: ValueKind::Immediate(idx), .. } = self.lower_operand(*idx) else {
+                        panic!("ValueKinds other than ValueKind::Immediate is not valid on Place::Index");
+                    };
+                    let idx: ll::IntValue<'ll> = idx.force_into();
 
-                let value = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_element, ptr, &[idx], "") });
-                (Place {
-                    value,
-                    align: element.align
-                }, element)
-            }
-            intermediate::Place::Global(_) | None => unreachable!()
+                    let value = ensure!(unsafe { self.builder.build_in_bounds_gep(llvm_element, ptr, &[idx], "") });
+                    (Place {
+                        value,
+                        align: element.align
+                    }, element)
+                }
+            };
         }
+        (cg_place, ty)
     }
 
     fn lower_const_value(&mut self, cnst: Const<'tcx>) -> Value<'ll, 'tcx> {
@@ -435,16 +417,16 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     }
 
     /// Loads any global except for functions
-    fn lower_global(&mut self, global: type_ir::Global<'tcx>) -> (Place<'ll>, TyLayoutTuple<'tcx>) { 
+    fn lower_global(&mut self, global: type_ir::Global<'tcx>) -> Value<'ll, 'tcx> { 
         let DependencyKind::Value(value) = self.handle_dependency(global) else {
             panic!("lower_global won't lower functions");
         };
         let ty = global.ty(self.tcx);
-        let layout = self.tcx.layout_of(ty).unwrap();
         let value = value.as_pointer_value();
 
         match ty {
             Ty(TyKind::String) => {
+                let layout = self.tcx.layout_of(ty).unwrap();
                 let type_ir::Global(type_ir::GlobalKind::Indirect { allocation, ..}) = global else {
                     unreachable!()
                 };
@@ -457,16 +439,15 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     kind: ValueKind::Pair(value.as_basic_value_enum(), size.as_basic_value_enum()),
                     layout,
                 };
-                let place = self.alloca_place(layout);
-                value.store(place, layout, self);
-                (place, layout)
+                value
             }
             _ => {
-                let place = Place {
-                    value,
-                    align: layout.align,
+                let layout = self.tcx.layout_of(Ty::new_refrence(self.tcx, ty)).unwrap();
+                let value = Value {
+                    kind: ValueKind::Immediate(value.as_basic_value_enum()),
+                    layout,
                 };
-                (place, layout)
+                value
             }
         }
     }
@@ -493,23 +474,19 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 }
             },
             intermediate::Operand::Const(cnst) => self.lower_const_value(cnst),
-            intermediate::Operand::Global(alloc) => {
-                let (place, layout) = self.lower_global(alloc);
-                self.load_value(place, layout)
-            }
+            intermediate::Operand::Global(alloc) => self.lower_global(alloc),
         }
     }
 
     fn visit_statement(&mut self, statement: &'tcx intermediate::Statement<'tcx>) {
-        use intermediate::Place;
         let deferred = match statement.place {
-            Place::Register(reg) if let LocalKind::Dangling = self.reg_translations[reg] =>
-                DeferredStorage::Initialize(reg),
-            Place::None => DeferredStorage::None,
-            _ => {
-                let (cg_place, ty) = self.lower_place(statement.place);
+            Some(place) if let LocalKind::Dangling = self.reg_translations[place.origin] && place.translation_chain.is_empty() =>
+                DeferredStorage::Initialize(place.origin),
+            Some(place) => {
+                let (cg_place, ty) = self.lower_place(place);
                 DeferredStorage::Place { place: cg_place, layout: ty }
             }
+            None => DeferredStorage::None,
         };
 
         match statement.rhs {
@@ -529,6 +506,11 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             }
             intermediate::RValue::Const(cnst) => {
                 let value = self.lower_const_value(cnst);
+                deferred.store_or_init(value, self);
+            }
+            intermediate::RValue::Global(global) => {
+
+                let value = self.lower_global(global);
                 deferred.store_or_init(value, self);
             }
             intermediate::RValue::Call { callee, ref args } => {
@@ -1190,8 +1172,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     fn collect_placebound_regs(body: &'tcx intermediate::Body<'tcx>) -> HashSet<intermediate::RegisterId> {
         let mut placebounds = HashSet::new();
         for block in &body.basic_blocks {
-            for statement in &block.statements {
-                
+            for statement in &block.statements { 
                 if let intermediate::RValue::Read(place) | intermediate::RValue::Ref(place) = statement.rhs &&
                     let Some(reg) = get_reg(place) {
                     placebounds.insert(reg);
@@ -1202,11 +1183,11 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         return placebounds;
 
         fn get_reg(place: intermediate::Place) -> Option<RegisterId> {
-            use intermediate::Place::*;
-            if let Register(target) | Field { target, .. } | Index { target, .. } = place {
-                return Some(target);
+            use intermediate::PtrTranslation::*;
+            if let Some(Deref) = place.translation_chain.first() {
+                return None;
             }
-            Option::None
+            Some(place.origin)
         }
     }
 

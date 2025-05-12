@@ -1251,17 +1251,17 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     fn parse_expr_prefix(&mut self, restrictions: Restrictions) -> PRes<&'ast ast::Expr<'ast>> {
         let start = self.cursor.span();
         if let Some(op) = self.bump_on::<lexer::UnaryOp>() {
-            let mut expr = None;
             if op == lexer::UnaryOp::Minus {
                 if let Some(lit) = self.match_on::<NumberLiteral>() {
-                    expr = Some(self.make_expr(
+                    let expr = self.make_expr(
                         ast::ExprKind::Literal(lit.neg().as_literal()),
                         Span::interpolate(start, self.cursor.span())
-                    ));
+                    );
                     self.cursor.advance();
+                    return Ok(expr);
                 }
             }
-            let expr = expr.unwrap_or_else(|| self.parse_expr_prefix(restrictions).unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span)));
+            let expr = self.parse_expr_prefix(restrictions).unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span));
             return Ok(self.make_expr(
                 ast::ExprKind::UnaryOp(ast::UnaryOp {
                     expr,
