@@ -250,9 +250,9 @@ impl<'tcx> Value<'tcx> {
         match self.ty {
             Ty(TyKind::Int(int, signedness)) =>
                 int.downcast_unsized::<T>(*signedness, self.erased),
-            Ty(TyKind::Bool) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
+            Ty(TyKind::Bool) =>
                 Integer::I8.downcast_unsized::<T>(false, self.erased),
-            Ty(TyKind::Char) if TypeId::of::<T>() == TypeId::of::<dyn std::fmt::Debug>() =>
+            Ty(TyKind::Char) =>
                 Integer::I32.downcast_unsized::<T>(false, self.erased),
             Ty(TyKind::Float(float)) =>
                 float.downcast_unsized::<T>(self.erased),
@@ -1309,9 +1309,9 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     BackendRepr::Memory
                 ),
             Ty(TyKind::Bool) =>
-                return self.tcx.layout_of(self.tcx.basic_types.byte),
+                self.tcx.layout_of(self.tcx.basic_types.byte)?.layout,
             Ty(TyKind::Char) =>
-                return self.tcx.layout_of(self.tcx.basic_types.uint),
+                self.tcx.layout_of(self.tcx.basic_types.uint)?.layout,
             Ty(TyKind::String) =>
                 self.layout_for_array_like(false),
 
