@@ -63,17 +63,17 @@ index_vec::define_index_type! {
 }
 
 pub struct Statement<'tcx> {
-    pub place: Place<'tcx>,
+    pub place: Option<Place<'tcx>>,
     pub rhs: RValue<'tcx>,
     pub span: Span
 }
 
 impl<'tcx> std::fmt::Debug for Statement<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Place::None = self.place {
+        let Some(place) = self.place else {
             return write!(f, "{:?}", self.rhs);
-        }
-        write!(f, "{:?} = {:?}", self.place, self.rhs)
+        };
+        write!(f, "{:?} = {:?}", place, self.rhs)
     }
 }
 
@@ -105,45 +105,57 @@ pub enum TerminatorKind<'tcx> {
     }
 }
 
-// FIXME: instead of defining place like this, we should make use of LLVM's getelmementptr
-// instruction and its ability to take multiple consecutive elements.
-// Since gep can swiftly represent a recursive expression like `a[n]._5[42][69]._0` by a
-// series of linear tranflations, this place should be a structure with an
-// `origin: Option<RegisterId>` and a `ptr_tranlation_chain: Box<[PtrTranslation]>`, allowing each
-// variant to be applied to the same origin mutliple times. This reduces the amount of expr
-// linearization we'll have to do generating statements
 #[derive(Clone, Copy)]
-pub enum Place<'tcx> {
-    Register(RegisterId),
-    // FIXME: this is the bane of our problems right now, as eventhough statics are a place
-    // somewhere, they don't really fit well into the model of Places here and at the codgen stage.
-    // Eventhough they're always pointers eventhough we handle thier types as if they were values,
-    // this crates the meriad of problems and bugs we are facing and will need to be addresssed at
-    // IR rather than at codegen stage
-    Global(Global<'tcx>),
-    Deref(RegisterId),
+pub struct Place<'tcx> {
+    origin: RegisterId,
+    translation_chain: &'tcx [PtrTranslation<'tcx>]
+}
+
+impl<'tcx> Place<'tcx> {
+    fn register(origin: RegisterId) -> Self {
+        Self {
+            origin,
+            translation_chain: &[]
+        }
+    }
+
+    fn as_register(&self) -> Option<RegisterId> {
+        if self.translation_chain.is_empty() {
+            return Some(self.origin);
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum PtrTranslation<'tcx> {
+    Deref,
     Field {
-        target: RegisterId,
         field: FieldIdx,
         ty: Ty<'tcx>
     },
     Index {
-        target: RegisterId,
         idx: Operand<'tcx>
-    },
-    None
+    }
 }
+
 
 impl<'tcx> std::fmt::Debug for Place<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Place::None => Ok(()),
-            Place::Register(reg) => write!(f, "{reg:?}"),
-            Place::Deref(reg) => write!(f, "*{reg:?}"),
-            Place::Field { target, field, ty: _ty } => write!(f, "({target:?}).{}", field.raw()),
-            Place::Index { target, idx } => write!(f, "{target:?}[{idx:?}]"),
-            Place::Global(global) => write!(f, "{global:?}")
+        let mut out = String::new();
+        write!(out, "{:?}", self.origin)?;
+
+        for translation in self.translation_chain {
+            match translation {
+                PtrTranslation::Deref =>
+                    out = format!("(*{out})"),
+                PtrTranslation::Index { idx } =>
+                    write!(out, "[{idx:?}]")?,
+                PtrTranslation::Field { field, .. } =>
+                    write!(out, ".{}", field.raw())?,
+            }
         }
+        write!(f, "{out}")
     }
 }
 
@@ -159,7 +171,7 @@ impl<'tcx> std::fmt::Debug for Operand<'tcx> {
         match self {
             Operand::Copy(reg) => write!(f, "copy {reg:?}"),
             Operand::Const(cnst) => write!(f, "const {cnst:?}"),
-            Operand::Global(global) => write!(f, "{global:?}")
+            Operand::Global(global) => write!(f, "{global:?}"),
        }
     }
 }
@@ -185,6 +197,7 @@ pub enum RValue<'tcx> {
     Ref(Place<'tcx>),
     Invert(Operand<'tcx>),
     Negate(Operand<'tcx>),
+    Global(Global<'tcx>),
     BinaryOp {
         lhs: Operand<'tcx>,
         rhs: Operand<'tcx>,
@@ -207,9 +220,9 @@ pub enum RValue<'tcx> {
 impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
     fn from(value: Operand<'tcx>) -> Self {
         match value {
-            Operand::Copy(reg) => RValue::Read(Place::Register(reg)),
-            Operand::Global(global) => RValue::Read(Place::Global(global)),
+            Operand::Copy(reg) => RValue::Read(Place::register(reg)),
             Operand::Const(cnst) => RValue::Const(cnst),
+            Operand::Global(global) => RValue::Global(global)
         }
     }
 }
@@ -222,6 +235,7 @@ impl<'tcx> std::fmt::Debug for RValue<'tcx> {
             RValue::Ref(place) => write!(f, "&{place:?}"),
             RValue::Invert(operand) => write!(f, "Inv({operand:?})"),
             RValue::Negate(operand) => write!(f, "Neg({operand:?})"),
+            RValue::Global(global) => write!(f, "{global:?}"),
             RValue::BinaryOp { op, lhs, rhs } => write!(f, "{op:?}({lhs:?}, {rhs:?})"),
             RValue::Cast { value, ty } => write!(f, "{value:?} as {ty}"),
             RValue::Call { callee, args: args1 } => {
@@ -342,7 +356,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         if let Some(terminator) = bb.terminator.get() {
             panic!("can't emit into terminated block {block:?}\n{terminator:?}");
         }
-        if let Place::None = stmt.place {
+        if stmt.place.is_none() {
             let RValue::Call { .. } = stmt.rhs else {
                 return;
             };
@@ -427,12 +441,12 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::StmtKind::Local(local) => {
                 let reg = self.create_register(stmt.node_id, Mutability::Mut);
                 if let Some(init) = local.init {
-                    block = self.write_expr_into(Place::Register(reg), block, init);
+                    block = self.write_expr_into(Some(Place::register(reg)), block, init);
                 }
                 block
             }
             ast::StmtKind::Expr(expr) =>
-                self.write_expr_into(Place::None, block, expr),
+                self.write_expr_into(None, block, expr),
             ast::StmtKind::If(if_stmt) => {
                 let (mut then_block, mut else_block) = self.build_diverge(block, if_stmt.condition);
 
@@ -529,9 +543,9 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     let dest = if let Some(expr) = yeet.expr {
                         let dest = reg.unwrap_or_else(|| {
                             let ty = self.typecheck.associations[&expr.node_id];
-                            Place::Register(self.tmp_register(ty))
+                            Place::register(self.tmp_register(ty))
                         });
-                        block = self.write_expr_into(dest, block, expr);
+                        block = self.write_expr_into(Some(dest), block, expr);
 
                         Some(dest)
                     } else {
@@ -571,7 +585,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         block
     }
 
-    fn handle_logical_op(&mut self, dest: Place<'tcx>, block: BlockId, logical: LogicalOp, lhs: &'tcx ast::Expr<'tcx>, rhs: &'tcx ast::Expr<'tcx>) -> BlockId {
+    fn handle_logical_op(&mut self, dest: Option<Place<'tcx>>, block: BlockId, logical: LogicalOp, lhs: &'tcx ast::Expr<'tcx>, rhs: &'tcx ast::Expr<'tcx>) -> BlockId {
         let (then_block, else_block) = self.build_diverge(block, lhs);
         let (short_circuit, continuation, constant) = match logical {
             LogicalOp::Or => (then_block, else_block, true),
@@ -597,7 +611,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         join_block
     }
 
-    fn write_expr_into(&mut self, dest: Place<'tcx>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
+    fn write_expr_into(&mut self, dest: Option<Place<'tcx>>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
         match &expr.kind {
             ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(..)) = name.resolution() => {
                 let place;
@@ -694,7 +708,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                         self.emit_into(
                             block,
                             Statement {
-                                place: dest2,
+                                place: Some(dest2),
                                 rhs: rhs.into(),
                                 span: expr.span
                             }
@@ -729,14 +743,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 let rhs;
                 (block, rhs) = self.expr_as_operand(block, assign.rhs);
 
-                let lhs = if let Place::Register(reg) = dest2 {
+                let lhs = if let Some(reg) = dest2.as_register() {
                     Operand::Copy(reg)
                 } else {
                     let reg = self.tmp_register(self.typecheck.associations[&expr.node_id]);
                     self.emit_into(
                         block,
                         Statement {
-                            place: Place::Register(reg),
+                            place: Some(Place::register(reg)),
                             rhs: RValue::Read(dest2),
                             span: Span::NULL
                         }
@@ -747,7 +761,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 self.emit_into(
                     block,
                     Statement {
-                        place: dest2,
+                        place: Some(dest2),
                         rhs: RValue::BinaryOp {
                             lhs, rhs,
                             op: binop
@@ -776,7 +790,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     // create fake-place for expression
                     let reg;
                     (block, reg) = self.as_register(block, rexpr);
-                    Place::Register(reg)
+                    Place::register(reg)
                 };
                 self.emit_into(
                     block,
@@ -910,12 +924,12 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 if let Some(ScopeKind::Body) = self.find_scope(expr.node_id) {
                     return self.cover_ast_block(block, ast_block);
                 }
-                let result_dest = if let Place::None = dest {
-                    OnceCell::new()
-                } else {
+                let result_dest = if let Some(dest) = dest {
                     let cell = OnceCell::new();
                     let _ = cell.set(dest);
                     cell
+                } else {
+                    OnceCell::new()
                 };
 
                 block = self.enter_block_scope(
@@ -982,44 +996,40 @@ impl<'tcx> TranslationCtxt<'tcx> {
         }
         let ty = self.typecheck.associations[&expr.node_id];
         let reg = self.tmp_register(ty);
-        let dest = Place::Register(reg);
-        let block = self.write_expr_into(dest, block, expr);
+        let dest = Place::register(reg);
+        let block = self.write_expr_into(Some(dest), block, expr);
         (block, reg)
     }
 
-    fn try_expr_as_place(&mut self, mut block: BlockId, expr: &ast::Expr<'tcx>) -> Option<(BlockId, Place<'tcx>)> {
+    fn convert_to_place_recursively(&mut self,
+        translation_chain: &mut Vec<PtrTranslation<'tcx>>,
+        mut block: BlockId,
+        expr: &ast::Expr<'tcx>
+    ) -> Option<(BlockId, RegisterId)> {
         let res = match &expr.kind {
             ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() =>
-                (block, Place::Register(self.register_lookup[local])),
-            ast::ExprKind::Name(name) if let Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Function)) = name.resolution() =>
-                (block, Place::Global(Global::from_definition(self.tcx, *def_id))),
+                (block, self.register_lookup[local]),
             ast::ExprKind::Subscript(subscript) => {
                 debug_assert_eq!(subscript.args.len(), 1);
                 let target;
-                (block, target) = self.as_register(block, subscript.expr);
+                (block, target) = self.convert_to_place_recursively(translation_chain, block, subscript.expr)
+                    .unwrap_or_else(|| self.as_register(block, subscript.expr));
                 let idx;
                 (block, idx) = self.expr_as_operand(block, subscript.args[0]);
+                translation_chain.push(PtrTranslation::Index { idx });
                 // FIXME: as soon as more advanced operator overloading becomes available we should
                 // change this into more of an intrinsic overloaded call for dynamic arrays and
                 // slices, as they're excpetions during codegen and need to be handled seperately
-                (block, Place::Index { target, idx })
+                (block, target)
             }
             ast::ExprKind::Field(field) => {
-                let mut target;
-                (block, target) = self.as_register(block, field.expr);
+                let target;
+                (block, target) = self.convert_to_place_recursively(translation_chain, block, field.expr)
+                    .unwrap_or_else(|| self.as_register(block, field.expr));
 
                 let mut base_ty = self.typecheck.associations[&field.expr.node_id];
                 while let Ty(TyKind::Refrence(inner_ty)) = base_ty {
-                    let tmp = self.tmp_register(*inner_ty);
-                    self.emit_into(block,
-                        Statement {
-                            place: Place::Register(tmp),
-                            rhs: RValue::Read(Place::Deref(target)),
-                            span: Span::NULL
-                        }
-                    );
-
-                    target = tmp;
+                    translation_chain.push(PtrTranslation::Deref);
                     base_ty = *inner_ty;
                 }
 
@@ -1030,18 +1040,34 @@ impl<'tcx> TranslationCtxt<'tcx> {
                         FieldIdx::from_usize(value as usize)
                 };
                 let ty = self.typecheck.associations[&expr.node_id];
+                translation_chain.push(PtrTranslation::Field { field, ty });
 
                 // field.field
-                (block, Place::Field { target, field, ty })
+                (block, target)
             }
             ast::ExprKind::Deref(expr) => {
                 let register;
                 (block, register) = self.as_register(block, expr);
-                (block, Place::Deref(register))
+                translation_chain.push(PtrTranslation::Deref);
+                (block, register)
             }
             _ => return None
         };
         Some(res)
+
+    }
+
+    fn try_expr_as_place(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> Option<(BlockId, Place<'tcx>)> {
+        let mut translation_chain = vec![];
+        let Some((block, origin)) = self.convert_to_place_recursively(&mut translation_chain, block, expr) else {
+            return None;
+        };
+        let translation_chain = self.tcx.arena.alloc_slice_copy(&translation_chain);
+        let place = Place {
+            origin,
+            translation_chain
+        };
+        Some((block, place))
     }
 
     fn expr_as_place(&mut self, block: BlockId, expr: &ast::Expr<'tcx>) -> (BlockId, Place<'tcx>) {
@@ -1074,8 +1100,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     self.emit_into(
                         block,
                         Statement {
-                            place: Place::Register(tmp),
-                            rhs: RValue::Read(Place::Register(reg)),
+                            place: Some(Place::register(tmp)),
+                            rhs: RValue::Read(Place::register(reg)),
                             span: Span::NULL
                         }
                     );
@@ -1087,7 +1113,33 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::ExprKind::Name(name) => match name.resolution() {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
                     (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Static | DefinitionKind::Function)) =>
+                Some(ast::Resolution::Def(_def_id, DefinitionKind::Static)) => {
+                    // TODO: we need to be hadling things like this:
+                    // ```clyde
+                    // static int count = 0;
+                    // void fn(...) {
+                    //     ...
+                    //     count = ...;
+                    //     ...
+                    // }
+                    // ```
+                    // which in IR should look smth like this:
+                    // ```
+                    // bb... {
+                    //     %0 = ...
+                    //     %1 = { read count as *int }
+                    //     *%1 = %0
+                    // }
+                    // ```
+                    // Despite the type of the global being `int` the thing we'll read and get is
+                    // an `int*`, which means:
+                    //  - Statics can only really be used as RValues
+                    //  - Loaded as pointers (or strings + slices) to the value in memory
+                    //  - Need to be derefrenced to be used effectively
+                    //  - So functions and Statics Diverge here again
+                    todo!("this shouldn't actually be here, but probably in RValue only")
+                },
+                Some(ast::Resolution::Def(def_id, DefinitionKind::Function)) =>
                     (block, Operand::Global(Global::from_definition(self.tcx, *def_id))),
                 Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
                 Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
@@ -1174,7 +1226,7 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
             let block = ctxt.enter_block_scope(
                 body.body.node_id,
                 ScopeKind::Body,
-                |ctxt| ctxt.write_expr_into(Place::None, entry, body.body)
+                |ctxt| ctxt.write_expr_into(None, entry, body.body)
             );
             if !ctxt.is_terminated(block) {
                 ctxt.ret(
