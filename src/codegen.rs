@@ -57,8 +57,21 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
                 };
                 (place, builder.cctxt.tcx.layout_of(*inner).unwrap())
             }
-            ValueKind::Pair(..) =>
-                panic!("cannot deref ValueKimd::Pair: pointers always fit into immediates"),
+            ValueKind::Pair(value1, _) => {
+                let inner = match self.layout.ty {
+                    // HACK: make string and slice trivially derefrencable to thier containted
+                    // types
+                    Ty(TyKind::String) => builder.tcx.basic_types.byte,
+                    Ty(TyKind::Slice(el)) => *el,
+                    _ => panic!("cannot deref ValueKimd::Pair: pointers always fit into immediates")
+                };
+                let data_layout = builder.cctxt.data_layout();
+                let place = Place {
+                    value: value1.into_pointer_value(),
+                    align: data_layout.ptr_align
+                };
+                (place, builder.cctxt.tcx.layout_of(inner).unwrap())
+            }
             ValueKind::Ref(..) =>
                 panic!("cannot deref ValueKind::Ref:  pointers always fit into immediates")
         }
@@ -1820,7 +1833,7 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
         if let Some(ref passes) = passes {
             let result = module.run_passes(passes, machine, ll::PassBuilderOptions::create());
             if let Err(err) = result {
-                eprintln!("couldn't optimize module: {}: {}", module.get_name().to_bytes().escape_ascii(), err);
+                eprintln!("ERROR: couldn't optimize module: {}: {}", module.get_name().to_bytes().escape_ascii(), err);
             }
         }
         if tcx.session.config.print_llvm_ir {

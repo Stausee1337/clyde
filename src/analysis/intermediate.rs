@@ -613,7 +613,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
     fn write_expr_into(&mut self, dest: Option<Place<'tcx>>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
         match &expr.kind {
-            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(..)) = name.resolution() => {
+            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(..) | ast::Resolution::Def(_, DefinitionKind::Static)) = name.resolution() => {
                 let place;
                 (block, place) = self.expr_as_place(block, expr);
 
@@ -1009,6 +1009,44 @@ impl<'tcx> TranslationCtxt<'tcx> {
         let res = match &expr.kind {
             ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() =>
                 (block, self.register_lookup[local]),
+            ast::ExprKind::Name(name) if let Some(ast::Resolution::Def(def_id, DefinitionKind::Static)) = name.resolution() => {
+                // IDEA: we need to be hadling things like this:
+                // ```clyde
+                // static int count = 0;
+                // void fn(...) {
+                //     ...
+                //     count = ...;
+                //     ...
+                // }
+                // ```
+                // which in IR should look smth like this:
+                // ```
+                // bb... {
+                //     %0 = ...
+                //     %1 = { read count as *int }
+                //     *%1 = %0
+                // }
+                // ```
+                // Despite the type of the global being `int` the thing we'll read and get is
+                // an `int*`, which means:
+                //  - Statics can only really be used as RValues
+                //  - Loaded as pointers (or strings + slices) to the value in memory
+                //  - Need to be derefrenced to be used effectively
+
+                let ref_ty = Ty::new_refrence(self.tcx, self.tcx.type_of(*def_id));
+                let reg = self.tmp_register(ref_ty);
+                self.emit_into(block,
+                    Statement {
+                        place: Some(Place::register(reg)),
+                        rhs: RValue::Global(Global::from_definition(self.tcx, *def_id)),
+                        span: expr.span
+                    }
+                );
+
+                translation_chain.push(PtrTranslation::Deref);
+
+                (block, reg)
+            }
             ast::ExprKind::Subscript(subscript) => {
                 debug_assert_eq!(subscript.args.len(), 1);
                 let target;
@@ -1130,34 +1168,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::ExprKind::Name(name) => match name.resolution() {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
                     (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
-                Some(ast::Resolution::Def(_def_id, DefinitionKind::Static)) => {
-                    // TODO: we need to be hadling things like this:
-                    // ```clyde
-                    // static int count = 0;
-                    // void fn(...) {
-                    //     ...
-                    //     count = ...;
-                    //     ...
-                    // }
-                    // ```
-                    // which in IR should look smth like this:
-                    // ```
-                    // bb... {
-                    //     %0 = ...
-                    //     %1 = { read count as *int }
-                    //     *%1 = %0
-                    // }
-                    // ```
-                    // Despite the type of the global being `int` the thing we'll read and get is
-                    // an `int*`, which means:
-                    //  - Statics can only really be used as RValues
-                    //  - Loaded as pointers (or strings + slices) to the value in memory
-                    //  - Need to be derefrenced to be used effectively
-                    //  - So functions and Statics Diverge here again
-                    todo!("this shouldn't actually be here, but probably in RValue only")
-                },
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Function)) =>
                     (block, Operand::Global(Global::from_definition(self.tcx, *def_id))),
+                Some(ast::Resolution::Def(_, DefinitionKind::Static)) => {
+                    // FIXME: remove duplicaiton
+                    let register;
+                    (block, register) = self.as_register(block, expr);
+                    (block, Operand::Copy(register))
+                }
                 Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
                 Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
                 Some(ast::Resolution::Local(..)) => unreachable!(),

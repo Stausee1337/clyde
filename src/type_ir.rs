@@ -356,18 +356,27 @@ impl<'tcx> Const<'tcx> {
     }
 
     fn try_val_from_simple_expr(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<Self> {
-        let ast::ExprKind::Literal(literal) = &expr.kind else {
-            return None;
-        };
-        match Self::from_literal(tcx, ty, literal) {
-            Ok(cnst) => Some(cnst),
-            Err(msg) => {
-                Message::error(msg)
+        if let ast::ExprKind::Literal(literal) = &expr.kind {
+            return match Self::from_literal(tcx, ty, literal) {
+                Ok(cnst) => Some(cnst),
+                Err(msg) => {
+                    Message::error(msg)
+                        .at(expr.span)
+                        .push(tcx.diagnostics());
+                    Some(tcx.intern_const(ConstKind::Err))
+                }
+            };
+        } else if let ast::ExprKind::Name(name) = &expr.kind && let Some(ast::Resolution::Def(def_id, ast::DefinitionKind::Const)) = name.resolution() {
+            let found_ty = tcx.type_of(*def_id);
+            if found_ty != ty {
+                Message::error(format!("mismatched types: expected {ty}, found {found_ty}"))
                     .at(expr.span)
                     .push(tcx.diagnostics());
-                Some(tcx.intern_const(ConstKind::Err))
+                return Some(tcx.intern_const(ConstKind::Err));
             }
+            return Some(Const::from_definition(tcx, *def_id));
         }
+        None
     }
 
     fn new_size(tcx: TyCtxt<'tcx>, size: u64) -> Self {
