@@ -14,6 +14,13 @@ enum ParseTry<'src, T> {
     Never,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delimiter {
+    Paren,
+    Curly,
+    Bracket
+}
+
 bitflags::bitflags! {
 #[derive(Clone, Copy)]
 struct Restrictions: u32 {
@@ -121,6 +128,10 @@ trait Parsable: Sized {
     const CLASSNAME: Option<&'static str>;
 
     fn from_token<'a>(token: Token<'a>) -> Option<Self>;
+
+    fn from_error(_: Span) -> Option<Self> {
+        None
+    }
 }
 
 impl<T: Operator> Parsable for T {
@@ -178,6 +189,13 @@ impl Parsable for ast::Ident {
             return Some(ast::Ident { symbol: Symbol::intern("_"), span: token.span });
         }
         return None;
+    }
+
+    fn from_error(span: Span) -> Option<Self> {
+        Some(ast::Ident {
+            symbol: Symbol::intern("<err>"),
+            span,
+        })
     }
 }
 
@@ -681,6 +699,21 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok((r, owner_id, children))
     }
 
+    fn fail_parse_tree<R, F: FnOnce(&mut Self) -> PRes<R>>(&mut self, delim: Delimiter, do_work: F) -> PRes<R> {
+        let res = do_work(self);
+
+        if let Err(..) = res {
+            let end = match delim {
+                Delimiter::Paren => TokenKind::Punctuator(Punctuator::RParen),
+                Delimiter::Bracket => TokenKind::Punctuator(Punctuator::RBracket),
+                Delimiter::Curly => TokenKind::Punctuator(Punctuator::RCurly),
+            };
+            self.cursor.skip_while(|token| token.kind != end);
+            debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+        }
+        res
+    }
+
     fn expect_either(&mut self, slice: &[impl Tokenish]) -> PRes<()> {
         let current = self.cursor.current();
         for test in slice {
@@ -689,15 +722,120 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 return Ok(());
             }
         }
+
         let span = self.cursor.span();
         let message = format!("expected {}, found {}", TokenJoiner(slice), self.cursor.current());
-        Message::error(message)
-            .at(span)
-            .push(self.diagnostics);
+        let message = Message::error(message);
 
-        if !self.cursor.is_eos() {
+        // recovery:
+        //  - if we expected a `;`, but found `,` -> recover
+        //  - if we expected a `,`, but found `;` -> recover
+        //  - if we expected a `LParen`, `LBracket`, `LCurly` -> fail
+    
+        //  - in any case if there is an opening delimiter (`LParen`, `LBracket`, `LCurly`) but we
+        //  didn't expect one that one, skip until closing delimiter
+
+        let did_expect = |tok: Punctuator| {
+            let tok = Token {
+                kind: TokenKind::Punctuator(tok),
+                span: Span::NULL
+            };
+            for test in slice {
+                if test.matches(tok) {
+                    // only one has to match
+                    return true;
+                }
+            }
+
+            false
+        };
+
+        if Token![,].matches(current) && did_expect(Token![;]) {
+            message.at(current.span).push(self.diagnostics);
+            return Ok(());
+        }
+        if Token![;].matches(current) && did_expect(Token![,]) {
+            message.at(current.span).push(self.diagnostics);
+            return Ok(());
+        }
+
+        let skipped_tree;
+        match current.kind {
+            TokenKind::Punctuator(Punctuator::LParen) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
+            }
+            TokenKind::Punctuator(Punctuator::LBracket) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RBracket)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
+            }
+            TokenKind::Punctuator(Punctuator::LCurly) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RCurly)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
+            }
+            _ => {
+                message
+                    .at(current.span)
+                    .push(self.diagnostics);
+                skipped_tree = false;
+            }
+        }
+
+        if skipped_tree {
+            // TODO: after we skipped over all of the token-tree maybe we're just fine
+            let current = self.cursor.lookahead();
+            for test in slice {
+                if test.matches(current) {
+                    // only one has to match
+                    self.cursor.advance();
+                    return Ok(());
+                }
+            }
+        }
+
+        if did_expect(Token![;]) {
+            if !self.cursor.is_eos()
+                && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
+                self.cursor.advance();
+            }
+            return Ok(());
+        }
+
+        if did_expect(Punctuator::RParen) {
+            self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
+            debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+        }
+
+        if did_expect(Punctuator::RBracket) {
+            self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RBracket)));
+            debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+        }
+
+        if did_expect(Punctuator::RCurly) {
+            self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RCurly)));
+            debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+        }
+
+        if !self.cursor.is_eos()
+            && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
             self.cursor.advance();
         }
+
         Err(span)
     }
 
@@ -705,31 +843,110 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.expect_either(&[one])
     }
 
-    fn expect_any<P: Parsable>(&mut self) -> PRes<P> {
+    fn expect_any<P: Parsable + 'static>(&mut self) -> PRes<P> {
+        let current = self.cursor.current();
         if let Some(p) = self.match_on::<P>() {
             return Ok(p);
         }
 
         let span = self.cursor.span();
         let message = format!("expected {}, found {}", P::CLASSNAME.expect("can't be used with expect_any()"), self.cursor.current());
-        Message::error(message)
-            .at(span)
-            .push(self.diagnostics);
-        if !self.cursor.is_eos() {
+        let message = Message::error(message);
+
+        let p = std::any::TypeId::of::<P>();
+        let ident = std::any::TypeId::of::<ast::Ident>();
+
+        if let TokenKind::Keyword(..) = current.kind && p == ident {
+            if let Some(p) = P::from_error(span) {
+                message.at(span).push(self.diagnostics);
+                return Ok(p);
+            }
+        }
+
+        match current.kind {
+            TokenKind::Punctuator(Punctuator::LParen) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+            }
+            TokenKind::Punctuator(Punctuator::LBracket) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RBracket)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+            }
+            TokenKind::Punctuator(Punctuator::LCurly) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RCurly)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+            }
+            _ => {
+                message
+                    .at(span)
+                    .push(self.diagnostics);
+            }
+        }
+
+        if !self.cursor.is_eos()
+            && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
             self.cursor.advance();
         }
+
         Err(span)
     }
 
     fn unexpected(&mut self, message: &str) -> PRes<!> {
+        let current = self.cursor.current();
         let span = self.cursor.span();
         let message = format!("expected {}, found {}", message, self.cursor.current());
-        Message::error(message)
-            .at(span)
-            .push(self.diagnostics);
-        if !self.cursor.is_eos() {
+        let message = Message::error(message);
+
+        match current.kind {
+            TokenKind::Punctuator(Punctuator::LParen) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+            }
+            TokenKind::Punctuator(Punctuator::LBracket) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RBracket)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+            }
+            TokenKind::Punctuator(Punctuator::LCurly) => {
+                self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RCurly)));
+                let end = self.cursor.span();
+                message
+                    .at(Span::interpolate(current.span, end))
+                    .push(self.diagnostics);
+                debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                self.cursor.advance();
+            }
+            _ => {
+                message
+                    .at(span)
+                    .push(self.diagnostics);
+            }
+        }
+
+        if !self.cursor.is_eos()
+            && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
             self.cursor.advance();
         }
+
         Err(span)
     }
 
@@ -1010,31 +1227,35 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let mut initializers = vec![];
 
-        while !self.matches(Punctuator::RCurly) {
-            let mut ident = None;
-            if let Some(ident_) = self.match_on::<ast::Ident>() {
-                if let TokenKind::Punctuator(Token![=]) = self.cursor.lookahead().kind {
-                    self.cursor.advance();
-                    self.cursor.advance();
-                    ident = Some(ident_);
+        self.fail_parse_tree(Delimiter::Curly, |this| {
+            while !this.matches(Punctuator::RCurly) {
+                let mut ident = None;
+                if let Some(ident_) = this.match_on::<ast::Ident>() {
+                    if let TokenKind::Punctuator(Token![=]) = this.cursor.lookahead().kind {
+                        this.cursor.advance();
+                        this.cursor.advance();
+                        ident = Some(ident_);
+                    }
                 }
+                let expr = this.parse_expr(Restrictions::empty())
+                    .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span));
+
+                let initializer = if let Some(ident) = ident {
+                    ast::TypeInitKind::Field(ident, expr)
+                } else {
+                    ast::TypeInitKind::Direct(expr)
+                };
+
+                initializers.push(initializer);
+
+
+                this.expect_either(&[Token![,], Punctuator::RCurly])?;
+
+                this.bump_if(Token![,]);    
             }
-            let expr = self.parse_expr(Restrictions::empty())
-                    .unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span));
 
-            let initializer = if let Some(ident) = ident {
-                ast::TypeInitKind::Field(ident, expr)
-            } else {
-                ast::TypeInitKind::Direct(expr)
-            };
-
-            initializers.push(initializer);
-
-
-            self.expect_either(&[Token![,], Punctuator::RCurly])?;
-
-            self.bump_if(Token![,]);    
-        }
+            Ok(())
+        })?;
         let end = self.cursor.span();
         self.cursor.advance();
 
@@ -1155,29 +1376,32 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.cursor.advance();
 
         let mut args = vec![];
-        while !self.matches(Punctuator::RParen) {
-            let mut keyword = None;
-            if let Some(ident) = self.match_on::<ast::Ident>() {
-                if let TokenKind::Punctuator(Token![:]) = self.cursor.lookahead().kind {
-                    self.cursor.advance();
-                    self.cursor.advance();
-                    keyword = Some(ident);
+        self.fail_parse_tree(Delimiter::Paren, |this| {
+            while !this.matches(Punctuator::RParen) {
+                let mut keyword = None;
+                if let Some(ident) = this.match_on::<ast::Ident>() {
+                    if let TokenKind::Punctuator(Token![:]) = this.cursor.lookahead().kind {
+                        this.cursor.advance();
+                        this.cursor.advance();
+                        keyword = Some(ident);
+                    }
                 }
+
+                let expr = this.parse_expr(Restrictions::empty())
+                    .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span));
+
+                let argument = if let Some(keyword) = keyword {
+                    ast::FunctionArgument::Keyword(keyword, expr)
+                } else {
+                    ast::FunctionArgument::Direct(expr)
+                };
+
+                args.push(argument);
+                this.expect_either(&[Token![,], Punctuator::RParen])?;
+                this.bump_if(Token![,]);
             }
-
-            let expr = self.parse_expr(Restrictions::empty())
-                .unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span));
-
-            let argument = if let Some(keyword) = keyword {
-                ast::FunctionArgument::Keyword(keyword, expr)
-            } else {
-                ast::FunctionArgument::Direct(expr)
-            };
-
-            args.push(argument);
-            self.expect_either(&[Token![,], Punctuator::RParen])?;
-            self.bump_if(Token![,]);
-        }
+            Ok(())
+        })?;
         let end = self.cursor.span();
         self.cursor.advance();
 
@@ -1198,15 +1422,18 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.cursor.advance();
 
         let mut args = vec![];
-        while !self.matches(Punctuator::RBracket) {
-            args.push(
-                self.parse_expr(Restrictions::empty())
-                    .unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span))
-            );
-            
-            self.expect_either(&[Token![,], Punctuator::RBracket])?;
-            self.bump_if(Token![,]);
-        }
+        self.fail_parse_tree(Delimiter::Bracket, |this| {
+            while !this.matches(Punctuator::RBracket) {
+                args.push(
+                    this.parse_expr(Restrictions::empty())
+                    .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span))
+                );
+
+                this.expect_either(&[Token![,], Punctuator::RBracket])?;
+                this.bump_if(Token![,]);
+            }
+            Ok(())
+        })?;
         let end = self.cursor.span();
         self.cursor.advance();
 
@@ -1739,13 +1966,14 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.cursor.advance();
 
         let mut stmts = vec![];
-        while !self.matches(Punctuator::RCurly) {
+        while !self.matches(Punctuator::RCurly) && !self.cursor.is_eos() {
             stmts.push(
                 self.parse_stmt(|this| expr_block && this.matches(Punctuator::RCurly))
                     .unwrap_or_else(|span| self.make_stmt(ast::StmtKind::Err, span))
             );
         }
         let end = self.cursor.span();
+        debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
         self.cursor.advance();
 
         let stmts = self.alloc(stmts);
@@ -1774,30 +2002,33 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let mut fields = vec![];
 
             if this.bump_if(Punctuator::LCurly).is_some() {
-                while !this.matches(Punctuator::RCurly) {
-                    let start = this.cursor.span();
+                let _ = this.fail_parse_tree(Delimiter::Curly, |this| {
+                    while !this.matches(Punctuator::RCurly) {
+                        let start = this.cursor.span();
 
-                    let ty = this.parse_ty_expr()
+                        let ty = this.parse_ty_expr()
                             .unwrap_or_else(|span| this.make_ty_expr(ast::TypeExprKind::Err, span));
-                    let name = this.expect_any::<ast::Ident>()?;
-                    this.cursor.advance();
+                        let name = this.expect_any::<ast::Ident>()?;
+                        this.cursor.advance();
 
-                    let mut init = None;
-                    let end;
-                    if this.bump_if(Token![=]).is_some() {
-                        let expr = this.parse_expr(Restrictions::empty())
-                            .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span));
-                        end = expr.span;
-                        init = Some(expr);
-                    } else {
-                        end = name.span;
+                        let mut init = None;
+                        let end;
+                        if this.bump_if(Token![=]).is_some() {
+                            let expr = this.parse_expr(Restrictions::empty())
+                                .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span));
+                            end = expr.span;
+                            init = Some(expr);
+                        } else {
+                            end = name.span;
+                        }
+                        this.expect_one(Token![;])?;
+
+                        let span = Span::interpolate(start, end);
+                        this.cursor.advance();
+                        fields.push(this.make_field_def(name, ty, init, span));
                     }
-                    this.expect_one(Token![;])?;
-
-                    let span = Span::interpolate(start, end);
-                    this.cursor.advance();
-                    fields.push(this.make_field_def(name, ty, init, span));
-                }
+                    Ok(())
+                });
             }
             let end = this.cursor.span();
             this.cursor.advance();
@@ -1877,19 +2108,21 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         };
 
         let mut params = vec![];
+        let _res = self.fail_parse_tree(Delimiter::Paren, |this| {
+            while !this.matches(Punctuator::RParen) {
+                let start = this.cursor.span();
+                let ty = this.parse_ty_expr()
+                    .unwrap_or_else(|span| this.make_ty_expr(ast::TypeExprKind::Err, span));
+                let ident = this.expect_any::<ast::Ident>()?;
+                this.cursor.advance();
 
-        while !self.matches(Punctuator::RParen) {
-            let start = self.cursor.span();
-            let ty = self.parse_ty_expr()
-                .unwrap_or_else(|span| self.make_ty_expr(ast::TypeExprKind::Err, span));
-            let ident = self.expect_any::<ast::Ident>()?;
-            self.cursor.advance();
+                params.push(this.make_param(ident, ty, Span::interpolate(start, ident.span)));
 
-            params.push(self.make_param(ident, ty, Span::interpolate(start, ident.span)));
-
-            self.expect_either(&[Token![,], Punctuator::RParen])?;
-            self.bump_if(Token![,]);
-        }
+                this.expect_either(&[Token![,], Punctuator::RParen])?;
+                this.bump_if(Token![,]);
+            }
+            Ok(())
+        });
         let end = self.cursor.span();
         self.cursor.advance();
 
@@ -2025,26 +2258,29 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.cursor.advance();
 
         let mut trees = vec![];
-        while !self.matches(Punctuator::RParen) {
-            let span = self.cursor.span();
-            let tree = if let Some(ident) = self.bump_on::<ast::Ident>() {
-                if let Some(..) = self.bump_if(Token![=]) {
-                    let literal = self.expect_any::<Literal>()?;
-                    let span = self.cursor.span();
-                    self.cursor.advance();
-                    DirectiveTree::KeyValue { key: ident, value: (literal, span) }
+        self.fail_parse_tree(Delimiter::Paren, |this| {
+            while !this.matches(Punctuator::RParen) {
+                let span = this.cursor.span();
+                let tree = if let Some(ident) = this.bump_on::<ast::Ident>() {
+                    if let Some(..) = this.bump_if(Token![=]) {
+                        let literal = this.expect_any::<Literal>()?;
+                        let span = this.cursor.span();
+                        this.cursor.advance();
+                        DirectiveTree::KeyValue { key: ident, value: (literal, span) }
+                    } else {
+                        DirectiveTree::Ident(ident)
+                    }
+                } else if let Some(literal) = this.bump_on::<Literal>() {
+                    DirectiveTree::Value(literal, span)
                 } else {
-                    DirectiveTree::Ident(ident)
-                }
-            } else if let Some(literal) = self.bump_on::<Literal>() {
-                DirectiveTree::Value(literal, span)
-            } else {
-                self.unexpected("`<ident>`, `<literal>` or `key=<value>` pair")?
-            };
-            trees.push(tree);
-            self.expect_either(&[Token![,], Punctuator::RParen])?;
-            self.bump_if(Token![,]);
-        }
+                    this.unexpected("`<ident>`, `<literal>` or `key=<value>` pair")?
+                };
+                trees.push(tree);
+                this.expect_either(&[Token![,], Punctuator::RParen])?;
+                this.bump_if(Token![,]);
+            }
+            Ok(())
+        })?;
         let end = self.cursor.span();
         self.cursor.advance();
 

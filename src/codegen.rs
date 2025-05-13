@@ -1,6 +1,5 @@
-use std::{cell::RefCell, collections::VecDeque, ffi::OsString, hash::{BuildHasher, Hasher}, fmt::Write, process::Command};
+use std::{cell::RefCell, collections::VecDeque, ffi::OsString, fmt::Write, process::Command};
 
-use foldhash::quality::FixedState;
 use index_vec::IndexVec;
 use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
@@ -1574,14 +1573,6 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         module.set_source_file_name(&info.source_file_name);
         arena.alloc(module)
     }
-}
-
-const HASH_STATE: FixedState = FixedState::with_seed(0xd1310ba698dfb5ac);
-
-fn hash_data(data: &[u8]) -> u64 {
-    let mut hasher = HASH_STATE.build_hasher();
-    hasher.write(data);
-    hasher.finish()
 }
 
 trait ForceInto<R> {

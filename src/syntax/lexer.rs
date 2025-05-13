@@ -366,7 +366,7 @@ pub struct Token<'a> {
     pub span: Span
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind<'a> {
     Keyword(Keyword),
     Directive(Directive),
@@ -376,7 +376,7 @@ pub enum TokenKind<'a> {
     EOS
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {
     IntNumber(NumberMode), FloatingPoint,
     String, Char
