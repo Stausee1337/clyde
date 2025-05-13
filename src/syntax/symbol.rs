@@ -66,7 +66,10 @@ Symbols! {
     export,
     module,
     main,
-    link_name
+    link_name,
+    stringdata,
+    stringlen,
+    string_from_raw_parts
 }
 
 macro_rules! define_symbols {

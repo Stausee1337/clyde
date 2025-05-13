@@ -129,7 +129,8 @@ pub struct Signature<'tcx> {
     pub returns: Ty<'tcx>,
     pub params: &'tcx [Param<'tcx>],
     pub name: Symbol,
-    pub has_errors: bool
+    pub has_errors: bool,
+    pub intrinsic: bool
 }
 
 #[derive(Clone, Copy)]

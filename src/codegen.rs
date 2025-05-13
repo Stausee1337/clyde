@@ -5,7 +5,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::{ast, symbol}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -465,16 +465,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         }
     }
 
-    fn try_get_function(&mut self, operand: intermediate::Operand<'tcx>) -> Option<(ll::FunctionValue<'ll>, TyLayoutTuple<'tcx>)> {
-        let intermediate::Operand::Global(global) = operand else {
-            return None;
-        };
+    fn get_function(&mut self, global: type_ir::Global<'tcx>) -> (ll::FunctionValue<'ll>, TyLayoutTuple<'tcx>) {
         let DependencyKind::Function(function) = self.handle_dependency(global) else {
-            panic!("lower_global won't lower functions");
+            panic!("get_function won't lower non-functions");
         };
         let ty = global.ty(self.tcx);
         let layout = self.tcx.layout_of(ty).unwrap();
-        return Some((function, layout));
+        return (function, layout);
     }
 
     fn lower_operand(&mut self, operand: intermediate::Operand<'tcx>) -> Value<'ll, 'tcx> {
@@ -529,12 +526,23 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             intermediate::RValue::Call { callee, ref args } => {
                 // FIXME: accept that this is optional and handle cases like fnptrs and intrinsic
                 // calls
-                let (llfunc, layout) = self.try_get_function(callee).unwrap();
-
-                let Ty(TyKind::Function(fndef)) = layout.ty else {
-                    panic!("{:?} is not callable", layout.ty);
+                
+                let intermediate::Operand::Global(global) = callee else {
+                    panic!("function pointers aren't supported at the moment");
                 };
-                let sig = self.tcx.fn_sig(*fndef);
+
+                let sig = self.tcx.fn_sig(global.definition().unwrap());
+
+                if sig.intrinsic {
+                    let value = self.build_intrinsic_call(sig.name, args); 
+                    deferred.store_or_init(
+                        value,
+                        self
+                    );
+                    return;
+                }
+
+                let (llfunc, layout) = self.get_function(global);
 
                 let mut arguments = vec![];
                 for (idx, param) in sig.params.iter().enumerate() {
@@ -1016,6 +1024,60 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     deferred.store_or_init(value, self);
                 }
             }
+        }
+    }
+
+    fn build_intrinsic_call(&mut self, name: symbol::Symbol, args: &[intermediate::SpanOperand<'tcx>]) -> Value<'ll, 'tcx> {
+        match name {
+            sym::main => todo!("fetch defined entrypoint and build stub in cases of non-signature match"),
+            sym::stringlen => {
+                let mut args = args.iter();
+                let Some(string) = args.next() else { unreachable!() };
+                let Value { kind: ValueKind::Pair(_data, len), layout } = self.lower_operand(string.operand) else {
+                    unreachable!();
+                };
+                debug_assert!(layout.ty == self.tcx.basic_types.string);
+                debug_assert!(len.is_int_value());
+
+                Value {
+                    kind: ValueKind::Immediate(len),
+                    layout: self.tcx.layout_of(self.tcx.basic_types.nuint).unwrap()
+                }
+            }
+            sym::stringdata => {
+                let mut args = args.iter();
+                let Some(string) = args.next() else { unreachable!() };
+                let Value { kind: ValueKind::Pair(data, _len), layout } = self.lower_operand(string.operand) else {
+                    unreachable!();
+                };
+                debug_assert!(layout.ty == self.tcx.basic_types.string);
+                debug_assert!(data.is_pointer_value());
+
+                Value {
+                    kind: ValueKind::Immediate(data),
+                    layout: self.tcx.layout_of(Ty::new_refrence(self.tcx, self.tcx.basic_types.byte)).unwrap()
+                }
+            }
+            sym::string_from_raw_parts => {
+                let mut args = args.iter();
+                let Some(data) = args.next() else { unreachable!() };
+                let Some(len) = args.next() else { unreachable!() };
+
+                let Value { kind: ValueKind::Immediate(data), .. } = self.lower_operand(data.operand) else {
+                    unreachable!();
+                };
+                let Value { kind: ValueKind::Immediate(len), .. } = self.lower_operand(len.operand) else {
+                    unreachable!();
+                };
+                debug_assert!(data.is_pointer_value());
+                debug_assert!(len.is_int_value());
+
+                Value {
+                    kind: ValueKind::Pair(data, len),
+                    layout: self.tcx.layout_of(self.tcx.basic_types.string).unwrap()
+                }
+            }
+            _ => panic!("{name} is not a known intrinsic"),
         }
     }
 

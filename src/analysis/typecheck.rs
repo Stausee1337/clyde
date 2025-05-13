@@ -3,7 +3,7 @@ use std::cell::Cell;
 use hashbrown::HashMap;
 use num_traits::ToPrimitive;
 
-use crate::{syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, type_ir::{self, AdtDef, AdtKind, ConstKind, Integer, Ty}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, Integer, Ty, TyKind}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -1436,6 +1436,71 @@ pub fn typecheck(tcx: TyCtxt<'_>, def_id: DefId) -> &'_ TypecheckResults<'_> {
     tcx.arena.alloc(ctxt.results())
 }
 
+fn check_valid_intrinsic(
+    ident: ast::Ident,
+    params: &[type_ir::Param],
+    result_ty: Ty,
+    tcx: TyCtxt
+) -> bool {
+    let name = ident.symbol;
+
+    let closure = || {
+        macro_rules! early {
+            ($expr:expr) => {
+                if !$expr {
+                    return Ok(false);
+                }
+            };
+        }
+        let mut params = params.iter();
+        macro_rules! param {
+            () => { params.next().map(|p| p.ty) };
+        }
+        match name {
+            sym::main => {
+                early!(matches!(param!(), Some(Ty(TyKind::Slice(Ty(TyKind::String))))));
+                early!(matches!(param!(), None));
+                early!(matches!(result_ty, Ty(TyKind::Int(type_ir::Integer::I32, true))));
+            }
+            sym::stringdata => {
+                early!(matches!(param!(), Some(Ty(TyKind::String))));
+                early!(matches!(param!(), None));
+                early!(matches!(result_ty, Ty(TyKind::Refrence(Ty(TyKind::Int(type_ir::Integer::I8, false))))));
+            }
+            sym::stringlen => {
+                early!(matches!(param!(), Some(Ty(TyKind::String))));
+                early!(matches!(param!(), None));
+                early!(matches!(result_ty, Ty(TyKind::Int(type_ir::Integer::ISize, false))));
+            }
+            sym::string_from_raw_parts => {
+                early!(matches!(param!(), Some(Ty(TyKind::Refrence(Ty(TyKind::Int(type_ir::Integer::I8, false)))))));
+                early!(matches!(param!(), Some(Ty(TyKind::Int(type_ir::Integer::ISize, false)))));
+                early!(matches!(param!(), None));
+                early!(matches!(result_ty, Ty(TyKind::String)));
+            }
+            _ => {
+                Message::error(format!("function `{name}` is not a known compiler intrinsic"))
+                    .at(ident.span)
+                    .push(tcx.diagnostics());
+                return Err(());
+            }
+        }
+
+        Ok(true)
+    };
+
+    
+
+    if let Ok(false) = closure() {
+        Message::error(format!("intrinsic `{name}` doesn't match the expected signature"))
+            .at(ident.span)
+            .push(tcx.diagnostics());
+        return false;
+    }
+
+    true
+}
+
 pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx);
@@ -1530,10 +1595,15 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
         _ => ()
     }
 
+    if !has_errors && header.compiler_intrinsic.is_some() {
+        has_errors |= !check_valid_intrinsic(func.ident, params, returns, tcx);
+    }
+
     type_ir::Signature {
         name: func.ident.symbol,
         params,
         returns,
-        has_errors
+        has_errors,
+        intrinsic: !has_errors && header.compiler_intrinsic.is_some()
     }
 }

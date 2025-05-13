@@ -16,9 +16,10 @@ Ordered (by priority):
 √ Codegen
     √ Refactor Consts
     √ Parser Recovery and Tree-like AST Node ownership
-- Directives (`#if`, `#include`, etc ...)
-    - Files and Imports AND propper Name mangling for clyde functions
-    - `#c_call` for non-mangled names
+- Directives (`#include`, etc ...)
+    √ Files and Imports AND propper Name mangling for clyde functions
+    √ `#c_call` for non-mangled names
+    - `#compiler_intrinsic` calls
     - Behavioural tests (and testing suite) to have some foundational test cases
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
     - Namespaces
