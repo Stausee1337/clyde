@@ -482,7 +482,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::ExprKind::Block(_) => true, // block is to complicated, so it's going to be matched
             ast::ExprKind::FunctionCall(..) | ast::ExprKind::TypeInit(..) |
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
-            ast::ExprKind::Name(..) | ast::ExprKind::Deref(..) |
+            ast::ExprKind::Path(..) | ast::ExprKind::Deref(..) |
             ast::ExprKind::Literal(..) | ast::ExprKind::Err => true,
         }
     }
@@ -553,8 +553,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_assignop(&mut self, assign: &'tcx ast::AssignOp<'tcx>, expected: Option<Ty<'tcx>>) -> Ty<'tcx> {
         let is_valid_lhs = {
-            use ast::ExprKind::{Subscript, Field, Name, Deref};
-            matches!(assign.lhs.kind, Subscript(..) | Field(..) | Name(..) | Deref(..)) 
+            use ast::ExprKind::{Subscript, Field, Path, Deref};
+            matches!(assign.lhs.kind, Subscript(..) | Field(..) | Path(..) | Deref(..)) 
         };
         if !is_valid_lhs {
             Message::error("invalid left hand side in assignment")
@@ -948,8 +948,9 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
                                 self.field_indices.insert(expr.node_id, *idx);
                             }
-                            ast::TypeInitKind::Direct(expr) if let ast::ExprKind::Name(name) = &expr.kind => {
-                                let Some((idx, fdef)) = fields.get(&name.ident.symbol) else {
+                            ast::TypeInitKind::Direct(expr) if let ast::ExprKind::Path(path) = &expr.kind => {
+                                todo!("struct init quality of live improvement");
+                                /*let Some((idx, fdef)) = fields.get(&path) else {
                                     Message::error(format!("can't find field `{}` on struct {ty}", name.ident.symbol.get()))
                                         .at(name.ident.span)
                                         .push(self.diagnostics());
@@ -958,7 +959,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 };
                                 let fty = self.tcx.type_of(fdef.def);
                                 self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
-                                self.field_indices.insert(expr.node_id, *idx);
+                                self.field_indices.insert(expr.node_id, *idx);*/
                             }
                             ast::TypeInitKind::Direct(expr) => {
                                 Message::error("immediate initializer in struct initialization is invalid")
@@ -1116,8 +1117,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let ty = self.check_expr_with_expectation(base, expectation);
                 self.deref(ty, expr.span)
             }
-            ast::ExprKind::Name(name) =>
-                self.check_expr_name(name),
+            ast::ExprKind::Path(path) =>
+                self.check_expr_path(path),
             ast::ExprKind::Block(block) => {
                 if !is_body {
                     let (ctxt, ty) = self.enter_block_ctxt(expr.node_id, |this| {
@@ -1190,8 +1191,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
     }
 
-    fn check_expr_name(&mut self, name: &ast::Name) -> Ty<'tcx> {
-        let Some(resolution) = name.resolution() else {
+    fn check_expr_path(&mut self, path: &ast::Path) -> Ty<'tcx> {
+        let Some(resolution) = path.resolution() else {
             panic!("unresolved Name in check_expr_name(...)");
         };
         match resolution {
@@ -1299,26 +1300,26 @@ impl<'tcx> LoweringCtxt<'tcx> {
         self.tcx.diagnostics()
     }
 
-    fn lower_name(&self, name: &ast::Name) -> Ty<'tcx> {
-        let Some(resolution) = name.resolution() else {
+    fn lower_path(&self, path: &ast::Path) -> Ty<'tcx> {
+        todo!("this is comparable to a path resolution a typecheck stage now");
+        /*let Some(resolution) = name.resolution() else {
             panic!("unresolved Name in lower_name(...)");
         };
         match resolution {
             ast::Resolution::Primitive => {
-               name.ident.symbol.get_primitive_ty(self.tcx)
+                name.ident.symbol.get_primitive_ty(self.tcx)
                    .expect("non-primitive Ident for primitive name resolution")
             }
             ast::Resolution::Def(def_id, DefinitionKind::Enum | DefinitionKind::Struct) =>
                 self.tcx.type_of(*def_id),
             ast::Resolution::Err => Ty::new_error(self.tcx),
             _ => panic!("unexpected Resolution in lower_name")
-        }
+        }*/
     }
 
     fn lower_ty(&self, ty: &ast::TypeExpr) -> Ty<'tcx> {
         match &ty.kind {
-            ast::TypeExprKind::Name(name) => 
-                self.lower_name(name),
+            ast::TypeExprKind::Path(path) =>  self.lower_path(path),
             ast::TypeExprKind::Ref(ty) => {
                 let ty = self.lower_ty(ty);
                 Ty::new_refrence(self.tcx, ty)
@@ -1356,7 +1357,6 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 }
                 Ty::new_slice(self.tcx, ty)
             }
-            ast::TypeExprKind::Generic(..) => panic!("lowering generic types is not supported yet"),
             ast::TypeExprKind::Err => Ty::new_error(self.tcx)
         }
     }

@@ -73,6 +73,8 @@ impl Session {
             tainted_with_errors: Cell::new(None)
         };
         let entry = parser::parse_file(&self, &self.input, &ast_info)?;
+        self.diagnostics().render();
+        panic!();
         let resolutions = resolve::resolve_from_entry(&self, entry, &ast_info);
 
         let providers = Providers {

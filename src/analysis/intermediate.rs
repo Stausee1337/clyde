@@ -613,7 +613,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
     fn write_expr_into(&mut self, dest: Option<Place<'tcx>>, mut block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> BlockId {
         match &expr.kind {
-            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(..) | ast::Resolution::Def(_, DefinitionKind::Static)) = name.resolution() => {
+            ast::ExprKind::Path(path) if let Some(ast::Resolution::Local(..) | ast::Resolution::Def(_, DefinitionKind::Static)) = path.resolution() => {
                 let place;
                 (block, place) = self.expr_as_place(block, expr);
 
@@ -628,7 +628,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 block
             }
-            ast::ExprKind::Name(..) | ast::ExprKind::Literal(..) => {
+            ast::ExprKind::Path(..) | ast::ExprKind::Literal(..) => {
                 let operand;
                 (block, operand) = self.expr_as_operand(block, expr);
 
@@ -989,8 +989,8 @@ impl<'tcx> TranslationCtxt<'tcx> {
     }
 
     fn as_register(&mut self, block: BlockId, expr: &'tcx ast::Expr<'tcx>) -> (BlockId, RegisterId) {
-        if let ast::ExprKind::Name(name) = &expr.kind {
-            if let Some(ast::Resolution::Local(local)) = name.resolution() {
+        if let ast::ExprKind::Path(path) = &expr.kind {
+            if let Some(ast::Resolution::Local(local)) = path.resolution() {
                 return (block, self.register_lookup[local]);
             }
         }
@@ -1007,9 +1007,9 @@ impl<'tcx> TranslationCtxt<'tcx> {
         expr: &ast::Expr<'tcx>
     ) -> Option<(BlockId, RegisterId)> {
         let res = match &expr.kind {
-            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() =>
+            ast::ExprKind::Path(path) if let Some(ast::Resolution::Local(local)) = path.resolution() =>
                 (block, self.register_lookup[local]),
-            ast::ExprKind::Name(name) if let Some(ast::Resolution::Def(def_id, DefinitionKind::Static)) = name.resolution() => {
+            ast::ExprKind::Path(path) if let Some(ast::Resolution::Def(def_id, DefinitionKind::Static)) = path.resolution() => {
                 // IDEA: we need to be hadling things like this:
                 // ```clyde
                 // static int count = 0;
@@ -1145,7 +1145,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     (block, Operand::Const(Const::from_literal(self.tcx, ty, literal).unwrap()))
                 }
             }
-            ast::ExprKind::Name(name) if let Some(ast::Resolution::Local(local)) = name.resolution() => {
+            ast::ExprKind::Path(path) if let Some(ast::Resolution::Local(local)) = path.resolution() => {
                 // FIXME: remove duplication with Place and Temporaray handling
                 
                 let mut reg = self.register_lookup[local];
@@ -1165,7 +1165,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
 
                 (block, Operand::Copy(reg))
             }
-            ast::ExprKind::Name(name) => match name.resolution() {
+            ast::ExprKind::Path(path) => match path.resolution() {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
                     (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Function)) =>

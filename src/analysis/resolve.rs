@@ -1,5 +1,5 @@
 
-use std::{collections::VecDeque, ffi::OsString, io, path::{Path, PathBuf}, rc::Rc, str::FromStr, fmt::Write};
+use std::{collections::VecDeque, io, path::{Path, PathBuf}, rc::Rc, str::FromStr, fmt::Write};
 
 use hashbrown::{HashMap, hash_map::Entry};
 use sha1::Digest;
@@ -562,8 +562,9 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         None
     }
 
-    fn resolve_name_in_space(&self, space: NameSpace, name: &ast::Name, report_error: bool) -> bool {
-        if name.resolution().is_some() {
+    fn resolve_path_in_space(&self, space: NameSpace, path: &ast::Path, report_error: bool) -> bool {
+        todo!("path resolving is a novel problem")
+        /*if name.resolution().is_some() {
             return true;
         }
         let rib = *self.tfg_ribs.last().expect(".resolve() called without valid TFGRib");
@@ -588,19 +589,20 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             }
             return false;
         };
-        true
+        true*/
     }
 
-    fn resolve_priority(&self, pspaces: &[NameSpace], name: &ast::Name) -> bool {
+    fn resolve_priority(&self, pspaces: &[NameSpace], path: &ast::Path) -> bool {
         for space in pspaces {
-            if self.resolve_name_in_space(*space, name, false) {
+            if self.resolve_path_in_space(*space, path, false) {
                 return true;
             }
         }
-        Message::error(format!("could not find {space} {name}", space = pspaces[0], name = name.ident.symbol.get()))
-            .at(name.ident.span)
+        let name: ast::Ident = todo!("find the first ill-resolved segment of this path");
+        Message::error(format!("could not find {space} {name}", space = pspaces[0], name = name.symbol))
+            .at(path.span)
             .push(self.resolution.diagnostics);
-        name.resolve(Resolution::Err);
+        path.resolve(Resolution::Err);
         false
     }
 }
@@ -738,19 +740,18 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
         control_flow.destination.set(Ok(*owner)).unwrap();
     }
 
-    fn visit_name(&mut self, name: &'tcx ast::Name) {
-        self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], name);
+    fn visit_path(&mut self, path: &'tcx ast::Path<'tcx>) {
+        self.resolve_priority(&[NameSpace::Variable, NameSpace::Function], path);
     }
 
     fn visit_expr(&mut self, expr: &'tcx ast::Expr<'tcx>) {
         match &expr.kind {
-            ast::ExprKind::Name(name) =>
-                self.visit_name(name),
+            ast::ExprKind::Path(path) => self.visit_path(path),
             ast::ExprKind::TypeInit(ty_init) => {
                 node_visitor::visit_slice(ty_init.initializers, |field| self.visit_type_init(field));
                 match &ty_init.ty.kind {
-                    ast::TypeExprKind::Name(name) => {
-                        self.resolve_name_in_space(NameSpace::Type, name, true);
+                    ast::TypeExprKind::Path(path) => {
+                        self.resolve_path_in_space(NameSpace::Type, path, true);
                     },
                     ast::TypeExprKind::Array(array) => {
                         self.visit_ty_expr(ty_init.ty);
@@ -762,25 +763,14 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                     }
                     ast::TypeExprKind::Slice(ty) =>
                         self.visit_ty_expr(ty),
-                    ast::TypeExprKind::Generic(..) => {
-                        Message::fatal("generic types are not supported yet")
-                            .at(ty_init.ty.span)
-                            .push(self.resolution.diagnostics);
-                    }
                     ast::TypeExprKind::Ref(..) =>
                         panic!("invalid state after parsing type init"),
                     ast::TypeExprKind::Err => ()
                 }
             }
-            ast::ExprKind::FunctionCall(call) if let ast::ExprKind::Name(name) = &call.callable.kind => {
-                if call.generic_args.len() > 0 {
-                    Message::fatal("generic function calls are not supported yet")
-                        .at(expr.span)
-                        .push(self.resolution.diagnostics);
-                    return;
-                }
+            ast::ExprKind::FunctionCall(call) if let ast::ExprKind::Path(path) = &call.callable.kind => {
                 node_visitor::visit_slice(call.args, |arg| self.visit_argument(arg));
-                self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], name);
+                self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], path);
             }
             ast::ExprKind::Block(body) => {
                 self.with_rib(|this| {
@@ -806,14 +796,9 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
     fn visit_ty_expr(&mut self, ty: &'tcx ast::TypeExpr<'tcx>) {
         match &ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
-            ast::TypeExprKind::Name(name) => {
-                self.resolve_name_in_space(NameSpace::Type, name, true);
+            ast::TypeExprKind::Path(path) => {
+                self.resolve_path_in_space(NameSpace::Type, path, true);
             },
-            ast::TypeExprKind::Generic(..) => {
-                Message::fatal("generic types are not supported yet")
-                    .at(ty.span)
-                    .push(self.resolution.diagnostics);
-            }
             ast::TypeExprKind::Array(array) => {
                 self.visit_ty_expr(array.ty);
                 match array.cap {

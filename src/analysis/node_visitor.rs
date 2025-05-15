@@ -1,5 +1,5 @@
 
-use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericParam, GenericParamKind, Import, Item, ItemKind, Literal, Name, NestedConst, Param, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
+use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericArgumentKind, GenericParam, GenericParamKind, Import, Item, ItemKind, Literal, NestedConst, Param, Path, PathSegment, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
 
 
 pub trait Visitor<'tcx>: Sized {
@@ -71,8 +71,12 @@ pub trait Visitor<'tcx>: Sized {
         noop(cnst);
     }
 
-    fn visit_name(&mut self, name: &'tcx Name) {
-        noop(name);
+    fn visit_path(&mut self, path: &'tcx Path<'tcx>) {
+        visit_slice(path.segments, |segment| self.visit_path_segment(segment));
+    }
+
+    fn visit_path_segment(&mut self, segment: &'tcx PathSegment<'tcx>) {
+        visit_slice(segment.generic_args, |arg| self.visit_generic_argument(arg));
     }
 
     fn visit_control_flow(&mut self, control_flow: &'tcx ControlFlow) {
@@ -171,7 +175,6 @@ pub fn noop_visit_expr_kind<'tcx, T: Visitor<'tcx>>(expr_kind: &'tcx ExprKind<'t
         ExprKind::FunctionCall(call) => {
             vis.visit_expr(call.callable);
             visit_slice(call.args, |arg| vis.visit_argument(arg));
-            visit_slice(call.generic_args, |arg| vis.visit_generic_argument(arg));
         }
         ExprKind::TypeInit(init) => {
             vis.visit_ty_expr(init.ty);
@@ -183,7 +186,7 @@ pub fn noop_visit_expr_kind<'tcx, T: Visitor<'tcx>>(expr_kind: &'tcx ExprKind<'t
         }
         ExprKind::Field(field) => vis.visit_expr(field.expr),
         ExprKind::Literal(literal) => vis.visit_literal(literal),
-        ExprKind::Name(name) => vis.visit_name(name),
+        ExprKind::Path(path) => vis.visit_path(path),
         ExprKind::Tuple(items) =>
             visit_slice(items, |item| vis.visit_expr(item)),
         // ExprKind::ShorthandEnum(_) => (),
@@ -208,11 +211,7 @@ pub fn noop_visit_generic_param_kind<'tcx, T: Visitor<'tcx>>(gp_kind: &'tcx Gene
 pub fn noop_visit_ty_expr_kind<'tcx, T: Visitor<'tcx>>(ty_kind: &'tcx TypeExprKind<'tcx>, vis: &mut T) {
     match ty_kind {
         TypeExprKind::Ref(ty) => vis.visit_ty_expr(ty),
-        TypeExprKind::Name(name) => vis.visit_name(name),
-        TypeExprKind::Generic(generic) => {
-            vis.visit_name(&generic.name);
-            visit_slice(generic.args, |arg| vis.visit_generic_argument(arg));
-        }
+        TypeExprKind::Path(path) => vis.visit_path(path),
         TypeExprKind::Array(array) => {
             vis.visit_ty_expr(array.ty);
             match array.cap {
@@ -235,10 +234,10 @@ pub fn noop_visit_argument<'tcx, T: Visitor<'tcx>>(arg: &'tcx FunctionArgument<'
 }
 
 pub fn noop_visit_generic_argument<'tcx, T: Visitor<'tcx>>(arg: &'tcx GenericArgument<'tcx>, vis: &mut T) {
-    match arg {
-        GenericArgument::Ty(expr) => vis.visit_ty_expr(expr),
-        GenericArgument::Expr(expr) => vis.visit_nested_const(expr),
-        GenericArgument::Literal(cnst) => vis.visit_literal(cnst),
+    match &arg.kind {
+        GenericArgumentKind::Ty(expr) => vis.visit_ty_expr(expr),
+        GenericArgumentKind::Expr(expr) => vis.visit_nested_const(expr),
+        GenericArgumentKind::Literal(cnst) => vis.visit_literal(cnst),
     }
 }
 

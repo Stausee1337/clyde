@@ -367,7 +367,7 @@ impl<'tcx> Const<'tcx> {
                     Some(tcx.intern_const(ConstKind::Err))
                 }
             };
-        } else if let ast::ExprKind::Name(name) = &expr.kind && let Some(ast::Resolution::Def(def_id, ast::DefinitionKind::Const)) = name.resolution() {
+        } /*else if let ast::ExprKind::Name(name) = &expr.kind && let Some(ast::Resolution::Def(def_id, ast::DefinitionKind::Const)) = name.resolution() {
             let found_ty = tcx.type_of(*def_id);
             if found_ty != ty {
                 Message::error(format!("mismatched types: expected {ty}, found {found_ty}"))
@@ -376,7 +376,7 @@ impl<'tcx> Const<'tcx> {
                 return Some(tcx.intern_const(ConstKind::Err));
             }
             return Some(Const::from_definition(tcx, *def_id));
-        }
+        }*/
         None
     }
 

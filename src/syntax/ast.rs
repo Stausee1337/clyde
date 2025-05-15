@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::fmt::Write;
 use std::hash::Hash;
 
 use index_vec::IndexVec;
@@ -179,15 +180,19 @@ pub enum Resolution {
 }
 
 #[derive(Debug, Clone)]
-pub struct Name {
-    pub ident: Ident,
+pub struct Path<'ast> {
+    pub segments: &'ast [PathSegment<'ast>],
+    pub span: Span,
     resolution: OnceCell<Resolution>
 }
 
-impl Name {
-    pub fn from_ident(ident: Ident) -> Self {
+impl<'ast> Path<'ast> {
+    pub fn from_segments(segments: &'ast [PathSegment<'ast>]) -> Self {
+        let start = segments.first().unwrap().span; 
+        let end = segments.last().unwrap().span; 
         Self {
-            ident,
+            segments,
+            span: Span::interpolate(start, end),
             resolution: OnceCell::new()
         }
     }
@@ -199,6 +204,33 @@ impl Name {
     pub fn resolve(&self, resolution: Resolution) {
         self.resolution.set(resolution)
             .expect("resolve() on resolved name")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PathSegment<'ast> {
+    pub ident: Option<Ident>,
+    pub generic_args: &'ast [GenericArgument<'ast>],
+    pub span: Span,
+}
+
+impl<'ast> PathSegment<'ast> {
+    pub fn from_ident(ident: Ident) -> Self {
+        Self {
+            ident: Some(ident),
+            generic_args: &[],
+            span: ident.span
+        }
+    }
+
+    pub fn from_generic_args(ident: Option<Ident>, generic_args: &'ast [GenericArgument<'ast>]) -> Self {
+        let start = generic_args.first().map(|a| a.span).unwrap_or_else(|| ident.unwrap().span);
+        let end = generic_args.last().map(|a| a.span).unwrap_or_else(|| ident.unwrap().span);
+        Self {
+            ident,
+            generic_args,
+            span: Span::interpolate(start, end)
+        }
     }
 }
 
@@ -502,14 +534,7 @@ pub enum ExprKind<'ast> {
     Field(Field<'ast>),
     Literal(Literal),
     Tuple(&'ast [&'ast Expr<'ast>]),
-    // FIXME: EnumVariant (and ShorthandEnum) need to be handled using `Path`
-    // (which will replace Name) since those will be resolvable using the OnceCell<Resolution>
-    // field.
-    // NOTE: Path is going to be a slice of `Ident`s representing a coloned path
-    // (e.g. sys::io::file or FileMode::Read for enum variants)
-    /*EnumVariant(EnumVariant<'ast>),*/
-    Name(Name),
-    /*ShorthandEnum(Ident),*/
+    Path(Path<'ast>),
     Range(Range<'ast>),
     Deref(&'ast Expr<'ast>),
     Block(Block<'ast>),
@@ -559,7 +584,6 @@ pub enum TypeInitKind<'ast> {
 pub struct FunctionCall<'ast> {
     pub callable: &'ast Expr<'ast>,
     pub args: &'ast [FunctionArgument<'ast>],
-    pub generic_args: &'ast [GenericArgument<'ast>]
 }
 
 #[derive(Debug)]
@@ -720,8 +744,7 @@ impl<'ast> IntoNode<'ast> for TypeExpr<'ast>  {
 #[derive(Debug)]
 pub enum TypeExprKind<'ast> {
     Ref(&'ast TypeExpr<'ast>),
-    Name(Name),
-    Generic(Generic<'ast>),
+    Path(Path<'ast>),
     Array(Array<'ast>),
     Slice(&'ast TypeExpr<'ast>),
     Err,
@@ -732,14 +755,14 @@ pub struct Array<'ast> {
     pub cap: ArrayCapacity<'ast>
 }
 
-#[derive(Debug)]
-pub struct Generic<'ast> {
-    pub name: Name,
-    pub args: &'ast [GenericArgument<'ast>]
+#[derive(Debug, Clone)]
+pub struct GenericArgument<'ast> {
+    pub kind: GenericArgumentKind<'ast>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
-pub enum GenericArgument<'ast> {
+pub enum GenericArgumentKind<'ast> {
     Ty(&'ast TypeExpr<'ast>),
     Expr(&'ast NestedConst<'ast>),
     Literal(Literal),
