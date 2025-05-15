@@ -532,9 +532,13 @@ impl<'ast> ast::TypeExpr<'ast> {
 
 type PRes<T> = Result<T, Span>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PathMode {
-    Normal, Function,
+    Normal,
+    // `PathMode::Function` changes the doubt mechanism inside `maybe_parse_path`.
+    // Instead of making the function question if there even is a path, it allows the function to
+    // parse incomplete paths.
+    Function,
 }
 
 pub struct Parser<'src, 'ast> {
@@ -889,7 +893,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         if !self.cursor.is_eos()
-            && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
+            && (!matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) || skipped_tree) {
             self.cursor.advance();
         }
 
@@ -920,6 +924,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
         }
 
+        let skipped_tree;
         match current.kind {
             TokenKind::Punctuator(Punctuator::LParen) => {
                 self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
@@ -928,6 +933,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .at(Span::interpolate(current.span, end))
                     .push(self.diagnostics);
                 debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
             }
             TokenKind::Punctuator(Punctuator::LBracket) => {
                 self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RBracket)));
@@ -936,6 +942,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .at(Span::interpolate(current.span, end))
                     .push(self.diagnostics);
                 debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
             }
             TokenKind::Punctuator(Punctuator::LCurly) => {
                 self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RCurly)));
@@ -944,16 +951,18 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .at(Span::interpolate(current.span, end))
                     .push(self.diagnostics);
                 debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
             }
             _ => {
                 message
                     .at(span)
                     .push(self.diagnostics);
+                skipped_tree = false;
             }
         }
 
         if !self.cursor.is_eos()
-            && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
+            && (!matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) || skipped_tree) {
             self.cursor.advance();
         }
 
@@ -966,6 +975,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let message = format!("expected {}, found {}", message, self.cursor.current());
         let message = Message::error(message);
 
+        let skipped_tree;
         match current.kind {
             TokenKind::Punctuator(Punctuator::LParen) => {
                 self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RParen)));
@@ -974,6 +984,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .at(Span::interpolate(current.span, end))
                     .push(self.diagnostics);
                 debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
             }
             TokenKind::Punctuator(Punctuator::LBracket) => {
                 self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RBracket)));
@@ -982,6 +993,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .at(Span::interpolate(current.span, end))
                     .push(self.diagnostics);
                 debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
+                skipped_tree = true;
             }
             TokenKind::Punctuator(Punctuator::LCurly) => {
                 self.cursor.skip_while(|token| !matches!(token.kind, TokenKind::Punctuator(Punctuator::RCurly)));
@@ -990,17 +1002,18 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .at(Span::interpolate(current.span, end))
                     .push(self.diagnostics);
                 debug_assert!(!self.cursor.is_eos(), "Bug: opening paren needs respective closing paren");
-                self.cursor.advance();
+                skipped_tree = true;
             }
             _ => {
                 message
                     .at(span)
                     .push(self.diagnostics);
+                skipped_tree = false;
             }
         }
 
         if !self.cursor.is_eos()
-            && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
+            && (!matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) || skipped_tree) {
             self.cursor.advance();
         }
 
@@ -1015,9 +1028,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         (result, cursor.unwrap())
     }
 
-    fn maybe_parse_path(&mut self, _mode: PathMode) -> ParseTry<'src, ast::Path<'ast>> {
+    fn maybe_parse_path(&mut self, mode: PathMode) -> ParseTry<'src, ast::Path<'ast>> {
         let cursor = self.cursor.fork();
-        let prev_cursor = std::mem::replace(&mut self.cursor, cursor);
+        let mut prev_cursor = std::mem::replace(&mut self.cursor, cursor);
         if self.match_on::<ast::Ident>().is_none() {
             let mut fake_cursor = std::mem::replace(&mut self.cursor, prev_cursor);
             fake_cursor.advance();
@@ -1025,12 +1038,16 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         let mut segments = vec![];
-        let mut doubt = None; // points at last doubtfree position
+        // points at last doubtfree position (used in `Normal` mode)
+        let mut sure = None;
+        // points at last doubtfull position (used in `Function` mode)
+        let mut doubt = Some(prev_cursor.fork());
+
         while let Some(ident) = self.bump_on::<ast::Ident>() {
             // test(std::i32::max < a, b >
             // test(std::i32::max[4],
             //
-            doubt = None;
+            sure = None;
 
             segments.push(ast::PathSegment::from_ident(ident));
             let segment = segments.last_mut().unwrap();
@@ -1041,7 +1058,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     }
                     ParseTry::Doubt(args, cursor) => {
                         segment.generic_args = args;
-                        doubt = Some(self.cursor.sync(cursor).unwrap());
+                        sure = Some(self.cursor.sync(cursor).unwrap());
                     }
                     ParseTry::Never(..) => ()
                 }
@@ -1056,7 +1073,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
                 if !matches!(ty_expr.kind, ast::TypeExprKind::Slice(..)) {
                     // only slices are unmistakeably slices
-                    doubt = Some(sure_cursor);
+                    sure = Some(sure_cursor);
+                } else {
+                    doubt = None;
                 }
 
                 let args = std::slice::from_ref(self.alloc(ast::GenericArgument {
@@ -1071,15 +1090,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 let span = path.span;
                 let ty_expr = self.make_ty_expr(ast::TypeExprKind::Path(path), span);
 
-                let sure_cursor = self.cursor.fork();
                 let end = self.cursor.span();
                 self.cursor.advance();
                 let ty_expr = self.make_ty_expr(ast::TypeExprKind::Ref(ty_expr), Span::interpolate(span, end));
 
-                if !matches!(ty_expr.kind, ast::TypeExprKind::Slice(..)) {
-                    // only slices are unmistakeably slices
-                    doubt = Some(sure_cursor);
-                }
+                doubt = None;
 
                 let args = std::slice::from_ref(self.alloc(ast::GenericArgument {
                     span: ty_expr.span,
@@ -1095,7 +1110,35 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
             if self.match_on::<ast::Ident>().is_none() {
                 let _ = self.unexpected("<ident>");
+                if mode == PathMode::Function {
+                    return ParseTry::Never(self.cursor.fork());
+                }
             }
+            doubt = Some(self.cursor.fork());
+        }
+
+        if mode == PathMode::Function {
+            let Some(doubt) = doubt else {
+                Message::error("this kind of path cannot be used as function member path")
+                    .at(Span::interpolate(prev_cursor.span(), self.cursor.span()))
+                    .push(self.diagnostics);
+                return ParseTry::Never(self.cursor.fork());
+            };
+            self.cursor.sync(doubt);
+
+            if segments.len() == 1 {
+                // this shoudn't really ever be looked at. It's an empty path and a cursor that
+                // doesn't correspond to anything usefull. It just signifies a `None` value in this
+                // very weird case
+                return ParseTry::Doubt(ast::Path::empty(), prev_cursor);
+            }
+
+            segments.pop();
+
+            let segments = self.alloc_slice(&segments);
+            let path = ast::Path::from_segments(segments);
+            
+            return ParseTry::Sure(path);
         }
 
         let segments = self.alloc_slice(&segments);
@@ -1103,8 +1146,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let fake_cursor = std::mem::replace(&mut self.cursor, prev_cursor);
 
-        if let Some(doubt) = doubt {
-            self.cursor.sync(doubt);
+        if let Some(sure) = sure {
+            self.cursor.sync(sure);
             return ParseTry::Doubt(path, fake_cursor);
         }
 
@@ -1184,6 +1227,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_ty_expr(&mut self) -> PRes<&'ast ast::TypeExpr<'ast>> {
+        self.expect_any::<ast::Ident>()?;
         match self.maybe_parse_ty_expr() {
             ParseTry::Sure(ty_expr) => Ok(ty_expr),
             ParseTry::Doubt(ty_expr, cursor) => {
@@ -1416,7 +1460,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 } else {
                     Some(path.simple(self))
                 }
-
             }
             ParseTry::Never(..) => None
         };
@@ -2154,7 +2197,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn parse_generic_params(&mut self) -> PRes<&'ast [&'ast ast::GenericParam<'ast>]> {
         let mut generics = vec![];
-        self.cursor.advance();
 
         while !self.matches(Token![>]) {
             let start = self.cursor.span();
@@ -2189,20 +2231,20 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(generics)
     }
 
-    fn parse_function_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident) -> PRes<(ast::ItemKind<'ast>, Span)> {
+    fn parse_function_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident, member_path: Option<ast::Path<'ast>>) -> PRes<(ast::ItemKind<'ast>, Span)> {
         // OwnedPtr<int*>[] get_int(...
         //                         ^
         //          OR
         // OwnedPtr<T*>[] get_obj<T>(...
         //                       ^
         let start = self.cursor.span();
-        self.cursor.advance();
  
         let generics = if self.bump_if(Token![<]).is_some() {
             self.parse_generic_params()?
         } else {
             &[]
         };
+        self.cursor.advance();
 
         let mut params = vec![];
         let _res = self.fail_parse_tree(Delimiter::Paren, |this| {
@@ -2292,14 +2334,22 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 sig,
                 body,
                 span,
+                member_path: member_path.map(|xx| self.alloc(xx))
             }),
             span 
         ))
     }
 
-    fn parse_global_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident, constant: bool) -> PRes<(ast::ItemKind<'ast>, Span)> {
+    fn parse_global_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident) -> PRes<(ast::ItemKind<'ast>, Span)> {
         let mut init = None;
-        if self.bump_if(Token![=]).is_some() {
+        let mut constant = false;
+        if self.bump_if(Token![::=]).is_some() {
+            constant = true;
+            init = Some(
+                self.parse_expr(Restrictions::empty())
+                    .unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span))
+            );
+        } else if self.bump_if(Token![=]).is_some() {
             init = Some(
                 self.parse_expr(Restrictions::empty())
                     .unwrap_or_else(|span| self.make_expr(ast::ExprKind::Err, span))
@@ -2332,18 +2382,28 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         let res = self.with_owner(|this| {
-            let constant = this.bump_if(Token![const]).is_some();
             let ty = this.parse_ty_expr()?;
 
-            let name = this.expect_any::<ast::Ident>()?;
-            this.cursor.advance();
+            match this.maybe_parse_path(PathMode::Function) {
+                ParseTry::Sure(path) => {
+                    let name = this.bump_on::<ast::Ident>().unwrap();
 
-            if this.matches(Punctuator::LParen) {
-                this.parse_function_item(ty, name)
-            } else {
-                this.parse_global_item(ty, name, constant)
+                    this.expect_either(&[Punctuator::LParen, Token![<]])?;
+
+                    this.parse_function_item(ty, name, Some(path))
+                }
+                ParseTry::Doubt(..) => {
+                    let name = this.expect_any::<ast::Ident>()?;
+                    this.cursor.advance();
+
+                    if this.matches(Punctuator::LParen) || this.matches(Token![<]) {
+                        this.parse_function_item(ty, name, None)
+                    } else {
+                        this.parse_global_item(ty, name)
+                    }
+                }
+                ParseTry::Never(cursor) => return Err(cursor.span()),
             }
-
         });
         let ((kind, span), owner_id, children) = res?;
         let item = self.make_item(kind, span);

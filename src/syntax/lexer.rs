@@ -48,7 +48,7 @@ macro_rules! Token {
     [||] => { crate::syntax::lexer::Punctuator::DoubleVBar };
     [!] => { crate::syntax::lexer::Punctuator::Bang };
 
-    [:=] => { crate::syntax::lexer::Punctuator::ColonAssign };
+    [::=] => { crate::syntax::lexer::Punctuator::DoubleColonAssign };
 
     [+=] => { crate::syntax::lexer::Punctuator::PlusAssign };
     [-=] => { crate::syntax::lexer::Punctuator::MinusAssing };
@@ -1141,8 +1141,8 @@ pub enum Punctuator {
     #[str = "!"]
     Bang,
 
-    #[str = ":="]
-    ColonAssign,
+    #[str = "::="]
+    DoubleColonAssign,
 
     #[str = "+="]
     PlusAssign,

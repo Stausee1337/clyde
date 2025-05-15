@@ -187,6 +187,15 @@ pub struct Path<'ast> {
 }
 
 impl<'ast> Path<'ast> {
+    // From an API point of view this could be considered unsafe
+    pub fn empty() -> Self {
+        Self {
+            segments: &[],
+            span: Span::NULL,
+            resolution: OnceCell::new()
+        }
+    }
+
     pub fn from_segments(segments: &'ast [PathSegment<'ast>]) -> Self {
         let start = segments.first().unwrap().span; 
         let end = segments.last().unwrap().span; 
@@ -366,6 +375,7 @@ pub struct Function<'ast> {
     pub ident: Ident,
     pub sig: FnSignature<'ast>,
     pub body: Option<&'ast Expr<'ast>>,
+    pub member_path: Option<&'ast Path<'ast>>,
     pub span: Span,
 }
 
