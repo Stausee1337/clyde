@@ -541,6 +541,13 @@ enum PathMode {
     Function,
 }
 
+enum ItemHeader<'ast> {
+    Ty(&'ast ast::TypeExpr<'ast>),
+    Done(ast::ItemKind<'ast>, Span),
+    Err(Span),
+    None,
+}
+
 pub struct Parser<'src, 'ast> {
     _tokens: Box<[Token<'src>]>,
     cursor: TokenCursor<'src>,
@@ -685,15 +692,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             span,
             scope: this.currrent_item_scope,
             node_id
-        }))
-    }
-
-    fn make_import(&mut self, path: Result<String, ()>, span: Span) -> &'ast ast::Import {
-        self.create_node_id(|this, node_id| this.alloc(ast::Import {
-            path,
-            span,
-            node_id,
-            resolution: OnceCell::new()
         }))
     }
 
@@ -1047,6 +1045,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             // test(std::i32::max < a, b >
             // test(std::i32::max[4],
             //
+            let simple;
             sure = None;
 
             segments.push(ast::PathSegment::from_ident(ident));
@@ -1062,6 +1061,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     }
                     ParseTry::Never(..) => ()
                 }
+                simple = false;
             } else if self.matches(Punctuator::LBracket) {
                 let path = ast::Path::from_segments(self.alloc_slice(&segments));
                 let span = path.span;
@@ -1085,6 +1085,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
                 segments = Vec::new();
                 segments.push(ast::PathSegment::from_generic_args(None, args));
+                simple = false;
             } else if self.matches(Token![*]) {
                 let path = ast::Path::from_segments(self.alloc_slice(&segments));
                 let span = path.span;
@@ -1103,10 +1104,16 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
                 segments = Vec::new();
                 segments.push(ast::PathSegment::from_generic_args(None, args));
+                simple = false;
+            } else {
+                simple = true;
             }
 
             if self.bump_if(Token![::]).is_none() {
                 break;
+            }
+            if segments.len() == 1 && simple && self.match_on::<Directive>().is_some() {
+                continue;
             }
             if self.match_on::<ast::Ident>().is_none() {
                 let _ = self.unexpected("<ident>");
@@ -2340,7 +2347,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         ))
     }
 
-    fn parse_global_item(&mut self, ty: &'ast ast::TypeExpr<'ast>, ident: ast::Ident) -> PRes<(ast::ItemKind<'ast>, Span)> {
+    fn parse_global_item(&mut self, ty: Option<&'ast ast::TypeExpr<'ast>>, ident: ast::Ident) -> PRes<(ast::ItemKind<'ast>, Span)> {
         let mut init = None;
         let mut constant = false;
         if self.bump_if(Token![::=]).is_some() {
@@ -2359,6 +2366,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let end = self.cursor.span();
         self.cursor.advance();
 
+        let span = ty.map_or(ident.span, |ty| ty.span);
+
         Ok((
             ast::ItemKind::GlobalVar(ast::GlobalVar {
                 ident,
@@ -2366,23 +2375,145 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 init,
                 constant
             }),
-            Span::interpolate(ty.span, end)
+            Span::interpolate(span, end)
         ))
     }
 
-    fn parse_item(&mut self) -> PRes<&'ast ast::Item<'ast>> {
+    fn parse_global_alias(&mut self) -> PRes<(ast::ItemKind<'ast>, Span)> {
+        let ident = self.bump_on::<ast::Ident>().unwrap();
+        self.bump_if(Token![::]).unwrap();
+        let directive = self.match_on::<Directive>().unwrap();
+        match directive {
+            Token![#include] => {
+                let import = match self.parse_import_directive() {
+                    Ok(import) => self.make_item(ast::ItemKind::Import(import), import.span),
+                    Err(span) => self.make_item(ast::ItemKind::Err, span),
+                };
+                let span = Span::interpolate(ident.span, import.span); 
+                return Ok((ast::ItemKind::Alias(ast::Alias { ident, item: import }), span));
+            }
+            _ => {
+                let span = self.cursor.span();
+                self.cursor.advance();
+                Message::error(format!("directive `#{directive}` is not valid here"))
+                    .at(span)
+                    .note("valid directives are `#include` and `#scope`")
+                    .push(self.diagnostics);
+                // TODO: compliation is erroneous now
+                return Err(span);
+            }
+        }
+    }
+
+    fn understand_item(&mut self, force_static_kewyord: bool) -> ItemHeader<'ast> {
+        if self.matches(Token![static]) {
+            self.cursor.advance();
+            let ty = match self.parse_ty_expr() {
+                Ok(ty) => ty,
+                Err(span) => return ItemHeader::Err(span),
+            };
+            let ident = match self.expect_any::<ast::Ident>() {
+                Ok(ident) => ident,
+                Err(span) => return ItemHeader::Err(span),
+            };
+            let item = match self.parse_global_item(Some(ty), ident) {
+                Ok(item) => item,
+                Err(span) => return ItemHeader::Err(span),
+            };
+            return ItemHeader::Done(item.0, item.1);
+        }
+
+        enum Kind {
+            None,
+            TypelessConst,
+            Alias,
+        }
+        let mut detected_kind = Kind::None;
+
+        let ty = match self.maybe_parse_ty_expr() {
+            ParseTry::Sure(ty) => Some(ty),
+            ParseTry::Doubt(ty, cursor) => {
+                if matches!(cursor.current().kind, TokenKind::Symbol(..)) {
+                    self.cursor.sync(cursor);
+                    Some(ty)
+                } else {
+                    let mut cursor = self.cursor.fork();
+                    cursor.advance();
+                    match cursor.current().kind {
+                        TokenKind::Punctuator(Token![::=]) =>
+                            detected_kind = Kind::TypelessConst,
+                        TokenKind::Punctuator(Token![::]) if matches!(cursor.lookahead().kind, TokenKind::Directive(_)) =>
+                            detected_kind = Kind::Alias,
+                        _ => {
+                            return ItemHeader::None;
+                        }
+                    }
+                    None
+                }
+            }
+            ParseTry::Never(..) =>
+                return ItemHeader::None,
+        };
+
+        let static_var = ty.is_some()
+            && matches!(self.cursor.current().kind, TokenKind::Symbol(..))
+            && matches!(self.cursor.lookahead().kind, TokenKind::Punctuator(Token![::]));
+
+        if static_var && force_static_kewyord {
+            return ItemHeader::None;
+        }
+
+        if let Some(ty) = ty {
+            return ItemHeader::Ty(ty);
+        }
+
+        match detected_kind {
+            Kind::TypelessConst => {
+                let ident = self.bump_on::<ast::Ident>().unwrap();
+                match self.parse_global_item(ty, ident) {
+                    Ok(item) => ItemHeader::Done(item.0, item.1),
+                    Err(span) => ItemHeader::Err(span),
+                }
+            }
+            Kind::Alias => {
+                match self.parse_global_alias() {
+                    Ok(item) => ItemHeader::Done(item.0, item.1),
+                    Err(span) => ItemHeader::Err(span),
+                }
+            }
+            Kind::None => unreachable!(),
+        }
+    }
+
+    fn parse_item(&mut self, force_static_kewyord: bool) -> PRes<Option<&'ast ast::Item<'ast>>> {
         if let Some(keyword) = self.match_on::<Keyword>() {
             match keyword {
                 Token![struct] =>
-                    return self.parse_struct_item(),
+                    return self.parse_struct_item().map(Some),
                 Token![enum] =>
-                    return self.parse_enum_item(),
+                    return self.parse_enum_item().map(Some),
                 _ => ()
             }
         }
 
         let res = self.with_owner(|this| {
-            let ty = this.parse_ty_expr()?;
+            let ty = match this.understand_item(force_static_kewyord) {
+                ItemHeader::Ty(ty) => ty,
+                ItemHeader::Done(item, span) =>
+                    return Ok((item, span)),
+                ItemHeader::Err(span) =>
+                    return Err(span),
+                ItemHeader::None => {
+                    if !force_static_kewyord {
+                        // emit propper error
+                        match this.parse_ty_expr() {
+                            Err(err) => return Err(err),
+                            Ok(..) => unreachable!()
+                        }
+                    }
+                    return Err(Span::NULL)
+                },
+            };
 
             match this.maybe_parse_path(PathMode::Function) {
                 ParseTry::Sure(path) => {
@@ -2399,16 +2530,23 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     if this.matches(Punctuator::LParen) || this.matches(Token![<]) {
                         this.parse_function_item(ty, name, None)
                     } else {
-                        this.parse_global_item(ty, name)
+                        this.parse_global_item(Some(ty), name)
                     }
                 }
                 ParseTry::Never(cursor) => return Err(cursor.span()),
             }
         });
+        if let Err(span) = res && span == Span::NULL {
+            if !force_static_kewyord {
+                unreachable!()
+            }
+            return Ok(None);
+        }
+
         let ((kind, span), owner_id, children) = res?;
         let item = self.make_item(kind, span);
         self.owners[owner_id].initialize(item.into_node(), children);
-        Ok(item)
+        Ok(Some(item))
     }
 
     fn parse_directive_trees(&mut self) -> PRes<DirectiveTrees> {
@@ -2454,7 +2592,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(DirectiveTrees(trees))
     }
 
-    fn parse_import_directive(&mut self) -> PRes<(String, Span)> {
+    fn parse_import_directive(&mut self) -> PRes<&'ast ast::Import> {
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -2465,7 +2603,12 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let end = self.cursor.span();
         self.cursor.advance();
 
-        Ok((path?, Span::interpolate(start, end)))
+        let import = self.alloc(ast::Import {
+            path: path?,
+            span: Span::interpolate(start, end),
+            resolution: OnceCell::new()
+        });
+        Ok(import)
     }
 
     fn parse_scope_directive(&mut self) -> PRes<ast::Scope> {
@@ -2487,29 +2630,22 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(scope)
     }
 
-    fn parse_item_or_directive(&mut self, items: &mut Vec<&'ast ast::Item<'ast>>, imports: &mut Vec<&'ast ast::Import>) {
+    fn parse_item_or_directive(&mut self) -> Option<&'ast ast::Item<'ast>> {
         if let Some(directive) = self.match_on::<Directive>() {
             match directive {
                 Token![#include] => {
-                    let span;
-                    let path = match self.parse_import_directive() {
-                        Ok((path, s)) => {
-                            span = s;
-                            Ok(path)
-                        }
-                        Err(s) => {
-                            span = s;
-                            Err(())
-                        }
+                    let import = match self.parse_import_directive() {
+                        Ok(import) => self.make_item(ast::ItemKind::Import(import), import.span),
+                        Err(span) => self.make_item(ast::ItemKind::Err, span),
                     };
-                    imports.push(self.make_import(path, span));
+                    return Some(import);
                 }
                 Token![#scope] =>
                     self.currrent_item_scope = self.parse_scope_directive().unwrap_or_default(),
                 _ => {
                     let span = self.cursor.span();
                     self.cursor.advance();
-                    Message::error(format!("directive `{directive}` is not valid at module level"))
+                    Message::error(format!("directive `#{directive}` is not valid at module level"))
                         .at(span)
                         .note("valid directives are `#include` and `#scope`")
                         .push(self.diagnostics);
@@ -2517,27 +2653,26 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
             }
 
-            return;
+            return None;
         }
-        let item = self.parse_item().unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
-        items.push(item);
+        self.parse_item(false)
+            .unwrap_or_else(|span| Some(self.make_item(ast::ItemKind::Err, span)))
     }
 
     fn parse_source_file(&mut self, file_span: Span) -> &'ast ast::SourceFile<'ast> {
         let res = self.with_owner(|this| {
             let mut items = vec![];
-            let mut imports = vec![];
 
             while !this.cursor.is_eos() {
-                this.parse_item_or_directive(&mut items, &mut imports);
+                if let Some(item) = this.parse_item_or_directive() {
+                    items.push(item);
+                }
             }
 
             let items = this.alloc_slice(&items);
-            let imports = this.alloc_slice(&imports);
 
             Ok(this.create_node_id(|this, node_id| this.alloc(ast::SourceFile {
                 items,
-                imports,
                 node_id,
                 span: file_span
             })))
@@ -2572,7 +2707,6 @@ pub fn parse_file<'a, 'tcx>(
         let owner_id = owners.push(ast::Owner::new(owner_id));
         let node = ast_info.arena.alloc(ast::SourceFile {
             items: &[],
-            imports: &[],
             node_id: NodeId { owner: owner_id, local: LocalId::from_raw(0) },
             span: source.byte_span
         });

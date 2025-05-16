@@ -1,13 +1,9 @@
 
-use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericArgumentKind, GenericParam, GenericParamKind, Import, Item, ItemKind, Literal, NestedConst, Param, Path, PathSegment, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
+use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericArgumentKind, GenericParam, GenericParamKind, Item, ItemKind, Literal, NestedConst, Param, Path, PathSegment, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
 
 
 pub trait Visitor<'tcx>: Sized {
     fn visit(&mut self, tree: &'tcx SourceFile<'tcx>);
-
-    fn visit_import(&mut self, import: &'tcx Import) {
-        noop(import);
-    }
 
     fn visit_item(&mut self, item: &'tcx Item<'tcx>) {
         noop_visit_item_kind(&item.kind, self);
@@ -113,9 +109,11 @@ pub fn noop_visit_item_kind<'tcx, T: Visitor<'tcx>>(item_kind: &'tcx ItemKind<'t
             visit_slice(&en.variants, |variant_def| vis.visit_variant_def(variant_def));
         }
         ItemKind::GlobalVar(global_var) => {
-            vis.visit_ty_expr(global_var.ty);
+            visit_option(global_var.ty, |ty| vis.visit_ty_expr(ty));
             visit_option(global_var.init, |init| vis.visit_expr(init));
         }
+        ItemKind::Alias(alias) => vis.visit_item(alias.item),
+        ItemKind::Import(_) => (),
         ItemKind::Err => ()
     }
 }

@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::fmt::Write;
 use std::hash::Hash;
 
 use index_vec::IndexVec;
@@ -21,7 +20,6 @@ pub enum Node<'ast> {
     Variant(&'ast VariantDef<'ast>),
     Param(&'ast Param<'ast>),
     GenericParam(&'ast GenericParam<'ast>),
-    Import(&'ast Import),
 }
 
 impl<'ast> Node<'ast> {
@@ -67,7 +65,6 @@ impl<'ast> Node<'ast> {
             Node::Variant(variant) => variant.node_id,
             Node::Param(param) => param.node_id,
             Node::GenericParam(param) => param.node_id,
-            Node::Import(import) => import.node_id,
         }
     }
 
@@ -246,7 +243,6 @@ impl<'ast> PathSegment<'ast> {
 #[derive(Debug)]
 pub struct SourceFile<'ast> {
     pub items: &'ast [&'ast Item<'ast>],
-    pub imports: &'ast [&'ast Import],
     pub span: Span,
     pub node_id: NodeId,
 }
@@ -254,24 +250,6 @@ pub struct SourceFile<'ast> {
 impl<'ast> IntoNode<'ast> for SourceFile<'ast>  {
     fn into_node(&'ast self) -> Node<'ast> {
         Node::SourceFile(self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FileError;
-
-#[derive(Debug, Clone)]
-pub struct Import {
-    pub path: Result<String, ()>,
-    pub resolution: OnceCell<Result<NodeId, FileError>>,
-    pub node_id: NodeId,
-    pub span: Span,
-}
-
-
-impl<'ast> IntoNode<'ast> for Import  {
-    fn into_node(&'ast self) -> Node<'ast> {
-        Node::Import(self)
     }
 }
 
@@ -296,7 +274,8 @@ impl<'ast> Item<'ast> {
             ItemKind::Struct(strct) => strct.ident,
             ItemKind::Function(func) => func.ident,
             ItemKind::GlobalVar(var) => var.ident, 
-            ItemKind::Err => unreachable!()
+            ItemKind::Alias(alias) => alias.ident, 
+            ItemKind::Import(..) | ItemKind::Err => unreachable!()
         }
     }
 }
@@ -307,6 +286,8 @@ pub enum ItemKind<'ast> {
     Struct(Struct<'ast>),
     Enum(Enum<'ast>),
     GlobalVar(GlobalVar<'ast>),
+    Import(&'ast Import),
+    Alias(Alias<'ast>),
     Err
 }
 
@@ -318,9 +299,25 @@ pub enum Scope {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct Alias<'ast> {
+    pub ident: Ident,
+    pub item: &'ast Item<'ast>
+}
+
+#[derive(Debug, Clone)]
+pub struct FileError;
+
+#[derive(Debug, Clone)]
+pub struct Import {
+    pub path: String,
+    pub resolution: OnceCell<Result<NodeId, FileError>>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct GlobalVar<'ast> {
     pub ident: Ident,
-    pub ty: &'ast TypeExpr<'ast>,
+    pub ty: Option<&'ast TypeExpr<'ast>>,
     pub init: Option<&'ast Expr<'ast>>,
     pub constant: bool
 }

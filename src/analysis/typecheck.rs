@@ -1386,9 +1386,14 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 Ty::new_adt(tcx, adt_def)
             },
             ast::ItemKind::GlobalVar(global) => {
-                let ctxt = LoweringCtxt::new(tcx);
-                ctxt.lower_ty(global.ty)
+                if let Some(ty) = global.ty {
+                    let ctxt = LoweringCtxt::new(tcx);
+                    return ctxt.lower_ty(ty);
+                }
+                todo!("ty-class global consts")
             },
+            ast::ItemKind::Import(_) => panic!("resolved Import to Definition"),
+            ast::ItemKind::Alias(alias) => todo!(),
             ast::ItemKind::Err =>
                 panic!("resolved Err to Definiton")
         }

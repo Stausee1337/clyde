@@ -390,7 +390,24 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
                     unreachable!("CollectionState::Pending at the end of collect_bfs")
             }
         }
+
+        todo!("import all the imports into thier respective TFG ribs here");
     }
+
+    /*fn visit_import(&mut self, import: &'tcx ast::Import) {
+        // FIXME: catch importing ourselves and at the very least warn
+        let module = self.resolution.import_resolutions[&import.node_id];
+        match module {
+            Ok(module) => {
+                let exports = self.resolution.get_exports(module.node_id);
+                let current_rib = *self.tfg_ribs.last().expect("visit_import neeeds to be called in valid TFGRib");
+                let current_rib = self.resolution.rib_map.get_mut(&current_rib).unwrap();
+                current_rib.import(exports, import.span, self.resolution.diagnostics,);
+                import.resolution.set(Ok(module.node_id)).unwrap();
+            }
+            Err(()) => import.resolution.set(Err(ast::FileError)).unwrap(),
+        }
+    }*/
 
     fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: NodeId, scope: ast::Scope) {
         let rib = self.ribs.last_mut().expect(".define neeeds to be called in valid TFGRib");
@@ -417,16 +434,8 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
         self.mangle_module_name(tree);
         self.with_rib(tree.node_id, |this| {
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
-            node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
         });
         self.current_file.take();
-    }
-
-    fn visit_import(&mut self, import: &'tcx ast::Import) {
-        if let Ok(ref string) = import.path {
-            let file = self.current_file.expect("visit_import should be operating within source file");
-            self.push_import(file, string, import.node_id, import.span);
-        }
     }
 
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
@@ -448,8 +457,15 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                 self.define(
                     if global.constant {DefinitionKind::Const} else {DefinitionKind::Static},
                     global.ident, item.node_id, item.scope);
-                self.visit_ty_expr(global.ty);
+                node_visitor::visit_option(global.ty, |ty| self.visit_ty_expr(ty));
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
+            }
+            ast::ItemKind::Import(import) => {
+                let file = self.current_file.expect("visit_import should be operating within source file");
+                self.push_import(file, &import.path, item.node_id, import.span);
+            }
+            ast::ItemKind::Alias(alias) => {
+                todo!("define an alias");
             }
             ast::ItemKind::Err => return
         }
@@ -610,24 +626,8 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
 impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
     fn visit(&mut self, tree: &'tcx ast::SourceFile<'tcx>) {
         self.with_tbg_rib(tree.node_id, |this| {
-            node_visitor::visit_slice(&tree.imports, |import| this.visit_import(import));
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
         });
-    }
-
-    fn visit_import(&mut self, import: &'tcx ast::Import) {
-        // FIXME: catch importing ourselves and at the very least warn
-        let module = self.resolution.import_resolutions[&import.node_id];
-        match module {
-            Ok(module) => {
-                let exports = self.resolution.get_exports(module.node_id);
-                let current_rib = *self.tfg_ribs.last().expect("visit_import neeeds to be called in valid TFGRib");
-                let current_rib = self.resolution.rib_map.get_mut(&current_rib).unwrap();
-                current_rib.import(exports, import.span, self.resolution.diagnostics,);
-                import.resolution.set(Ok(module.node_id)).unwrap();
-            }
-            Err(()) => import.resolution.set(Err(ast::FileError)).unwrap(),
-        }
     }
 
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
@@ -671,9 +671,11 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             }
             ast::ItemKind::GlobalVar(global_var) => {
-                self.visit_ty_expr(global_var.ty);
+                node_visitor::visit_option(global_var.ty, |ty| self.visit_ty_expr(ty));
                 node_visitor::visit_option(global_var.init, |expr| self.visit_expr(expr));
             }
+            ast::ItemKind::Import(..) => (), // import doesn't have relevance at this stage
+            ast::ItemKind::Alias(alias) => todo!(),
             ast::ItemKind::Err => ()
         }
     }
