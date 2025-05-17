@@ -569,6 +569,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             }
             ast::StmtKind::Block(ast_block) =>
                 self.cover_ast_block(block, ast_block),
+            ast::StmtKind::Item(_item) => todo!(),
             ast::StmtKind::Err => block
         }
     }

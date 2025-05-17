@@ -381,6 +381,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
                 return self.tcx.basic_types.never;
             }
+            ast::StmtKind::Item(_item) => todo!(),
             ast::StmtKind::Err => (),
         }
         self.tcx.basic_types.void

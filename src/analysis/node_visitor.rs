@@ -151,6 +151,7 @@ pub fn noop_visit_stmt_kind<'tcx, T: Visitor<'tcx>>(stmt_kind: &'tcx StmtKind<'t
         StmtKind::ControlFlow(cf) => vis.visit_control_flow(cf),
         StmtKind::Block(block) => vis.visit_block(block),
         StmtKind::Yeet(yeet) => visit_option(yeet.expr, |expr| vis.visit_expr(expr)),
+        StmtKind::Item(item) => vis.visit_item(item),
         StmtKind::Err => ()
     }
 }

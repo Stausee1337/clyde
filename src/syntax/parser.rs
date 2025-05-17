@@ -2035,6 +2035,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         // likely errored, so don't warn here as they probably aren't actually redundant
         self.remove_redundant_semis(false);
 
+        if let Some(item) = self.parse_item_or_directive(true) {
+            return Ok(self.make_stmt(ast::StmtKind::Item(item), item.span));
+        }
+
         if let Some(keyword) = self.match_on::<Keyword>() {
             match keyword {
                 Token![var] =>
@@ -2385,10 +2389,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let directive = self.match_on::<Directive>().unwrap();
         match directive {
             Token![#include] => {
-                let import = match self.parse_import_directive() {
-                    Ok(import) => self.make_item(ast::ItemKind::Import(import), import.span),
-                    Err(span) => self.make_item(ast::ItemKind::Err, span),
-                };
+                let import = self.parse_import_directive()
+                    .unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
                 let span = Span::interpolate(ident.span, import.span); 
                 return Ok((ast::ItemKind::Alias(ast::Alias { ident, item: import }), span));
             }
@@ -2406,6 +2408,9 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn understand_item(&mut self, force_static_kewyord: bool) -> ItemHeader<'ast> {
+        let cursor = self.cursor.fork();
+        let prev_cursor = std::mem::replace(&mut self.cursor, cursor);
+
         if self.matches(Token![static]) {
             self.cursor.advance();
             let ty = match self.parse_ty_expr() {
@@ -2416,6 +2421,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 Ok(ident) => ident,
                 Err(span) => return ItemHeader::Err(span),
             };
+            self.cursor.advance();
             let item = match self.parse_global_item(Some(ty), ident) {
                 Ok(item) => item,
                 Err(span) => return ItemHeader::Err(span),
@@ -2457,9 +2463,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         let static_var = ty.is_some()
             && matches!(self.cursor.current().kind, TokenKind::Symbol(..))
-            && matches!(self.cursor.lookahead().kind, TokenKind::Punctuator(Token![::]));
+            && (matches!(self.cursor.lookahead().kind, TokenKind::Punctuator(Token![=])) || matches!(self.cursor.lookahead().kind, TokenKind::Punctuator(Token![;])));
 
         if static_var && force_static_kewyord {
+            self.cursor = prev_cursor;
             return ItemHeader::None;
         }
 
@@ -2592,7 +2599,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(DirectiveTrees(trees))
     }
 
-    fn parse_import_directive(&mut self) -> PRes<&'ast ast::Import> {
+    fn parse_import_directive(&mut self) -> PRes<&'ast ast::Item<'ast>> {
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -2608,7 +2615,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             span: Span::interpolate(start, end),
             resolution: OnceCell::new()
         });
-        Ok(import)
+        Ok(self.make_item(ast::ItemKind::Import(import), import.span))
     }
 
     fn parse_scope_directive(&mut self) -> PRes<ast::Scope> {
@@ -2630,32 +2637,33 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(scope)
     }
 
-    fn parse_item_or_directive(&mut self) -> Option<&'ast ast::Item<'ast>> {
+    fn parse_item_or_directive(&mut self, in_block_scope: bool) -> Option<&'ast ast::Item<'ast>> {
         if let Some(directive) = self.match_on::<Directive>() {
             match directive {
                 Token![#include] => {
-                    let import = match self.parse_import_directive() {
-                        Ok(import) => self.make_item(ast::ItemKind::Import(import), import.span),
-                        Err(span) => self.make_item(ast::ItemKind::Err, span),
-                    };
+                    let import = self.parse_import_directive()
+                        .unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
                     return Some(import);
                 }
-                Token![#scope] =>
+                Token![#scope] if !in_block_scope =>
                     self.currrent_item_scope = self.parse_scope_directive().unwrap_or_default(),
                 _ => {
                     let span = self.cursor.span();
                     self.cursor.advance();
-                    Message::error(format!("directive `#{directive}` is not valid at module level"))
-                        .at(span)
-                        .note("valid directives are `#include` and `#scope`")
-                        .push(self.diagnostics);
-                    // TODO: compliation is erroneous now
+                    let mut msg = Message::error(format!("directive `#{directive}` is not valid here"))
+                        .at(span);
+                    if in_block_scope {
+                        msg = msg.note("valid directive is `#include`");
+                    } else {
+                        msg = msg.note("valid directives are `#include` and `#scope`");
+                    }
+                    msg.push(self.diagnostics);
                 }
             }
 
             return None;
         }
-        self.parse_item(false)
+        self.parse_item(in_block_scope)
             .unwrap_or_else(|span| Some(self.make_item(ast::ItemKind::Err, span)))
     }
 
@@ -2664,7 +2672,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let mut items = vec![];
 
             while !this.cursor.is_eos() {
-                if let Some(item) = this.parse_item_or_directive() {
+                if let Some(item) = this.parse_item_or_directive(false) {
                     items.push(item);
                 }
             }

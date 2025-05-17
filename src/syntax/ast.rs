@@ -441,6 +441,7 @@ pub enum StmtKind<'ast> {
     Return(Option<&'ast Expr<'ast>>),
     ControlFlow(ControlFlow),
     Yeet(Yeet<'ast>),
+    Item(&'ast Item<'ast>),
     Err
 }
 

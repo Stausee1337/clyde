@@ -1,96 +1,33 @@
+Mem :: #include "Std/Mem";
+#include "Window";
+// 
+// FT_Uint      :: #type uint;
+// ClickHandler :: #type bool(ClickEvent)!Std::Error*;
+// 
+FACTOR ::= 80;
+// WIDTH  ::= FACTOR * 16;
+// HEIGHT ::= FACTOR * 9;
 
-void print(string message);
-void print2(int* x);
+void Wrapper<T>::main<T>(string[] args) {
+    #include "Compiler";
 
-int test(int a) {
-    // return *a + (*a += 1);
-    return a + (a += 1);
-}
+    static byte[1024] minibuf;
 
-const int* board = null;
-
-void main(string[] args) {
-    uint i = 0;
-    while i < 5 {
-        print(args[i]);
-        i += 1;
-    }
-    print2(&42);
-}
-
-nuint fib(nuint n) {
-    nuint prev1 = 0;
-    nuint prev2 = 1;
-    
-    nuint i = 2;
-    while i <= n {
-        if i == 14 {
-            i += 1;
-            continue;
-        }
-        nuint c = prev1 + prev2;
-        prev1 = prev2;
-        prev2 = c;
-        i += 1;
+    struct Hello<U> {
+        byte a;
+        byte b;
+        short c;
     }
 
-    return prev2;
+
+    string msg = "Hello, World";
+    print(msg);
+    // const window  = Window::open("Window", WIDTH, HEIGHT);
+    int WINDOW ::= 4;
 }
 
-struct File {
-    nuint handle;
-}
-
-nuint get_handle(File f) {
-    return f.handle;
-}
-
-const int MAGIC = {
-    yeet 42;
-};
-
-int open(int a, int b, int c) {
-    if a == b && c < a {
-        return b;
-    } else if a > c {
-        return a;
-    } else {
-        return c;
-    }
-}
-
-struct Hello {
-    int x;
-    string message;
-}
-
-const Hello TEST = Hello {
-    x = 12,
-    message = "Hello"
-};
-
-void close(int a, int b, int c) {
-    /*int xxx = {
-        if a == b {
-            yeet 12;
-        } else if a > c {
-            return;
-        } else {
-            yeet MAGIC;
-        }
-    };*/
-
-    int xxx = {
-        if a == 42 {
-            yeet 12;
-        } else if b == 69 {
-            return;
-        } else {
-            a *= 2;
-        }
-        42
-    };
-
-    // test((a, b, c));
+string from_raw_parts(byte *data, nuint len) {
+    return string_from_raw_parts(data, len);
+    string string_from_raw_parts(byte *data, nuint len) #compiler_intrinsic;
 }
 
