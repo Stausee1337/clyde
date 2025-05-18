@@ -1,22 +1,16 @@
 
-use std::{collections::VecDeque, io, path::{Path, PathBuf}, rc::Rc, str::FromStr, fmt::Write};
+use std::{collections::VecDeque, fmt::Write, io, path::{Path, PathBuf}, rc::Rc, str::FromStr};
 
-use hashbrown::{HashMap, hash_map::Entry};
+use foldhash::quality::RandomState;
+use hashbrown::{self, HashMap, hash_map::Entry};
 use sha1::Digest;
 
 use crate::{diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, IntoNode, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
 use super::node_visitor::{self, Visitor};
 
-/// AST (&tree) 
-///     |          |
-/// Types & Fn's   |                                |
-///          assoc vars, fields, args with types    |
-///                                                 |
-///                                           Name <-> declaration site (NodeId)
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NameSpace {
-    Type, Function, Variable 
+    Type, Function, Variable
 }
 
 impl std::fmt::Display for NameSpace {
@@ -69,9 +63,7 @@ struct ResolutionState<'tcx> {
     diagnostics: &'tcx DiagnosticsCtxt,
     rib_map: HashMap<NodeId, TFGRib>,
     node_to_path_map: HashMap<NodeId, PathBuf>,
-    import_resolutions: HashMap<NodeId, Result<&'tcx ast::SourceFile<'tcx>, ()>>,
     mangled_names: HashMap<NodeId, Symbol>,
-    file_collection_state: HashMap<PathBuf, CollectionState<'tcx>>,
     declarations: index_vec::IndexVec<ast::DefId, Definition>,
     ast_info: &'tcx ast::AstInfo<'tcx>,
 }
@@ -95,31 +87,10 @@ impl<'tcx> ResolutionState<'tcx> {
             items: Default::default(),
             rib_map: Default::default(),
             node_to_path_map: Default::default(),
-            import_resolutions: Default::default(),
             mangled_names: Default::default(),
             declarations: Default::default(),
-            file_collection_state: Default::default(),
             ast_info
         }
-    }
-
-    fn get_exports(&self, node: NodeId) -> (Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>) {
-        let rib = &self.rib_map[&node];
-        macro_rules! for_scope {
-            ($scope:ident) => {        
-                rib.$scope
-                    .iter()
-                    .filter_map(|(sym, decl)| match decl.scope {
-                        ast::Scope::Export => Some((*sym, *decl)),
-                        ast::Scope::Module => None,
-                    })
-                    .collect::<Vec<_>>()
-            };
-        }
-        let types = for_scope!(types);
-        let functions = for_scope!(functions);
-        let globals = for_scope!(globals);
-        (types, functions, globals)
     }
 
     fn results(self, entry: NodeId) -> ResolutionResults<'tcx> {
@@ -135,15 +106,53 @@ impl<'tcx> ResolutionState<'tcx> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ModuleImport {
+    Unresolved {
+        file: FileId,
+        span: Span
+    },
+    Resolved(Result<NodeId, ()>),
+}
+
+impl ModuleImport {
+    fn span(&self) -> Span {
+        let ModuleImport::Unresolved { span, .. } = self else {
+            unreachable!("wrong phase for diagnostics");
+        };
+        *span
+    }
+}
+
 /// Types, Functions, Globals Rib
 #[derive(Default)]
 struct TFGRib {
     types: HashMap<Symbol, Declaration>,
     functions: HashMap<Symbol, Declaration>,
     globals: HashMap<Symbol, Declaration>,
+    modules: HashMap<Symbol, ModuleImport>,
+    pending_imports: Vec<ModuleImport>,
 }
 
 impl TFGRib {
+    fn get_exports(&self) -> (Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>) {
+        macro_rules! for_scope {
+            ($scope:ident) => {        
+                self.$scope
+                    .iter()
+                    .filter_map(|(sym, decl)| match decl.scope {
+                        ast::Scope::Export => Some((*sym, *decl)),
+                        ast::Scope::Module => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+        }
+        let types = for_scope!(types);
+        let functions = for_scope!(functions);
+        let globals = for_scope!(globals);
+        (types, functions, globals)
+    }
+
     fn import(
         &mut self,
         (types, functions, globals): (Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>),
@@ -184,6 +193,8 @@ impl TFGRib {
         self.define_with_declaration(name.symbol, declaration, resolution.diagnostics);
     }
 
+    // FIXME: `define_with_declaration` and `define_aliased_module` share common code, so this
+    // duplication should be removed 
     fn define_with_declaration(&mut self, symbol: Symbol, declaration: Declaration, diagnostics: &DiagnosticsCtxt) {
         let kind = declaration.kind;
         let space = match kind {
@@ -192,6 +203,7 @@ impl TFGRib {
             DefinitionKind::Static | DefinitionKind::Const => &mut self.globals,
             _ => unreachable!("invalid Definition in define")
         };
+        // FIXME: use `HashMap::entry`
         if let Some(prev) = space.insert(symbol, declaration) {
             let namespace: NameSpace = kind.try_into()
                 .expect("invalid Definition in define");
@@ -202,6 +214,25 @@ impl TFGRib {
             space.insert(symbol, prev);
         }
     }
+
+    fn define_aliased_module(&mut self, symbol: Symbol, import: ModuleImport, diagnostics: &DiagnosticsCtxt) {
+        // FIXME: use `HashMap::entry`
+        if let Some(prev) = self.modules.insert(symbol, import) {
+            Message::error(format!("redeclaration of module alias {name:?}", name = symbol.get()))
+                .at(import.span())
+                .hint(format!("previous declaration of {name:?} here", name = symbol.get()), prev.span())
+                .push(diagnostics);
+            self.modules.insert(symbol, prev);
+        }
+    }
+
+    fn add_pending_import(&mut self, import: ModuleImport) {
+        self.pending_imports.push(import);
+    }
+}
+
+index_vec::define_index_type! {
+    struct FileId = u32;
 }
 
 #[derive(Debug)]
@@ -213,9 +244,13 @@ enum CollectionState<'tcx> {
 
 struct EarlyCollectionPass<'r, 'tcx> {
     resolution: &'r mut ResolutionState<'tcx>,
-    queue: VecDeque<PathBuf>,
     ribs: Vec<TFGRib>,
+    queue: VecDeque<FileId>,
     current_file: Option<&'tcx ast::SourceFile<'tcx>>,
+    filemap: indexmap::IndexSet<PathBuf, RandomState>,
+    file_collection_state: HashMap<FileId, CollectionState<'tcx>>,
+
+    // mangling related attributes
     root_hash: String,
     root_path: PathBuf,
     root_file: String
@@ -228,6 +263,9 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
             queue: Default::default(),
             resolution,
             current_file: None,
+            filemap: Default::default(),
+            file_collection_state: Default::default(),
+
             root_hash: String::new(),
             root_path: PathBuf::new(),
             root_file: String::new(),
@@ -302,34 +340,41 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
         relative_path.canonicalize()
     }
 
-    fn push_import(&mut self, relative: &'tcx ast::SourceFile<'tcx>, segment: &str, node: NodeId, span: Span) {
-        let path = if let Some(ref path) = self.resolution.node_to_path_map.get(&node) {
-            (**path).to_owned()
-        } else {
-            let path = self.normalize_path(relative, segment)
-                .map_err(|err| {
-                    Message::error(format!("cannot import file: {segment}: {err}"))
-                        .at(span)
-                        .push(self.resolution.diagnostics);
-                });
-            let Ok(path) = path else {
-                return;
-            };
-            self.resolution.node_to_path_map.insert(node, path.clone());
-            path
+    fn push_import(&mut self, relative: &'tcx ast::SourceFile<'tcx>, segment: &str, alias: Option<Symbol>, span: Span) {
+        let path = self.normalize_path(relative, segment)
+            .map_err(|err| {
+                Message::error(format!("cannot import file: {segment}: {err}"))
+                    .at(span)
+                    .push(self.resolution.diagnostics);
+            });
+        let Ok(path) = path else {
+            return;
         };
-        if let Some(..) = self.resolution.file_collection_state.get(&path) {
+
+        let (file, _) = self.filemap.insert_full(path);
+        let file = FileId::from_usize(file);
+
+        let rib = self.ribs.last_mut().expect(".push_import neeeds to be called in valid TFGRib");
+        let import = ModuleImport::Unresolved { file, span };
+        if let Some(symbol) = alias {
+            rib.define_aliased_module(symbol, import, self.resolution.diagnostics);
+        } else {
+            rib.add_pending_import(import);
+        }
+
+        if let Some(..) = self.file_collection_state.get(&file) {
             return;
         }
-        self.queue.push_back(path.clone());
-        self.resolution.file_collection_state.insert(path, CollectionState::Pending);
+        self.queue.push_back(file);
+        self.file_collection_state.insert(file, CollectionState::Pending);
     }
 
-    fn collect_bfs(mut self, 
+    fn collect_bfs(
+        mut self, 
         entry: &'tcx ast::SourceFile<'tcx>,
         session: &'tcx Session,
         ast_info: &'tcx ast::AstInfo<'tcx>,
-    ) {
+    ) -> Vec<&'tcx ast::SourceFile<'tcx>> {
         let path = self.get_path(entry).to_owned();
         
         {
@@ -359,55 +404,94 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
 
         self.visit(entry);
 
-        self.resolution.file_collection_state.insert(path, CollectionState::Resolved(entry));
+        let (file, _) = self.filemap.insert_full(path);
+        let file = FileId::from_usize(file);
+        self.file_collection_state.insert(file, CollectionState::Resolved(entry));
 
-        while let Some(path) = self.queue.pop_front() {
-            let module = match parser::parse_file(session, &path, ast_info) {
+        let mut file_to_node_map: HashMap<FileId, NodeId> = HashMap::default();
+
+        while let Some(file) = self.queue.pop_front() {
+            let path = &self.filemap[file.index()];
+            let module = match parser::parse_file(session, path, ast_info) {
                 Ok(module) => module,
                 Err(()) => {
-                    self.resolution.file_collection_state.insert(path, CollectionState::Erroneous);
+                    self.file_collection_state.insert(file, CollectionState::Erroneous);
                     continue;
                 }
             };
 
+
             self.visit(module);
 
-            self.resolution.file_collection_state.insert(path, CollectionState::Resolved(module));
+            self.file_collection_state.insert(file, CollectionState::Resolved(module));
+            file_to_node_map.insert(file, module.node_id);
         }
 
-        for (node, path) in self.resolution.node_to_path_map.iter() {
-            let Some(state) = self.resolution.file_collection_state.get(path) else {
-                continue;
-            };
-            match state {
-                CollectionState::Resolved(module) => {
-                    self.resolution.import_resolutions.insert(*node, Ok(module));
-                }
-                CollectionState::Erroneous => {
-                    self.resolution.import_resolutions.insert(*node, Err(()));
-                }
+        let ribs = self
+            .resolution
+            .rib_map
+            .keys()
+            .map(|id| *id)
+            .collect::<Vec<_>>();
+
+        for rib in &ribs {
+            do_stuff(&file_to_node_map, &mut self.resolution.rib_map, *rib, self.resolution.diagnostics);
+        }
+
+        fn do_stuff(file_to_node_map: &HashMap<FileId, NodeId>, rib_map: &mut HashMap<NodeId, TFGRib>, node: NodeId, diagnostics: &DiagnosticsCtxt) {
+            // This works, and won't loop on recursive imports, but it also doesn't handle them
+            // fully correctly, if e.g.:
+            // File A depends on File B and File C
+            // File B depends on File A
+            // Then File B should include all of File C, but this won't happen since we already
+            // stop importing into File B once we see it depends on File A. File C will still be
+            // imported into File A later. The trivial fix for this (in your code) is to just
+            // import File C before File B in File A, but this is not always doable. In the long
+            // run, recusrive imports should be identified here and resolved in multiple steps.
+            let rib = rib_map.get_mut(&node).unwrap();
+            let pending_imports = std::mem::replace(&mut rib.pending_imports, vec![]);
+
+            for import in pending_imports {
+                let ModuleImport::Unresolved { file, span } = import else {
+                    unreachable!("Resolved Import can't be pending")
+                };
+
+                let Some(dependency_node) = file_to_node_map.get(&file).map(|id| *id) else {
+                    continue;
+                };
+                do_stuff(file_to_node_map, rib_map, dependency_node, diagnostics);
+
+                let dependency_rib = &rib_map[&dependency_node];
+                let exports = dependency_rib.get_exports();
+                
+                let rib = rib_map.get_mut(&node).unwrap();
+                rib.import(exports, span, diagnostics);
+            }
+        }
+
+        for node in &ribs {
+            let rib = self.resolution.rib_map.get_mut(node).unwrap();
+            for import in rib.modules.values_mut() {
+                let ModuleImport::Unresolved { file, .. } = *import else {
+                    continue;
+                };
+
+                *import = ModuleImport::Resolved(file_to_node_map.get(&file).map(|id| *id).ok_or(()));
+            }
+        }
+        
+        let modules = self.file_collection_state
+            .iter()
+            .filter_map(|(_, module)| match module {
+                CollectionState::Resolved(module) => Some(*module),
+                CollectionState::Erroneous => None,
                 CollectionState::Pending =>
-                    unreachable!("CollectionState::Pending at the end of collect_bfs")
-            }
-        }
+                    unreachable!("CollectionState::Pending is invalid at name resolution")
+            })
+            .collect::<Vec<_>>();
 
-        todo!("import all the imports into thier respective TFG ribs here");
+        modules
     }
-
-    /*fn visit_import(&mut self, import: &'tcx ast::Import) {
-        // FIXME: catch importing ourselves and at the very least warn
-        let module = self.resolution.import_resolutions[&import.node_id];
-        match module {
-            Ok(module) => {
-                let exports = self.resolution.get_exports(module.node_id);
-                let current_rib = *self.tfg_ribs.last().expect("visit_import neeeds to be called in valid TFGRib");
-                let current_rib = self.resolution.rib_map.get_mut(&current_rib).unwrap();
-                current_rib.import(exports, import.span, self.resolution.diagnostics,);
-                import.resolution.set(Ok(module.node_id)).unwrap();
-            }
-            Err(()) => import.resolution.set(Err(ast::FileError)).unwrap(),
-        }
-    }*/
 
     fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: NodeId, scope: ast::Scope) {
         let rib = self.ribs.last_mut().expect(".define neeeds to be called in valid TFGRib");
@@ -462,10 +546,14 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             }
             ast::ItemKind::Import(import) => {
                 let file = self.current_file.expect("visit_import should be operating within source file");
-                self.push_import(file, &import.path, item.node_id, import.span);
+                self.push_import(file, &import.path, None, item.span);
             }
             ast::ItemKind::Alias(alias) => {
-                todo!("define an alias");
+                let ast::ItemKind::Import(import) = alias.item.kind else {
+                    unreachable!("non-import aliases are currently unsupported");
+                };
+                let file = self.current_file.expect("visit_import should be operating within source file");
+                self.push_import(file, &import.path, Some(alias.ident.symbol), item.span);
             }
             ast::ItemKind::Err => return
         }
@@ -511,16 +599,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn resolve(&mut self) {
-        let modules = self.resolution.file_collection_state
-            .iter()
-            .filter_map(|(_, module)| match module {
-                CollectionState::Resolved(module) => Some(*module),
-                CollectionState::Erroneous => None,
-                CollectionState::Pending =>
-                    unreachable!("CollectionState::Pending is invalid at name resolution")
-            })
-            .collect::<Vec<_>>();
+    fn resolve(&mut self, modules: Vec<&'tcx ast::SourceFile<'tcx>>) {
         for module in modules {
             self.visit(module);
         }
@@ -704,7 +783,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_option(local.ty, |ret_ty| self.visit_ty_expr(ret_ty));
                 node_visitor::visit_option(local.init, |init| self.visit_expr(init));
 
-                self.define(local.ident.clone(), stmt.node_id);
+                self.define(local.ident, stmt.node_id);
             }
             ast::StmtKind::If(if_stmt) => {
                 self.visit_expr(if_stmt.condition);
@@ -720,7 +799,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 });
             }
             ast::StmtKind::For(for_loop) => {
-                self.define(for_loop.bound_var.clone(), stmt.node_id);
+                self.define(for_loop.bound_var, stmt.node_id);
                 self.visit_expr(for_loop.iterator);
                 self.with_rib(|this| {
                     this.enter_loop_ctxt(stmt.node_id, |this| this.visit_block(&for_loop.body));
@@ -792,7 +871,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
             return;
         }
 
-        self.define(param.ident.clone(), param.node_id);
+        self.define(param.ident, param.node_id);
     }
 
     fn visit_ty_expr(&mut self, ty: &'tcx ast::TypeExpr<'tcx>) {
@@ -822,10 +901,10 @@ pub fn resolve_from_entry<'tcx>(
     let mut resolution = ResolutionState::new(session, ast_info);
 
     let rpass = EarlyCollectionPass::new(&mut resolution);
-    rpass.collect_bfs(entry, session, ast_info);
+    let modules = rpass.collect_bfs(entry, session, ast_info);
 
     let mut rpass = NameResolutionPass::new(&mut resolution);
-    rpass.resolve();
+    rpass.resolve(modules);
 
     resolution.results(entry.node_id)
 }
