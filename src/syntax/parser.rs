@@ -2723,8 +2723,6 @@ pub fn parse_file<'a, 'tcx>(
         node
     };
 
-    println!("{source_file:#?}");
-
     Ok(source_file)
 }
 

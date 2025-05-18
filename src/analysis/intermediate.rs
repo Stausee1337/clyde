@@ -1177,7 +1177,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     (block, register) = self.as_register(block, expr);
                     (block, Operand::Copy(register))
                 }
-                Some(ast::Resolution::Def(..) | ast::Resolution::Primitive) => panic!("unexpected type-like resolution"),
+                Some(ast::Resolution::Def(..) | ast::Resolution::Primitive(_)) => panic!("unexpected type-like resolution"),
                 Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
                 Some(ast::Resolution::Local(..)) => unreachable!(),
                 None => panic!("unresolved Name at IR stage")

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::cell::{Cell, OnceCell, RefCell};
 use std::hash::Hash;
 
@@ -167,13 +165,14 @@ pub enum DefinitionKind {
     Field,
     Variant,
     ParamTy,
+    ParamConst,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum Resolution {
     Def(DefId, DefinitionKind),
     Local(NodeId),
-    Primitive,
+    Primitive(Symbol),
     Err
 }
 
@@ -181,7 +180,6 @@ pub enum Resolution {
 pub struct Path<'ast> {
     pub segments: &'ast [PathSegment<'ast>],
     pub span: Span,
-    resolution: OnceCell<Resolution>
 }
 
 impl<'ast> Path<'ast> {
@@ -190,7 +188,6 @@ impl<'ast> Path<'ast> {
         Self {
             segments: &[],
             span: Span::NULL,
-            resolution: OnceCell::new()
         }
     }
 
@@ -200,17 +197,11 @@ impl<'ast> Path<'ast> {
         Self {
             segments,
             span: Span::interpolate(start, end),
-            resolution: OnceCell::new()
         }
     }
 
     pub fn resolution(&self) -> Option<&Resolution> {
-        self.resolution.get() 
-    }
-
-    pub fn resolve(&self, resolution: Resolution) {
-        self.resolution.set(resolution)
-            .expect("resolve() on resolved name")
+        self.segments.last().unwrap().resolution.get()
     }
 }
 
@@ -218,6 +209,7 @@ impl<'ast> Path<'ast> {
 pub struct PathSegment<'ast> {
     pub ident: Option<Ident>,
     pub generic_args: &'ast [GenericArgument<'ast>],
+    resolution: OnceCell<Resolution>,
     pub span: Span,
 }
 
@@ -226,6 +218,7 @@ impl<'ast> PathSegment<'ast> {
         Self {
             ident: Some(ident),
             generic_args: &[],
+            resolution: OnceCell::new(),
             span: ident.span
         }
     }
@@ -236,8 +229,19 @@ impl<'ast> PathSegment<'ast> {
         Self {
             ident,
             generic_args,
+            resolution: OnceCell::new(),
             span: Span::interpolate(start, end)
         }
+    }
+
+    pub fn resolution(&self) -> Option<&Resolution> {
+        self.resolution.get()
+    }
+
+    pub fn resolve(&self, resolution: Resolution) {
+        if let Err(_) = self.resolution.set(resolution) {
+            unreachable!("tried to resolve resolved path segment")
+        };
     }
 }
 

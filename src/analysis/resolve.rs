@@ -198,9 +198,9 @@ impl TFGRib {
     fn define_with_declaration(&mut self, symbol: Symbol, declaration: Declaration, diagnostics: &DiagnosticsCtxt) {
         let kind = declaration.kind;
         let space = match kind {
-            DefinitionKind::Struct | DefinitionKind::Enum => &mut self.types,
+            DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy => &mut self.types,
             DefinitionKind::Function => &mut self.functions,
-            DefinitionKind::Static | DefinitionKind::Const => &mut self.globals,
+            DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::ParamConst => &mut self.globals,
             _ => unreachable!("invalid Definition in define")
         };
         // FIXME: use `HashMap::entry`
@@ -543,7 +543,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             ast::GenericParamKind::Type(name) =>
                 self.define(DefinitionKind::ParamTy, name, param.node_id, ast::Scope::Export),
             ast::GenericParamKind::Const(name, _) => 
-                self.define(DefinitionKind::Const, name, param.node_id, ast::Scope::Export),
+                self.define(DefinitionKind::ParamConst, name, param.node_id, ast::Scope::Export),
         }
     }
 
@@ -611,6 +611,33 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
 #[derive(Default)]
 struct LocalRib {
     symspace: HashMap<Symbol, Local>,
+}
+
+bitflags::bitflags! {
+#[derive(Clone, Copy)]
+struct SearchFlags: u32 {
+    const VARIABLES = 1;
+    const FUNCTIONS = 2;
+    const TYPES     = 4;
+    const MODULES   = 8;
+}
+}
+
+#[derive(Default)]
+enum ValueModuleResolution {
+    Value(Resolution),
+    Module(Result<NodeId, ()>),
+    #[default]
+    Empty
+}
+
+enum PathResolutionError {
+    /// Not a real error, the rest of the resolution needs to be done at typecheck stage
+    Barrier,
+    /// The last segment could not be resolved
+    End(Span),
+    /// An Error was already emitted
+    Emitted
 }
 
 struct NameResolutionPass<'r, 'tcx> {
@@ -688,48 +715,241 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         None
     }
 
-    fn resolve_path_in_space(&self, space: NameSpace, path: &ast::Path, report_error: bool) -> bool {
-        todo!("path resolving is a novel problem")
-        /*if name.resolution().is_some() {
-            return true;
-        }
-        let rib = *self.tfg_ribs.last().expect(".resolve() called without valid TFGRib");
-        let rib = &self.resolution.rib_map[&rib];
-        let decl = match space {
-            NameSpace::Type => rib.types.get(&name.ident.symbol),
-            NameSpace::Function => rib.functions.get(&name.ident.symbol),
-            NameSpace::Variable => rib.globals.get(&name.ident.symbol)
-        };
-        if let Some(local) = self.resolve_local(name.ident.symbol) {
-            name.resolve(Resolution::Local(local.site));
-        } else if let Some(decl) = decl {
-            name.resolve(Resolution::Def(decl.site, decl.kind));
-        } else if name.ident.symbol.is_primitive_ty() && space == NameSpace::Type {
-            name.resolve(Resolution::Primitive);
-        } else {
-            if report_error {
-                Message::error(format!("could not find {space} {name}", name = name.ident.symbol.get()))
-                    .at(name.ident.span)
-                    .push(self.resolution.diagnostics);
-                name.resolve(Resolution::Err);
+    fn resolve_in_tfg_rib(&self, node: &NodeId, symbol: Symbol, flags: SearchFlags) -> (tinyvec::ArrayVec<[ValueModuleResolution; 3]>, SearchFlags) {
+        let rib = &self.resolution.rib_map[node];
+        let spaces = [
+            (SearchFlags::VARIABLES, &rib.globals),
+            (SearchFlags::FUNCTIONS, &rib.functions),
+            (SearchFlags::TYPES, &rib.types),
+        ];
+        let mut results: tinyvec::ArrayVec<[ValueModuleResolution; 3]> = Default::default();
+        let mut found = SearchFlags::empty();
+        for (flag, space) in spaces {
+            if !flags.contains(flag) {
+                continue;
             }
-            return false;
-        };
-        true*/
+            if let Some(decl) = space.get(&symbol) {
+                results.push(ValueModuleResolution::Value(Resolution::Def(decl.site, decl.kind)));
+                found |= flag;
+            }
+        }
+        if flags.contains(SearchFlags::MODULES) {   
+            if let Some(ModuleImport::Resolved(module)) = rib.modules.get(&symbol) {
+                results.push(ValueModuleResolution::Module(*module));
+                found |= SearchFlags::MODULES;
+            }
+        }
+        (results, found)
     }
 
-    fn resolve_priority(&self, pspaces: &[NameSpace], path: &ast::Path) -> bool {
-        for space in pspaces {
-            if self.resolve_path_in_space(*space, path, false) {
-                return true;
+    fn resolve_path_segment(
+        &self,
+        segments: &'tcx [ast::PathSegment<'tcx>],
+        rib_stack: &[NodeId],
+        in_local_space: bool
+    ) -> Option<Vec<ValueModuleResolution>> {
+        if segments[0].generic_args.len() > 0 {
+            return None;
+        }
+
+        let mut flags = SearchFlags::all();
+        if segments.len() > 1 {
+            flags.remove(SearchFlags::VARIABLES);
+        }
+
+        let ident = segments[0].ident.unwrap();
+        let mut results = vec![];
+
+        if flags.contains(SearchFlags::VARIABLES) {
+            if let Some(local) = self.resolve_local(ident.symbol) && in_local_space {
+                results.push(ValueModuleResolution::Value(Resolution::Local(local.site)));
+                flags.remove(SearchFlags::VARIABLES);
             }
         }
-        let name: ast::Ident = todo!("find the first ill-resolved segment of this path");
-        Message::error(format!("could not find {space} {name}", space = pspaces[0], name = name.symbol))
-            .at(path.span)
+
+        for rib in rib_stack {
+            let (resolution, found) = self.resolve_in_tfg_rib(rib, ident.symbol, flags);
+            results.extend(resolution);
+            flags.remove(found);
+
+            if flags.is_empty() {
+                break;
+            }
+        }
+
+        if flags.contains(SearchFlags::TYPES) && in_local_space && ident.symbol.is_primitive_ty() {
+            results.push(ValueModuleResolution::Value(Resolution::Primitive(ident.symbol)));
+        }
+
+        Some(results)
+    }
+
+    fn resolve_path(&self, path: &'tcx ast::Path<'tcx>) -> Result<Vec<Resolution>, PathResolutionError> {
+        let mut node_id;
+
+        let mut segments = path.segments;
+        let mut rib_stack: &[NodeId] = &self.tfg_ribs;
+        let mut in_local_space = true;
+
+        let mut prev: Option<ast::Ident> = None;
+        while let Some(results) = self.resolve_path_segment(segments, rib_stack, in_local_space) {
+            if segments.len() > 1 {
+                if let Some(module) = results.get_module() {
+                    node_id = module.map_err(|_| PathResolutionError::Emitted)?;
+                    rib_stack = std::slice::from_ref(&node_id);
+                } else if let Some(resolution) = results.get_resolution() {
+                    segments[0].resolve(resolution);
+                    break; // after we've got a resolution here, typecheck stage will need to
+                           // figure out what do with it
+                }
+            } else if !results.is_empty() {
+                let results = results
+                    .iter()
+                    .filter_map(|res| match res {
+                        ValueModuleResolution::Value(res) => Some(*res),
+                        _ => None
+                    })
+                    .collect::<Vec<_>>();
+                if results.is_empty() {
+                    return Err(PathResolutionError::End(segments[0].span));
+                }
+                return Ok(results);
+            }
+
+            if results.is_empty() {
+                if segments.len() == 1 {
+                    return Err(PathResolutionError::End(segments[0].span));
+                }
+                let message = if let Some(prev) = prev {
+                    Message::error(format!("cannot resolve type or module `{}` within `{}`", segments[0].ident.unwrap().symbol, prev.symbol))
+                } else {
+                    Message::error(format!("cannot resolve type or module `{}`", segments[0].ident.unwrap().symbol))
+                };
+                message
+                    .at(segments[0].span)
+                    .push(self.resolution.diagnostics);
+                return Err(PathResolutionError::Emitted);
+            }
+
+            prev = segments[0].ident;
+            segments = &segments[1..];
+            in_local_space = false;
+        }
+
+        Err(PathResolutionError::Barrier)
+    }
+
+    fn resolve_path_in_space(&self, space: NameSpace, path: &'tcx ast::Path<'tcx>) {
+        let span = match self.resolve_path(path) {
+            Ok(results) => {
+                if let Some(resolution) = results.select_priority(&[space]) {
+                    path.segments.last().unwrap().resolve(resolution);
+                    return;
+                };
+                path.segments.last().unwrap().span
+            }
+            Err(PathResolutionError::Emitted) | Err(PathResolutionError::Barrier) => return,
+            Err(PathResolutionError::End(span)) => span, 
+        };
+
+        Message::error(format!("cannot find {space} `{name}`", name = path.segments.last().unwrap().ident.unwrap().symbol))
+            .at(span)
             .push(self.resolution.diagnostics);
-        path.resolve(Resolution::Err);
-        false
+    }
+ 
+    fn resolve_priority(&self, spaces: &[NameSpace], path: &'tcx ast::Path<'tcx>) {
+        let span = match self.resolve_path(path) {
+            Ok(results) => {
+                if let Some(resolution) = results.select_priority(spaces) {
+                    path.segments.last().unwrap().resolve(resolution);
+                    return;
+                };
+                path.segments.last().unwrap().span
+            }
+            Err(PathResolutionError::Emitted | PathResolutionError::Barrier) => return,
+            Err(PathResolutionError::End(span)) => span, 
+        };
+
+        Message::error(format!("cannot find {space} `{name}`", space = spaces[0], name = path.segments.last().unwrap().ident.unwrap().symbol))
+            .at(span)
+            .push(self.resolution.diagnostics);
+    }
+}
+
+trait VMRsExt {
+    fn get_module(&self) -> Option<Result<NodeId, ()>>;
+    fn get_resolution(&self) -> Option<Resolution>;
+}
+
+impl VMRsExt for Vec<ValueModuleResolution> {
+    fn get_module(&self) -> Option<Result<NodeId, ()>> {
+        for res in self {
+            match res {
+                ValueModuleResolution::Module(module) => return Some(*module),
+                _ => ()
+            }
+        }
+        None
+    }
+
+    fn get_resolution(&self) -> Option<Resolution> {
+        for res in self {
+            match res {
+                ValueModuleResolution::Value(resolution) => return Some(*resolution),
+                _ => ()
+            }
+        }
+        None
+    }
+}
+
+trait ResolutionsExt {
+    fn select_priority(self, spaces: &[NameSpace]) -> Option<Resolution>;
+}
+
+impl ResolutionsExt for Vec<Resolution> {
+    fn select_priority(mut self, spaces: &[NameSpace]) -> Option<Resolution> {
+        self.sort_by(|a, b| {
+            let a = get_ns(a)
+                .map(|a| spaces.iter().position(|p| a == *p))
+                .flatten()
+                .unwrap_or(usize::MAX);
+            let b = get_ns(b)
+                .map(|b| spaces.iter().position(|p| b == *p))
+                .flatten()
+                .unwrap_or(usize::MAX);
+
+            a.cmp(&b)
+        });
+
+        fn get_ns(res: &Resolution) -> Option<NameSpace> {
+            let ns = match res {
+                Resolution::Local(_) => NameSpace::Variable,
+                Resolution::Primitive(_) => NameSpace::Type,
+                Resolution::Def(_, DefinitionKind::Enum | DefinitionKind::Struct | DefinitionKind::ParamTy)
+                    => NameSpace::Type,
+                Resolution::Def(_, DefinitionKind::Const | DefinitionKind::Static | DefinitionKind::ParamConst)
+                    => NameSpace::Variable,
+                Resolution::Def(_, DefinitionKind::Function)
+                    => NameSpace::Function,
+                _ => return None,
+            };
+            return Some(ns);
+        }
+
+        let Some(first) = self.first() else {
+            return None;
+        };
+
+        let Some(ns) = get_ns(&first) else {
+            return None;
+        };
+
+        if !spaces.contains(&ns) {
+            return None;
+        }
+
+        Some(*first)
     }
 }
 
@@ -856,7 +1076,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_slice(ty_init.initializers, |field| self.visit_type_init(field));
                 match &ty_init.ty.kind {
                     ast::TypeExprKind::Path(path) => {
-                        self.resolve_path_in_space(NameSpace::Type, path, true);
+                        self.resolve_path_in_space(NameSpace::Type, path);
                     },
                     ast::TypeExprKind::Array(array) => {
                         self.visit_ty_expr(ty_init.ty);
@@ -904,7 +1124,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
         match &ty.kind {
             ast::TypeExprKind::Ref(ty) => self.visit_ty_expr(ty),
             ast::TypeExprKind::Path(path) => {
-                self.resolve_path_in_space(NameSpace::Type, path, true);
+                self.resolve_path_in_space(NameSpace::Type, path);
             },
             ast::TypeExprKind::Array(array) => {
                 self.visit_ty_expr(array.ty);

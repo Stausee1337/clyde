@@ -74,6 +74,9 @@ impl Session {
         };
         let entry = parser::parse_file(&self, &self.input, &ast_info)?;
         let resolutions = resolve::resolve_from_entry(&self, entry, &ast_info);
+        println!("{:#?}", entry);
+
+        self.diagnostics().render();
 
         let providers = Providers {
             type_of: typecheck::type_of,

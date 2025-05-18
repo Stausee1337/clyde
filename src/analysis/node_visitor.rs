@@ -85,7 +85,6 @@ pub fn visit_slice<'tcx, T, F: FnMut(&'tcx T)>(elems: &'tcx [T], mut visit_elem:
     for elem in elems {
         visit_elem(elem);
     }
-
 }
 
 #[inline]

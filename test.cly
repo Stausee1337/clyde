@@ -1,5 +1,5 @@
-Mem :: #include "Std/Mem";
-#include "Window";
+clyde :: #include "./clyde.cly";
+// #include "Window";
 // 
 // FT_Uint      :: #type uint;
 // ClickHandler :: #type bool(ClickEvent)!Std::Error*;
@@ -9,7 +9,7 @@ FACTOR ::= 80;
 // HEIGHT ::= FACTOR * 9;
 
 void Wrapper<T>::main<T>(string[] args) {
-    #include "Compiler";
+    // #include "Compiler";
 
     static byte[1024] minibuf;
 
@@ -21,7 +21,7 @@ void Wrapper<T>::main<T>(string[] args) {
 
 
     string msg = "Hello, World";
-    print(msg);
+    clyde::print(msg);
     // const window  = Window::open("Window", WIDTH, HEIGHT);
     int WINDOW ::= 4;
 }

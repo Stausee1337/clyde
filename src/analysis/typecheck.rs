@@ -1203,11 +1203,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Const | DefinitionKind::Static) =>
                 self.tcx.type_of(*def_id),
             ast::Resolution::Err => Ty::new_error(self.tcx),
-            ast::Resolution::Primitive |
+            ast::Resolution::Primitive(_) |
             ast::Resolution::Def(_, DefinitionKind::Enum | DefinitionKind::Struct) => 
                 panic!("type-like resolution in check_expr_name"),
             ast::Resolution::Def(_, DefinitionKind::NestedConst | DefinitionKind::Variant | DefinitionKind::Field) => 
                 panic!("nested definition in check_expr_name"),
+            ast::Resolution::Def(_, DefinitionKind::ParamTy | DefinitionKind::ParamConst) => todo!()
         }
     }
 
