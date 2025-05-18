@@ -119,9 +119,9 @@ pub fn noop_visit_item_kind<'tcx, T: Visitor<'tcx>>(item_kind: &'tcx ItemKind<'t
 }
 
 pub fn visit_fn<'tcx, T: Visitor<'tcx>>(func: &'tcx Function<'tcx>, vis: &mut T) {
+    visit_slice(&func.sig.generics, |generic| vis.visit_generic_param(generic));
     vis.visit_ty_expr(&func.sig.returns);
     visit_slice(&func.sig.params, |p| vis.visit_param(p));
-    visit_slice(&func.sig.generics, |generic| vis.visit_generic_param(generic));
     visit_option(func.body, |body| vis.visit_expr(body));
 }
 

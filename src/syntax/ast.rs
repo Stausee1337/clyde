@@ -166,6 +166,7 @@ pub enum DefinitionKind {
     NestedConst,
     Field,
     Variant,
+    ParamTy,
 }
 
 #[derive(Debug, Clone, Copy)]

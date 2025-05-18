@@ -347,14 +347,19 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
                     .at(span)
                     .push(self.resolution.diagnostics);
             });
+
+        let rib = self.ribs.last_mut().expect(".push_import neeeds to be called in valid TFGRib");
         let Ok(path) = path else {
+            if let Some(symbol) = alias {
+                let import = ModuleImport::Resolved(Err(()));
+                rib.define_aliased_module(symbol, import, self.resolution.diagnostics);
+            }
             return;
         };
 
         let (file, _) = self.filemap.insert_full(path);
         let file = FileId::from_usize(file);
 
-        let rib = self.ribs.last_mut().expect(".push_import neeeds to be called in valid TFGRib");
         let import = ModuleImport::Unresolved { file, span };
         if let Some(symbol) = alias {
             rib.define_aliased_module(symbol, import, self.resolution.diagnostics);
@@ -522,12 +527,34 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
         self.current_file.take();
     }
 
+    fn visit_expr(&mut self, expr: &'tcx ast::Expr<'tcx>) {
+        match &expr.kind {
+            ast::ExprKind::Block(block) => {
+                self.with_rib(expr.node_id, |this| {
+                    this.visit_block(block);
+                });
+            }
+            expr_kind => node_visitor::noop_visit_expr_kind(expr_kind, self),
+        }
+    }
+
+    fn visit_generic_param(&mut self, param: &'tcx ast::GenericParam<'tcx>) {
+        match param.kind {
+            ast::GenericParamKind::Type(name) =>
+                self.define(DefinitionKind::ParamTy, name, param.node_id, ast::Scope::Export),
+            ast::GenericParamKind::Const(name, _) => 
+                self.define(DefinitionKind::Const, name, param.node_id, ast::Scope::Export),
+        }
+    }
+
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
         match &item.kind {
             ast::ItemKind::Struct(stc) => {
                 self.define(DefinitionKind::Struct, stc.ident, item.node_id, item.scope);
-                node_visitor::visit_slice(stc.fields, |field_def| self.visit_field_def(field_def));
-                node_visitor::visit_slice(stc.generics, |generic| self.visit_generic_param(generic));
+                self.with_rib(item.node_id, |this| {
+                    node_visitor::visit_slice(&stc.generics, |generic| this.visit_generic_param(generic));
+                    node_visitor::visit_slice(stc.fields, |field_def| this.visit_field_def(field_def));
+                });
             }, 
             ast::ItemKind::Enum(en) => {
                 self.define(DefinitionKind::Enum, en.ident, item.node_id, item.scope);
@@ -535,7 +562,9 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             },
             ast::ItemKind::Function(function) => {
                 self.define(DefinitionKind::Function, function.ident, item.node_id, item.scope);
-                node_visitor::visit_fn(function, self);
+                self.with_rib(item.node_id, |this| {
+                    node_visitor::visit_fn(function, this);
+                });
             },
             ast::ItemKind::GlobalVar(global) => {
                 self.define(
@@ -547,6 +576,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             ast::ItemKind::Import(import) => {
                 let file = self.current_file.expect("visit_import should be operating within source file");
                 self.push_import(file, &import.path, None, item.span);
+                return;
             }
             ast::ItemKind::Alias(alias) => {
                 let ast::ItemKind::Import(import) = alias.item.kind else {
@@ -554,6 +584,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                 };
                 let file = self.current_file.expect("visit_import should be operating within source file");
                 self.push_import(file, &import.path, Some(alias.ident.symbol), item.span);
+                return; // don't mangle the names of Import aliases
             }
             ast::ItemKind::Err => return
         }
@@ -712,34 +743,26 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
         match &item.kind {
             ast::ItemKind::Function(function) => {
-                if function.sig.generics.len() > 0 {
-                    let first = function.sig.generics.first().unwrap();
-                    let last = function.sig.generics.last().unwrap();
-                    Message::fatal("function generics are not supported yet")
-                        .at(Span::new(first.span.start, last.span.end))
-                        .push(self.resolution.diagnostics);
-                }
-                self.visit_ty_expr(function.sig.returns);
+                self.with_tbg_rib(item.node_id, |this| {
+                    node_visitor::visit_slice(&function.sig.generics, |generic| this.visit_generic_param(generic));
+                    this.visit_ty_expr(function.sig.returns);
 
-                let Some(ref body) = function.body else {
-                    node_visitor::visit_slice(function.sig.params, |p| self.visit_param(p));
-                    return;
-                };
+                    let Some(ref body) = function.body else {
+                        node_visitor::visit_slice(function.sig.params, |p| this.visit_param(p));
+                        return;
+                    };
 
-                self.with_rib(|this| {
-                    node_visitor::visit_slice(function.sig.params, |p| this.visit_param(p));
-                    this.visit_expr(body);
-                });
+                    this.with_rib(|this| {
+                        node_visitor::visit_slice(function.sig.params, |p| this.visit_param(p));
+                        this.visit_expr(body);
+                    });
+                })
             }
             ast::ItemKind::Struct(stc) => {
-                if stc.generics.len() > 0 {
-                    let first = stc.generics.first().unwrap();
-                    let last = stc.generics.last().unwrap();
-                    Message::fatal("struct generics are not supported yet")
-                        .at(Span::new(first.span.start, last.span.end))
-                        .push(self.resolution.diagnostics);
-                }
-                node_visitor::visit_slice(stc.fields, |field_def| self.visit_field_def(field_def));
+                self.with_tbg_rib(item.node_id, |this| {
+                    node_visitor::visit_slice(&stc.generics, |generic| this.visit_generic_param(generic));
+                    node_visitor::visit_slice(stc.fields, |field_def| this.visit_field_def(field_def));
+                });
             }
             ast::ItemKind::Enum(en) => {
                 if let Some(extends) = &en.extends {
@@ -754,7 +777,8 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_option(global_var.init, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Import(..) => (), // import doesn't have relevance at this stage
-            ast::ItemKind::Alias(alias) => todo!(),
+            ast::ItemKind::Alias(_alias) => (), // `#type` aliases will have a relevance here but
+                                                // they don't exist yet
             ast::ItemKind::Err => ()
         }
     }
@@ -854,8 +878,10 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], path);
             }
             ast::ExprKind::Block(body) => {
-                self.with_rib(|this| {
-                    this.visit_block(body);
+                self.with_tbg_rib(expr.node_id, |this| {
+                    this.with_rib(|this| {
+                        this.visit_block(body);
+                    });
                 });
             }
             ast::ExprKind::Field(field) =>
