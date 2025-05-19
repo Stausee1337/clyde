@@ -927,6 +927,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     _ => ()
                 }
             }
+            Ty(TyKind::Enum(enm)) => {
+                Message::error(format!("expected struct, found enum {ty}"))
+                    .at(span)
+                    .note(format!("create an enum value using `{}::<Variant>` syntax", enm.name.get()))
+                    .push(self.diagnostics());
+                self.last_error.set(Some(()));
+            }
             Ty(TyKind::Adt(adt)) => match adt {
                 AdtDef(type_ir::AdtKind::Struct(strct)) => {
                     // FIXME: Don't build reverse field lookup every time
@@ -970,13 +977,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                             }
                         }
                     }
-                }
-                AdtDef(type_ir::AdtKind::Enum(..)) => {
-                    Message::error(format!("expected struct, found enum {ty}"))
-                        .at(span)
-                        .note(format!("initialize an enum with {}::<Variant> syntax", adt.name().get()))
-                        .push(self.diagnostics());
-                    self.last_error.set(Some(()));
                 }
                 AdtDef(type_ir::AdtKind::Union) => todo!()
             }
@@ -1220,7 +1220,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
         let prev_diverge = self.diverges.get();
         self.diverges.set(Diverges::Maybe);
-        let ty = self.check_expr(&expr, expected, false); 
+        let ty = self.check_expr(expr, expected, false); 
 
         if let Expectation::Coerce(expected) = expectation {
             self.maybe_emit_type_error(ty, expected, expr.span);
@@ -1376,8 +1376,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     let def_id = *variant.def_id.get().unwrap();
                     type_ir::VariantDef { def: def_id, symbol: variant.name.symbol }
                 }).collect();
-                let adt_def = tcx.intern_adt(AdtKind::Enum(type_ir::Enum::new(def_id, enm.ident.symbol, variants)));
-                Ty::new_adt(tcx, adt_def)
+                Ty::new_enum(tcx, type_ir::Enum::new(def_id, enm.ident.symbol, variants))
             }
             ast::ItemKind::Struct(stc) => {
                 let fields = stc.fields.iter().map(|fdef| {

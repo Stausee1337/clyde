@@ -19,10 +19,8 @@ impl<'tcx> Deref for AdtDef<'tcx> {
 
 #[derive(Debug, Hash)]
 #[repr(u32)]
-// FXIME: Enum shouldn't be Adt as we're not rust
 pub enum AdtKind {
     Struct(Struct),
-    Enum(Enum),
     Union,
 }
 
@@ -30,7 +28,6 @@ impl AdtKind {
     pub fn def(&self) -> DefId {
         match self {
             AdtKind::Struct(strct) => strct.def,
-            AdtKind::Enum(enm) => enm.def,
             AdtKind::Union => todo!()
         }
     }
@@ -38,7 +35,6 @@ impl AdtKind {
     pub fn name(&self) -> Symbol {
         match self {
             AdtKind::Struct(strct) => strct.name,
-            AdtKind::Enum(enm) => enm.name,
             AdtKind::Union => todo!()
         }
     }
@@ -46,7 +42,6 @@ impl AdtKind {
     pub fn kind(&self) -> &'static str {
         match self {
             AdtKind::Struct(..) => "struct",
-            AdtKind::Enum(..) => "enum",
             AdtKind::Union => "union"
         }
     }
@@ -59,34 +54,6 @@ impl PartialEq for AdtKind {
 }
 
 impl Eq for AdtKind {}
-
-#[derive(Debug, Hash)]
-pub struct Enum {
-    pub def: DefId,
-    pub name: Symbol,
-    variants: IndexVec<VariantIdx, VariantDef>,
-}
-
-impl Enum {
-    pub fn new(
-        def: DefId,
-        name: Symbol,
-        variants: IndexVec<VariantIdx, VariantDef>,
-    ) -> Self {
-        Self { def, name, variants }
-    }
-}
-
-#[derive(Debug, Hash)]
-pub struct VariantDef {
-    pub def: DefId,
-    pub symbol: Symbol
-}
-
-index_vec::define_index_type! {
-    pub struct VariantIdx = u32;
-    IMPL_RAW_CONVERSIONS = true;
-}
 
 #[derive(Debug, Hash)]
 pub struct Struct {
@@ -512,6 +479,42 @@ impl<'tcx> std::fmt::Debug for Global<'tcx> {
     }
 }
 
+#[derive(Debug, Hash)]
+pub struct Enum {
+    pub def: DefId,
+    pub name: Symbol,
+    variants: IndexVec<VariantIdx, VariantDef>,
+}
+
+impl Enum {
+    pub fn new(
+        def: DefId,
+        name: Symbol,
+        variants: IndexVec<VariantIdx, VariantDef>,
+    ) -> Self {
+        Self { def, name, variants }
+    }
+}
+
+impl PartialEq for Enum {
+    fn eq(&self, other: &Self) -> bool {
+        self.def == other.def
+    }
+}
+
+impl Eq for Enum {}
+
+#[derive(Debug, Hash)]
+pub struct VariantDef {
+    pub def: DefId,
+    pub symbol: Symbol
+}
+
+index_vec::define_index_type! {
+    pub struct VariantIdx = u32;
+    IMPL_RAW_CONVERSIONS = true;
+}
+
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum TyKind<'tcx> {
     Bool,
@@ -521,6 +524,7 @@ pub enum TyKind<'tcx> {
     Int(Integer, bool),
     Float(Float),
     Adt(AdtDef<'tcx>),
+    Enum(Enum),
     Refrence(Ty<'tcx>),
     Range(Ty<'tcx>, bool),
     Slice(Ty<'tcx>),
@@ -564,6 +568,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::Float(Float::F32) => f.write_str("float"),
             TyKind::Float(Float::F64) => f.write_str("double"),
             TyKind::Adt(adt) => f.write_str(adt.name().get()),
+            TyKind::Enum(enm) => f.write_str(enm.name.get()),
             TyKind::Refrence(ty) => write!(f, "{ty}*"),
             TyKind::Slice(ty) => write!(f, "{ty}[]"),
             TyKind::Array(ty, cap) => write!(f, "{ty}[{cap:?}]"),
@@ -614,6 +619,10 @@ impl<'tcx> Ty<'tcx> {
 
     pub fn new_float(tcx: TyCtxt<'tcx>, float: Float) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Float(float))
+    }
+
+    pub fn new_enum(tcx: TyCtxt<'tcx>, enm: Enum) -> Ty<'tcx> {
+        tcx.intern_ty(TyKind::Enum(enm))
     }
 
     pub fn new_adt(tcx: TyCtxt<'tcx>, adt: AdtDef<'tcx>) -> Ty<'tcx> {
@@ -1329,6 +1338,9 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 self.layout_for_integer(*integer, *signedness),
             Ty(TyKind::Float(float)) =>
                 self.layout_for_float(*float),
+            Ty(TyKind::Enum(_)) =>
+                // FIXME: ensure validity, respect user prefrences and make sure everything fits
+                self.layout_for_integer(Integer::I32, true),
             Ty(TyKind::Adt(adt)) => {
                 match adt {
                     AdtDef(AdtKind::Struct(strct)) => {
@@ -1348,7 +1360,6 @@ impl<'tcx> LayoutCtxt<'tcx> {
                         }
                         self.layout_for_struct(fields)
                     }
-                    AdtDef(AdtKind::Enum(_enm)) => todo!(),
                     AdtDef(AdtKind::Union) => todo!(),
                 }
             }
