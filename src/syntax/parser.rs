@@ -1091,11 +1091,11 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 let span = path.span;
                 let ty_expr = self.make_ty_expr(ast::TypeExprKind::Path(path), span);
 
+                sure = Some(self.cursor.fork());
+
                 let end = self.cursor.span();
                 self.cursor.advance();
                 let ty_expr = self.make_ty_expr(ast::TypeExprKind::Ref(ty_expr), Span::interpolate(span, end));
-
-                doubt = None;
 
                 let args = std::slice::from_ref(self.alloc(ast::GenericArgument {
                     span: ty_expr.span,
