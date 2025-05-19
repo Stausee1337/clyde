@@ -732,6 +732,16 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }))
     }
 
+    fn make_variant_def(&mut self, name: ast::Ident, discriminant: Option<&'ast ast::NestedConst<'ast>>, span: Span) -> &'ast ast::VariantDef<'ast> {
+        self.create_node_id(|this, node_id| this.alloc(ast::VariantDef {
+            name,
+            discriminant,
+            span,
+            node_id,
+            def_id: OnceCell::new(),
+        }))
+    }
+
     fn make_ty_expr(&mut self, kind: ast::TypeExprKind<'ast>, span: Span) -> &'ast ast::TypeExpr<'ast> {
         self.create_node_id(|this, node_id| this.alloc(ast::TypeExpr {
             kind,
@@ -867,9 +877,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
         }
 
-        if did_expect(Token![;]) {
-            if !self.cursor.is_eos()
-                && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
+        if did_expect(Token![;]) && !matches!(self.cursor.current().kind, TokenKind::Punctuator(Punctuator::RParen | Punctuator::RCurly | Punctuator::RBracket)) {
+            if !self.cursor.is_eos() {
                 self.cursor.advance();
             }
             return Ok(());
@@ -2203,7 +2212,76 @@ impl<'src, 'ast> Parser<'src, 'ast> {
     }
 
     fn parse_enum_item(&mut self) -> PRes<&'ast ast::Item<'ast>> {
-        todo!()
+        let res = self.with_owner(|this| {
+            let start = this.cursor.span();
+            this.cursor.advance();
+
+            let ident = this.expect_any::<ast::Ident>()?;
+            this.cursor.advance();
+            println!("parsed ident");
+
+            let representation;
+            if this.bump_if(Token![:]).is_some() {
+                let ty = this.parse_ty_expr()
+                    .unwrap_or_else(|span| this.make_ty_expr(ast::TypeExprKind::Err, span));
+                representation = Some(ty);
+            } else {
+                representation = None;
+            }
+
+            this.expect_one(Punctuator::LCurly)?;
+            this.cursor.advance();
+            println!("parsed lcurly");
+
+            let mut variants = vec![];
+
+            let _ = this.fail_parse_tree(Delimiter::Curly, |this| {
+                while !this.matches(Punctuator::RCurly) {
+                    let start = this.cursor.span();
+
+                    let name = this.expect_any::<ast::Ident>()?;
+                    this.cursor.advance();
+
+                    let discriminant;
+                    let end;
+                    if this.bump_if(Token![=]).is_some() {
+                        let expr = this.parse_expr(Restrictions::empty())
+                            .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span));
+                        let expr = this.make_nested_const(expr);
+                        end = expr.span;
+                        discriminant = Some(expr);
+                    } else {
+                        end = name.span;
+                        discriminant = None;
+                    }
+                    this.expect_one(Token![;])?;
+
+                    let span = Span::interpolate(start, end);
+                    this.cursor.advance();
+                    variants.push(this.make_variant_def(name, discriminant, span));
+                }
+                Ok(())
+            });
+            println!("parsed body, {:?}", this.cursor.current());
+            let end = this.cursor.span();
+            this.cursor.advance();
+
+            let variants = this.alloc_slice(&variants);
+
+            let span = Span::interpolate(start, end);
+            Ok((
+                ast::ItemKind::Enum(ast::Enum {
+                    ident,
+                    representation,
+                    variants,
+                }),
+                span
+            ))
+        });
+        let ((kind, span), owner_id, children) = res?;
+        let item = self.make_item(kind, span);
+        self.owners[owner_id].initialize(item.into_node(), children);
+        Ok(item)
     }
 
     fn parse_generic_params(&mut self) -> PRes<&'ast [&'ast ast::GenericParam<'ast>]> {

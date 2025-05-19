@@ -23,7 +23,7 @@ pub trait Visitor<'tcx>: Sized {
     }
     
     fn visit_variant_def(&mut self, variant_def: &'tcx VariantDef<'tcx>) {
-        visit_option(variant_def.sset, |sset| self.visit_nested_const(sset));
+        visit_option(variant_def.discriminant, |sset| self.visit_nested_const(sset));
     }
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
@@ -104,7 +104,7 @@ pub fn noop_visit_item_kind<'tcx, T: Visitor<'tcx>>(item_kind: &'tcx ItemKind<'t
             visit_slice(&stc.fields, |field_def| vis.visit_field_def(field_def));
         }
         ItemKind::Enum(en) => {
-            visit_option(en.extends, |extends| vis.visit_ty_expr(extends));
+            visit_option(en.representation, |repr| vis.visit_ty_expr(repr));
             visit_slice(&en.variants, |variant_def| vis.visit_variant_def(variant_def));
         }
         ItemKind::GlobalVar(global_var) => {

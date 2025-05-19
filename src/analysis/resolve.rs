@@ -598,7 +598,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
     }
 
     fn visit_variant_def(&mut self, variant_def: &'tcx ast::VariantDef<'tcx>) {
-        node_visitor::visit_option(variant_def.sset, |sset| self.visit_nested_const(sset));
+        node_visitor::visit_option(variant_def.discriminant, |sset| self.visit_nested_const(sset));
         variant_def.def_id.set(self.declare(variant_def.node_id, DefinitionKind::Variant)).unwrap();
     }
 
@@ -985,11 +985,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 });
             }
             ast::ItemKind::Enum(en) => {
-                if let Some(extends) = &en.extends {
-                    Message::fatal("enum type extension is not supported yet")
-                        .at(Span::new(extends.span.start, extends.span.end))
-                        .push(self.resolution.diagnostics);
-                }
+                node_visitor::visit_option(en.representation, |repr| self.visit_ty_expr(repr));
                 node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             }
             ast::ItemKind::GlobalVar(global_var) => {
@@ -1000,14 +996,6 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
             ast::ItemKind::Alias(_alias) => (), // `#type` aliases will have a relevance here but
                                                 // they don't exist yet
             ast::ItemKind::Err => ()
-        }
-    }
-
-    fn visit_variant_def(&mut self, variant_def: &'tcx ast::VariantDef<'tcx>) {
-        if let Some(sset) = &variant_def.sset {
-            Message::fatal("setting explicit enum tag values is not supported yet")
-                .at(Span::new(sset.span.start, sset.span.end))
-                .push(self.resolution.diagnostics);
         }
     }
 

@@ -353,14 +353,14 @@ impl<'ast> IntoNode<'ast> for FieldDef<'ast>  {
 #[derive(Debug, Clone, Copy)]
 pub struct Enum<'ast> {
     pub ident: Ident,
-    pub extends: Option<&'ast TypeExpr<'ast>>,
-    pub variants: &'ast [VariantDef<'ast>],
+    pub representation: Option<&'ast TypeExpr<'ast>>,
+    pub variants: &'ast [&'ast VariantDef<'ast>],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VariantDef<'ast> {
     pub name: Ident,
-    pub sset: Option<&'ast NestedConst<'ast>>,
+    pub discriminant: Option<&'ast NestedConst<'ast>>,
     pub span: Span,
     pub node_id: NodeId,
     pub def_id: OnceCell<DefId>
