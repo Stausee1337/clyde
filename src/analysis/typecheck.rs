@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::{cell::Cell, fmt::Write};
 
 use hashbrown::HashMap;
 use num_traits::ToPrimitive;
@@ -62,11 +62,7 @@ struct TypecheckCtxt<'tcx> {
     loop_stack: Vec<LoopCtxt>,
     block_stack: Vec<BlockCtxt<'tcx>>,
     field_indices: HashMap<ast::NodeId, type_ir::FieldIdx>,
-    variant_translations: HashMap<ast::NodeId, type_ir::VariantIdx>,
     lowering_ctxt: LoweringCtxt<'tcx>,
-    associations: HashMap<ast::NodeId, Ty<'tcx>>,
-    locals: HashMap<ast::NodeId, Ty<'tcx>>,
-    last_error: Cell<Option<()>>
 }
 
 impl<'tcx> TypecheckCtxt<'tcx> {
@@ -78,11 +74,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             loop_stack: Vec::new(),
             block_stack: Vec::new(),
             field_indices: Default::default(),
-            variant_translations: Default::default(),
-            lowering_ctxt: LoweringCtxt::new(tcx),
-            associations: Default::default(),
-            locals: Default::default(),
-            last_error: Cell::new(None)
+            lowering_ctxt: LoweringCtxt::new(tcx, LoweringMode::Body),
         }
     }
 
@@ -115,26 +107,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn block_ctxt(&mut self) -> Option<&mut BlockCtxt<'tcx>> {
         self.block_stack.last_mut()
-    }
-
-    fn ty_assoc(&mut self, node_id: ast::NodeId, ty: Ty<'tcx>) {
-        if let Some(prev) = self.associations.insert(node_id, ty) {
-            assert_eq!(ty, prev, "tried to assoicate {node_id:?} twice with different types; First {prev:?} then {ty:?}");
-            eprintln!("[WARNING] unwanted attempt to associate {node_id:?} with {ty:?} twice")
-        }
-        if let Ty(type_ir::TyKind::Err) = ty {
-            self.last_error.set(Some(()));
-        }
-    }
-
-    fn ty_local(&mut self, node_id: NodeId, ty: Ty<'tcx>) {
-        if let Some(prev) = self.locals.insert(node_id, ty) {
-            assert_eq!(ty, prev, "tried to create local {node_id:?} twice with different types; First {prev:?} then {ty:?}");
-            eprintln!("[WARNING] unwanted attempt to create local {node_id:?} with {ty:?} twice")
-        }
-        if let Ty(type_ir::TyKind::Err) = ty {
-            self.last_error.set(Some(()));
-        }
     }
 
     fn autoderef(&self, mut ty: Ty<'tcx>, level: i32) -> Option<Ty<'tcx>> {
@@ -270,7 +242,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     }
 
     fn check_stmt_local(&mut self, stmt: &'tcx ast::Stmt<'tcx>, local: &'tcx ast::Local<'tcx>) -> Ty<'tcx> {
-        let expected = local.ty.map(|ty| self.lowering_ctxt.lower_ty(&ty));
+        let expected = local.ty.map(|ty| self.lower_ty(&ty));
 
         if let Some(expected) = expected {
             if expected.is_incomplete() {
@@ -285,7 +257,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             Message::error("type-anonymous variable declarations require an init expresssion")
                 .at(stmt.span)
                 .push(self.diagnostics());
-            self.ty_local(stmt.node_id, Ty::new_error(self.tcx));
+            let ty = Ty::new_error(self.tcx);
+            self.ty_local(stmt.node_id, ty);
             self.tcx.basic_types.void
         } else if let Some(expr) = local.init {
             let ty = self.check_expr_with_expectation(expr, expected.into());
@@ -381,7 +354,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
                 return self.tcx.basic_types.never;
             }
-            ast::StmtKind::Item(_item) => todo!(),
+            ast::StmtKind::Item(_item) => (),
             ast::StmtKind::Err => (),
         }
         self.tcx.basic_types.void
@@ -864,7 +837,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
  
     fn check_expr_init(
         &mut self, ty_init: &'tcx ast::TypeInit<'tcx>, span: Span) -> Ty<'tcx> {
-        let ty = self.lowering_ctxt.lower_ty(ty_init.ty);
+        let ty = self.lower_ty(ty_init.ty);
         
         use type_ir::TyKind::{self, Int, Float, Char, Bool, Void, String};
         match ty {
@@ -1018,7 +991,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
 
     fn check_expr_cast(&mut self, cast: &'tcx ast::Cast<'tcx>, expected: Option<Ty<'tcx>>, span: Span) -> Ty<'tcx> {
 
-        let ty = cast.ty.map(|expr| self.lowering_ctxt.lower_ty(expr));
+        let ty = cast.ty.map(|expr| self.lower_ty(expr));
         
         let Some(ty) = ty.or(expected) else {
             let tc = match cast.kind {
@@ -1118,8 +1091,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 let ty = self.check_expr_with_expectation(base, expectation);
                 self.deref(ty, expr.span)
             }
-            ast::ExprKind::Path(path) =>
-                self.check_expr_path(path),
+            ast::ExprKind::Path(path) => self.lower_path(path, ResolutionKind::Value),
             ast::ExprKind::Block(block) => {
                 if !is_body {
                     let (ctxt, ty) = self.enter_block_ctxt(expr.node_id, |this| {
@@ -1192,26 +1164,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         }
     }
 
-    fn check_expr_path(&mut self, path: &ast::Path) -> Ty<'tcx> {
-        let Some(resolution) = path.resolution() else {
-            panic!("unresolved Name in check_expr_name(...)");
-        };
-        match resolution {
-            ast::Resolution::Local(node_id) => 
-                *self.locals.get(node_id)
-                    .expect("check_expr_name(...) unknown Local(NodeId)"),
-            ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Const | DefinitionKind::Static) =>
-                self.tcx.type_of(*def_id),
-            ast::Resolution::Err => Ty::new_error(self.tcx),
-            ast::Resolution::Primitive(_) |
-            ast::Resolution::Def(_, DefinitionKind::Enum | DefinitionKind::Struct) => 
-                panic!("type-like resolution in check_expr_name"),
-            ast::Resolution::Def(_, DefinitionKind::NestedConst | DefinitionKind::Variant | DefinitionKind::Field) => 
-                panic!("nested definition in check_expr_name"),
-            ast::Resolution::Def(_, DefinitionKind::ParamTy | DefinitionKind::ParamConst) => todo!()
-        }
-    }
-
     fn check_expr_with_expectation(&mut self, expr: &'tcx ast::Expr, expectation: Expectation<'tcx>) -> Ty<'tcx> {
         let expected = match expectation {
             Expectation::None => None,
@@ -1279,22 +1231,62 @@ impl<'tcx> TypecheckCtxt<'tcx> {
     fn results(self) -> TypecheckResults<'tcx> {
         TypecheckResults {
             field_indices: self.field_indices,
-            variant_translations: self.variant_translations,
-            associations: self.associations,
-            locals: self.locals,
-            has_errors: self.last_error.get().is_some()
+            associations: self.lowering_ctxt.associations,
+            locals: self.lowering_ctxt.locals,
+            has_errors: self.lowering_ctxt.last_error.get().is_some()
+        }
+    }
+}
+
+impl<'tcx> std::ops::Deref for TypecheckCtxt<'tcx> {
+    type Target = LoweringCtxt<'tcx>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.lowering_ctxt
+    }
+}
+
+impl<'tcx> std::ops::DerefMut for TypecheckCtxt<'tcx> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.lowering_ctxt
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoweringMode {
+    Body, Unbound
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolutionKind {
+    Type, Value
+}
+
+impl std::fmt::Display for ResolutionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolutionKind::Type => f.write_str("type"),
+            ResolutionKind::Value => f.write_str("value"),
         }
     }
 }
 
 struct LoweringCtxt<'tcx> {
     tcx: TyCtxt<'tcx>,
+    lowering_mode: LoweringMode,
+    associations: HashMap<ast::NodeId, Ty<'tcx>>,
+    locals: HashMap<ast::NodeId, Ty<'tcx>>,
+    last_error: Cell<Option<()>>
 }
 
 impl<'tcx> LoweringCtxt<'tcx> {
-    fn new(tcx: TyCtxt<'tcx>) -> Self {
+    fn new(tcx: TyCtxt<'tcx>, lowering_mode: LoweringMode) -> Self {
         Self {
             tcx,
+            lowering_mode,
+            associations: Default::default(),
+            locals: Default::default(),
+            last_error: Cell::new(None)
         }
     }
 
@@ -1302,26 +1294,168 @@ impl<'tcx> LoweringCtxt<'tcx> {
         self.tcx.diagnostics()
     }
 
-    fn lower_path(&self, path: &ast::Path) -> Ty<'tcx> {
-        todo!("this is comparable to a path resolution a typecheck stage now");
-        /*let Some(resolution) = name.resolution() else {
-            panic!("unresolved Name in lower_name(...)");
-        };
-        match resolution {
-            ast::Resolution::Primitive => {
-                name.ident.symbol.get_primitive_ty(self.tcx)
-                   .expect("non-primitive Ident for primitive name resolution")
-            }
-            ast::Resolution::Def(def_id, DefinitionKind::Enum | DefinitionKind::Struct) =>
-                self.tcx.type_of(*def_id),
-            ast::Resolution::Err => Ty::new_error(self.tcx),
-            _ => panic!("unexpected Resolution in lower_name")
-        }*/
+    fn ty_assoc(&mut self, node_id: ast::NodeId, ty: Ty<'tcx>) {
+        assert_eq!(self.lowering_mode, LoweringMode::Body);
+        if let Some(prev) = self.associations.insert(node_id, ty) {
+            assert_eq!(ty, prev, "tried to assoicate {node_id:?} twice with different types; First {prev:?} then {ty:?}");
+            eprintln!("[WARNING] unwanted attempt to associate {node_id:?} with {ty:?} twice")
+        }
+        if let Ty(type_ir::TyKind::Err) = ty {
+            self.last_error.set(Some(()));
+        }
     }
 
-    fn lower_ty(&self, ty: &ast::TypeExpr) -> Ty<'tcx> {
+    fn ty_local(&mut self, node_id: NodeId, ty: Ty<'tcx>) {
+        assert_eq!(self.lowering_mode, LoweringMode::Body);
+        if let Some(prev) = self.locals.insert(node_id, ty) {
+            assert_eq!(ty, prev, "tried to create local {node_id:?} twice with different types; First {prev:?} then {ty:?}");
+            eprintln!("[WARNING] unwanted attempt to create local {node_id:?} with {ty:?} twice")
+        }
+        if let Ty(type_ir::TyKind::Err) = ty {
+            self.last_error.set(Some(()));
+        }
+    }
+
+    fn lower_path_in_context(&self, path: &'tcx ast::Path<'tcx>, resolution_kind: ResolutionKind) -> Ty<'tcx> {
+        let mut last_resolved_segment = None;
+        for (idx, segment) in path.segments.iter().enumerate().rev() {
+            if segment.resolution().is_some() {
+                last_resolved_segment = Some(idx);
+                break;
+            }
+        }
+        let (mut ty, idx) = match last_resolved_segment {
+            Some(idx) => {
+                let segment = &path.segments[idx];
+                let resolution = segment.resolution().unwrap();
+                let /*mut*/ ty = self.ty_from_resolution(resolution, ResolutionKind::Type, path.segments[idx].span);
+                if segment.generic_args.len() > 0 {
+                    todo!("ty = ty.instantciate(generic_args)");
+                }
+                (ty, idx)
+            },
+            None => {
+                if path.segments[0].ident.is_some() {
+                    for seg in path.segments {
+                        println!(" -- {} {}", seg.ident.unwrap().symbol, seg.resolution().is_some());
+                    }
+                    panic!("invalid unresolved path in `lower_path_in_context`");
+                }
+                let garg = &path.segments[0].generic_args[0];
+                let ty = match garg.kind {
+                    ast::GenericArgumentKind::Ty(ty) => self.lower_ty(ty),
+                    _ => unreachable!()
+                };
+                (ty, 0)
+            }
+        };
+        if let Ty(TyKind::Err) = ty {
+            return ty;
+        }
+
+        let mut unresolved_segments = path.segments[idx + 1..].iter();
+        let mut current_resolution = ResolutionKind::Type;
+        let mut prev = ast::Ident { symbol: sym::int, span: Span::NULL };
+
+        while let Some(segment) = unresolved_segments.next() {
+            let ident = segment.ident.unwrap();
+            if segment.generic_args.len() > 0 {
+                todo!("ty.instanciate(generic_args)");
+            }
+            prev = ident;
+            match ty {
+                Ty(TyKind::Enum(enm)) => {                    
+                    let field = enm.variants().find(|def| def.symbol == ident.symbol);
+
+                    if let Some(variant) = field {
+                        segment.resolve(ast::Resolution::Def(variant.def, DefinitionKind::Variant));
+                    } else {
+                        Message::error(format!("can't find variant `{}` on enum {ty}", ident.symbol))
+                            .at(ident.span)
+                            .push(self.diagnostics());
+                        segment.resolve(ast::Resolution::Err);
+                        self.last_error.set(Some(()));
+                    }
+
+                    current_resolution = ResolutionKind::Value;
+                    break;
+                },
+                _ => {
+                    current_resolution = resolution_kind;
+                    ty = Ty::new_error(self.tcx);
+                    path.segments.last().unwrap().resolve(ast::Resolution::Err);
+                    break;
+                }
+            }
+        }
+
+        if current_resolution == ResolutionKind::Value && unresolved_segments.next().is_some() {
+            Message::error(format!("expected type or module, but `{}` is already value", prev.symbol))
+                .at(prev.span)
+                .push(self.diagnostics()); 
+            path.segments.last().unwrap().resolve(ast::Resolution::Err);
+            return Ty::new_error(self.tcx);
+        }
+
+        if current_resolution != resolution_kind {
+            Message::error(format!("expected {resolution_kind}-like, but found {current_resolution}-like"))
+                .at(prev.span)
+                .push(self.diagnostics());
+            path.segments.last().unwrap().resolve(ast::Resolution::Err);
+            return Ty::new_error(self.tcx);
+        }
+
+        ty
+    }
+
+    fn ty_from_resolution(&self, resolution: &ast::Resolution, resolution_kind: ResolutionKind, span: Span) -> Ty<'tcx> {
+        let (ty, resolved_kind) = match resolution {
+            ast::Resolution::Local(local) => {
+                if self.lowering_mode == LoweringMode::Unbound {
+                    panic!("invalid Local Resolution in Unbound LoweringCtxt");
+                }
+                (self.locals[local], ResolutionKind::Value)
+            }
+            ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::ParamConst) =>
+                (self.tcx.type_of(*def_id), ResolutionKind::Value),
+            ast::Resolution::Def(def_id, DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy) =>
+                (self.tcx.type_of(*def_id), ResolutionKind::Type),
+            ast::Resolution::Primitive(sym) =>
+                (sym.get_primitive_ty(self.tcx).unwrap(), ResolutionKind::Type),
+            ast::Resolution::Err =>
+                return Ty::new_error(self.tcx),
+            ast::Resolution::Def(_, _) => panic!("invalid resolution for path"),
+        };
+
+        if resolved_kind != resolution_kind {
+            Message::error(format!("expected {resolution_kind}-like, but found {resolved_kind}-like"))
+                .at(span)
+                .push(self.diagnostics());
+            return Ty::new_error(self.tcx);
+        }
+
+        ty
+    }
+
+    fn lower_path(
+        &self,
+        path: &'tcx ast::Path<'tcx>,
+        resolution_kind: ResolutionKind
+    ) -> Ty<'tcx> {
+        // TODO: this is comparable to a path resolution at typecheck stage now
+        
+        let ty = if let Some(resolution) = path.resolution() {
+            self.ty_from_resolution(resolution, resolution_kind, path.segments.last().unwrap().span)
+        } else {
+            self.lower_path_in_context(path, resolution_kind)
+        };
+
+        ty
+    }
+
+    fn lower_ty(&self, ty: &'tcx ast::TypeExpr<'tcx>) -> Ty<'tcx> {
         match &ty.kind {
-            ast::TypeExprKind::Path(path) =>  self.lower_path(path),
+            ast::TypeExprKind::Path(path) =>  self.lower_path(path, ResolutionKind::Type),
             ast::TypeExprKind::Ref(ty) => {
                 let ty = self.lower_ty(ty);
                 Ty::new_refrence(self.tcx, ty)
@@ -1372,11 +1506,36 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             ast::ItemKind::Function(_) =>
                 Ty::new_function(tcx, def_id),
             ast::ItemKind::Enum(enm) => {
-                let variants = enm.variants.iter().map(|variant| {
+                let mut representation = None;
+                if let Some(repr) = enm.representation {
+                    let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
+                    let ty = ctxt.lower_ty(repr);
+                    if !matches!(ty, Ty(TyKind::Int(..) | TyKind::Char | TyKind::Float(..))) {
+                        Message::error(format!("representation for enum `{}` is not allowed to be of type {ty}", enm.ident.symbol))
+                            .at(repr.span)
+                            .note("allowed types are char, {integers} and {floats}")
+                            .push(tcx.diagnostics());
+                    } else {
+                        representation = Some(ty);
+                    }
+                }
+
+                let mut variants = vec![];
+                for variant in enm.variants {
                     let def_id = *variant.def_id.get().unwrap();
-                    type_ir::VariantDef { def: def_id, symbol: variant.name.symbol }
-                }).collect();
-                Ty::new_enum(tcx, type_ir::Enum::new(def_id, enm.ident.symbol, variants))
+                    let discriminant = variant
+                        .discriminant
+                        .map(|cnst| type_ir::Const::from_definition(tcx, *cnst.def_id.get().unwrap()))
+                        .map(|cnst| type_ir::VariantDescriminant::Uncalculated(cnst))
+                        .unwrap_or_default();
+                    variants.push(type_ir::VariantDef {
+                        def: def_id,
+                        symbol: variant.name.symbol,
+                        discriminant: Cell::new(discriminant)
+                    });
+                }
+
+                Ty::new_enum(tcx, type_ir::Enum::new(def_id, enm.ident.symbol, representation, variants))
             }
             ast::ItemKind::Struct(stc) => {
                 let fields = stc.fields.iter().map(|fdef| {
@@ -1388,7 +1547,7 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             },
             ast::ItemKind::GlobalVar(global) => {
                 if let Some(ty) = global.ty {
-                    let ctxt = LoweringCtxt::new(tcx);
+                    let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
                     return ctxt.lower_ty(ty);
                 }
                 todo!("ty-class global consts")
@@ -1399,9 +1558,10 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 panic!("resolved Err to Definiton")
         }
         ast::Node::FieldDef(field) => {
-            let ctx = LoweringCtxt::new(tcx);
+            let ctx = LoweringCtxt::new(tcx, LoweringMode::Unbound);
             ctx.lower_ty(&field.ty)
         }
+        ast::Node::Variant(..) => tcx.enum_variant(def_id).0,
         ast::Node::NestedConst(_nested) => {
             // FIXME: GenericArgs aren't supported at all currently,
             // making the only other place for a NestedConst ArrayCap,
@@ -1414,7 +1574,6 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 
 pub struct TypecheckResults<'tcx> {
     pub field_indices: HashMap<ast::NodeId, type_ir::FieldIdx>,
-    pub variant_translations: HashMap<ast::NodeId, type_ir::VariantIdx>,
     pub associations: HashMap<ast::NodeId, Ty<'tcx>>,
     pub locals: HashMap<ast::NodeId, Ty<'tcx>>,
     pub has_errors: bool
@@ -1507,9 +1666,37 @@ fn check_valid_intrinsic(
     true
 }
 
+pub fn enum_variant<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> (Ty<'tcx>, &'tcx type_ir::VariantDef) {
+    let node = tcx.node_by_def_id(def_id);
+    let ast::Node::Variant(variant) = node else {
+        panic!("non-variant definition in enum_variant")
+    };
+
+    let global_owners = tcx.resolutions.ast_info.global_owners.borrow();
+    let owner = &global_owners[node.node_id().owner];
+
+    let ast::Node::Item(enm @ ast::Item { kind: ast::ItemKind::Enum(_), .. }) = owner.node else {
+        panic!("non-enum owner for variant def")
+    };
+
+    let def_id = *variant.def_id.get().unwrap();
+    let ty = tcx.type_of(*enm.def_id.get().unwrap());
+
+    let Ty(TyKind::Enum(enm)) = ty else {
+        panic!("non-enum type for enum Node")
+    };
+
+    let variant = enm
+        .variants()
+        .find(|x| x.def == def_id)
+        .unwrap();
+
+    (ty, variant)
+}
+
 pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
     let node = tcx.node_by_def_id(def_id);
-    let ctxt = LoweringCtxt::new(tcx);
+    let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
 
     let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node else {
         panic!("non-function definition in fn_sig")

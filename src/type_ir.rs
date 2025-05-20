@@ -1,4 +1,5 @@
-use std::{any::TypeId, marker::Unsize, ops::Deref};
+use core::panic;
+use std::{any::TypeId, cell::Cell, fmt::Write, marker::Unsize, ops::Deref};
 
 use bytemuck::Pod;
 use index_vec::IndexVec;
@@ -188,6 +189,8 @@ impl<'tcx> Value<'tcx> {
             Ty(TyKind::Int(int, signed)) => (*int, *signed),
             Ty(TyKind::Bool) => (Integer::I8, false),
             Ty(TyKind::Char) => (Integer::I32, false),
+            Ty(TyKind::Enum(_enm)) => (Integer::I32, true), // FIXME: use data from layout query
+                                                           // here
             _ => {
                 panic!("from_integer_with_ty expects TyKind::Int, TyKind::Char or TyKind::Bool")
             }
@@ -352,7 +355,9 @@ impl<'tcx> Const<'tcx> {
     }
 
     fn zeroed(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Self {
-        let layout = tcx.layout_of(ty).unwrap();
+        let Ok(layout) = tcx.layout_of(ty) else {
+            return tcx.intern_const(ConstKind::Err);
+        };
         let data = tcx.arena.alloc_slice_fill_copy(layout.size.in_bytes as usize, 0u8);
         tcx.intern_const(ConstKind::Value(Value::from_array_with_ty(data, ty)))
     }
@@ -405,6 +410,9 @@ pub enum GlobalKind<'tcx> {
     Function {
         def: DefId
     },
+    EnumVariant {
+        def: DefId
+    },
     Static {
         def: DefId,
         initializer: Const<'tcx>
@@ -436,6 +444,7 @@ impl<'tcx> Global<'tcx> {
                     .unwrap_or_else(|| Const::zeroed(tcx, ty));
                 tcx.intern_global(GlobalKind::Static { def, initializer })
             }
+            ast::Node::Variant(..) => tcx.intern_global(GlobalKind::EnumVariant { def }),
             _ => panic!("unexpected Node {node:?} in Global::from_definition"),
         }
     }
@@ -472,6 +481,15 @@ impl<'tcx> std::fmt::Debug for Global<'tcx> {
 
                 write!(f, "{}", ident.symbol.get())
             }
+            Global(GlobalKind::EnumVariant { def }) => {
+                let xxx = context::with_tcx(|tcx| {
+                    let (ty, _) = tcx
+                        .expect("pretty-print IR Operand in valid TCX context")
+                        .enum_variant(*def);
+                    format!("<value> as {ty}")
+                });
+                f.write_str(&xxx)
+            },
             Global(GlobalKind::Indirect { allocation, .. }) =>
                 // TODO: maybe represent it's layout too
                 write!(f, "{:?}", allocation.escape_ascii())
@@ -479,40 +497,66 @@ impl<'tcx> std::fmt::Debug for Global<'tcx> {
     }
 }
 
-#[derive(Debug, Hash)]
-pub struct Enum {
+#[derive(Debug)]
+pub struct Enum<'tcx> {
     pub def: DefId,
     pub name: Symbol,
-    variants: IndexVec<VariantIdx, VariantDef>,
+    pub representation: Option<Ty<'tcx>>,
+    variants: Vec<VariantDef<'tcx>>,
 }
 
-impl Enum {
+impl<'tcx> Enum<'tcx> {
     pub fn new(
         def: DefId,
         name: Symbol,
-        variants: IndexVec<VariantIdx, VariantDef>,
+        representation: Option<Ty<'tcx>>,
+        variants: Vec<VariantDef<'tcx>>,
     ) -> Self {
-        Self { def, name, variants }
+        Self { def, name, representation, variants }
+    }
+
+    pub fn variants(&self) -> impl Iterator<Item = &VariantDef<'tcx>> {
+        self.variants.iter()
     }
 }
 
-impl PartialEq for Enum {
+impl<'tcx> std::hash::Hash for Enum<'tcx> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.def.hash(state);
+        self.name.hash(state);
+    }
+}
+
+impl<'tcx> PartialEq for Enum<'tcx> {
     fn eq(&self, other: &Self) -> bool {
         self.def == other.def
     }
 }
 
-impl Eq for Enum {}
+impl<'tcx> Eq for Enum<'tcx> {}
 
-#[derive(Debug, Hash)]
-pub struct VariantDef {
-    pub def: DefId,
-    pub symbol: Symbol
+#[derive(Default, Debug, Clone, Copy)]
+pub enum VariantDescriminant<'tcx> {
+    #[default]
+    Lazy,
+    Uncalculated(Const<'tcx>),
+    Calculated(i128),
 }
 
-index_vec::define_index_type! {
-    pub struct VariantIdx = u32;
-    IMPL_RAW_CONVERSIONS = true;
+#[derive(Debug)]
+pub struct VariantDef<'tcx> {
+    pub def: DefId,
+    pub symbol: Symbol,
+    pub discriminant: Cell<VariantDescriminant<'tcx>>
+}
+
+impl<'tcx> VariantDef<'tcx> {
+    pub fn discriminant(&self) -> i128 {
+        let VariantDescriminant::Calculated(calc) = self.discriminant.get() else {
+            panic!("uncalculated discriminant: call layout_of(enum) first")
+        };
+        calc
+    }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
@@ -524,7 +568,7 @@ pub enum TyKind<'tcx> {
     Int(Integer, bool),
     Float(Float),
     Adt(AdtDef<'tcx>),
-    Enum(Enum),
+    Enum(Enum<'tcx>),
     Refrence(Ty<'tcx>),
     Range(Ty<'tcx>, bool),
     Slice(Ty<'tcx>),
@@ -621,7 +665,7 @@ impl<'tcx> Ty<'tcx> {
         tcx.intern_ty(TyKind::Float(float))
     }
 
-    pub fn new_enum(tcx: TyCtxt<'tcx>, enm: Enum) -> Ty<'tcx> {
+    pub fn new_enum(tcx: TyCtxt<'tcx>, enm: Enum<'tcx>) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Enum(enm))
     }
 

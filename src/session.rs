@@ -74,14 +74,12 @@ impl Session {
         };
         let entry = parser::parse_file(&self, &self.input, &ast_info)?;
         let resolutions = resolve::resolve_from_entry(&self, entry, &ast_info);
-        println!("{:#?}", entry);
-
-        self.diagnostics().render();
 
         let providers = Providers {
             type_of: typecheck::type_of,
             typecheck: typecheck::typecheck,
             fn_sig: typecheck::fn_sig,
+            enum_variant: typecheck::enum_variant,
             build_ir: intermediate::build_ir,
             layout_of: type_ir::layout_of
         };

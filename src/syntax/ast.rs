@@ -258,12 +258,13 @@ impl<'ast> IntoNode<'ast> for SourceFile<'ast>  {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Item<'ast> {
     pub kind: ItemKind<'ast>,
     pub scope: Scope,
     pub span: Span,
-    pub node_id: NodeId
+    pub node_id: NodeId,
+    pub def_id: OnceCell<DefId>,
 }
 
 impl<'ast> IntoNode<'ast> for Item<'ast>  {

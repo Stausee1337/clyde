@@ -343,21 +343,6 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         // system instead of this match here (downcast to `LLVMConstValueConversion` or a better name
         // for this trait)
         match cnst {
-            /*Const(ConstKind::Definition(def)) => {
-                let node = self.tcx.node_by_def_id(*def);
-                let ll_value = if let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(..), .. }) = node {
-                    let function = self.cctxt.push_dependency(*def);
-                    ll::AnyValueEnum::FunctionValue(function)
-                } else {
-                    todo!("global items like static variables, etc")
-                };
-                let ty = self.tcx.type_of(*def);
-                let layout = self.tcx.layout_of(ty).unwrap();
-                Value {
-                    kind: ValueKind::Immediate(ll_value),
-                    layout
-                }
-            }*/
             Const(ConstKind::Value(value)) => {
                 let layout = self.tcx.layout_of(value.ty).unwrap();
                 let ll_ty = layout.llvm_type(self.cctxt);
@@ -404,7 +389,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         let global_value = if global.is_function() {
             self.module.get_function(name.get()).map(DependencyKind::Function)
         } else {
-            self.module.get_global(name.get()).map(DependencyKind::Value)
+            self.module.get_global(name.get()).map(DependencyKind::Global)
         };
 
         if let Some(global_value) = global_value {
@@ -415,23 +400,44 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             return self.cctxt.push_dependency(def, global.initializer(), Some(self.module));
         }
 
-        let name = global.get_name(self.tcx);
-        let type_ir::Global(type_ir::GlobalKind::Indirect { allocation, align, .. }) = global else {
-            unreachable!();
-        };
-        let llvm_ty = self.cctxt.context.i8_type().array_type(allocation.len() as u32);
+        match global {
+            type_ir::Global(type_ir::GlobalKind::Indirect { allocation, align, .. }) => {
+                let llvm_ty = self.cctxt.context.i8_type().array_type(allocation.len() as u32);
 
-        let global = self.module.add_global(llvm_ty, None, name.get());
-        global.set_initializer(&self.cctxt.create_array_value(&allocation));
-        global.set_alignment(align.in_bytes() as u32);
-        global.set_linkage(ll::Linkage::Private);
-        DependencyKind::Value(global)
+                let global = self.module.add_global(llvm_ty, None, name.get());
+                global.set_initializer(&self.cctxt.create_array_value(&allocation));
+                global.set_alignment(align.in_bytes() as u32);
+                global.set_linkage(ll::Linkage::Private);
+                DependencyKind::Global(global)
+            }
+            type_ir::Global(type_ir::GlobalKind::EnumVariant { def }) => {
+                let (ty, variant) = self.tcx.enum_variant(*def);
+                let layout = self.tcx.layout_of(ty).unwrap();
+                let llvm_ty = layout.llvm_type(self.cctxt).into_int_type();
+
+                let discriminant = variant.discriminant();
+                let type_ir::BackendRepr::Scalar(Scalar::Int(_, signed)) = layout.repr else { unreachable!() };
+                let llvm_discriminant = llvm_ty.const_int(discriminant as u64, signed);
+
+                DependencyKind::Const(llvm_discriminant.as_basic_value_enum())
+            }
+            _ => unreachable!()
+        }
     }
 
     /// Loads any global except for functions
     fn lower_global(&mut self, global: type_ir::Global<'tcx>) -> Value<'ll, 'tcx> { 
-        let DependencyKind::Value(value) = self.handle_dependency(global) else {
-            panic!("lower_global won't lower functions");
+        let value = match self.handle_dependency(global) {
+            DependencyKind::Global(value) => value,
+            DependencyKind::Const(value) => {
+                let ty = global.ty(self.tcx);
+                let layout = self.tcx.layout_of(ty).unwrap();
+                return Value {
+                    kind: ValueKind::Immediate(value),
+                    layout
+                };
+            }
+            DependencyKind::Function(..) => panic!("lower_global won't lower functions")
         };
         let ty = global.ty(self.tcx);
         let value = value.as_pointer_value();
@@ -1381,7 +1387,8 @@ struct DependencyData<'ll> {
 #[derive(Clone, Copy)]
 enum DependencyKind<'ll> {
     Function(ll::FunctionValue<'ll>),
-    Value(ll::GlobalValue<'ll>),
+    Global(ll::GlobalValue<'ll>),
+    Const(ll::BasicValueEnum<'ll>)
 }
 
 struct CodegenCtxt<'ll, 'tcx> {
@@ -1436,9 +1443,9 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
                 );
                 DependencyKind::Function(decl)
             }
-            DependencyKind::Value(global) => {
+            DependencyKind::Global(global) => {
                 if let Some(decl) = relative_module.get_global(mangled_name.get()) {
-                    return DependencyKind::Value(decl);
+                    return DependencyKind::Global(decl);
                 }
                 let llvm_type: ll::BasicTypeEnum<'ll> = global.get_value_type().force_into();
                 let decl = relative_module.add_global(
@@ -1449,8 +1456,9 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
                 decl.set_externally_initialized(true);
                 decl.set_linkage(ll::Linkage::External);
                 decl.set_alignment(global.get_alignment());
-                DependencyKind::Value(decl)
+                DependencyKind::Global(decl)
             }
+            cnst @ DependencyKind::Const(_) => cnst
         }
     }
 
@@ -1503,7 +1511,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
                 global.set_initializer(&self.create_array_value(value.as_bytes()));
                 global.set_linkage(ll::Linkage::External);
                 global.set_alignment(layout.align.in_bytes() as u32);
-                DependencyKind::Value(global)
+                DependencyKind::Global(global)
             }
             ast::Item { kind, .. } => panic!("{kind:?} items are invalid in push_dependency")
         };
@@ -1776,7 +1784,7 @@ impl Scalar {
 impl<'tcx> type_ir::Global<'tcx> {
     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
         match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) => {
+            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::EnumVariant { def } | type_ir::GlobalKind::Static { def, .. }) => {
                 let ast::Node::Item(item) = tcx.node_by_def_id(*def) else { unreachable!() };
                 item.get_name(tcx)
             }
@@ -1810,7 +1818,7 @@ impl<'tcx> type_ir::Global<'tcx> {
 
     fn ty(&self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
         match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
+            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::EnumVariant { def, .. } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
             type_ir::Global(type_ir::GlobalKind::Indirect { ty, .. }) => *ty
         }
     }

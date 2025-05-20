@@ -691,6 +691,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             kind,
             span,
             scope: this.currrent_item_scope,
+            def_id: OnceCell::new(),
             node_id
         }))
     }
@@ -2218,7 +2219,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             let ident = this.expect_any::<ast::Ident>()?;
             this.cursor.advance();
-            println!("parsed ident");
 
             let representation;
             if this.bump_if(Token![:]).is_some() {
@@ -2231,7 +2231,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             this.expect_one(Punctuator::LCurly)?;
             this.cursor.advance();
-            println!("parsed lcurly");
 
             let mut variants = vec![];
 
@@ -2262,7 +2261,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
                 Ok(())
             });
-            println!("parsed body, {:?}", this.cursor.current());
             let end = this.cursor.span();
             this.cursor.advance();
 

@@ -179,7 +179,7 @@ impl TFGRib {
         site: NodeId,
         scope: ast::Scope,
         resolution: &mut ResolutionState
-    ) {
+    ) -> ast::DefId {
         let declaration = Declaration {
             scope,
             site: resolution.declarations.push(Definition {
@@ -189,8 +189,10 @@ impl TFGRib {
             kind,
             span: name.span
         };
-        resolution.items.push(declaration.site);
+        let site = declaration.site;
+        resolution.items.push(site);
         self.define_with_declaration(name.symbol, declaration, resolution.diagnostics);
+        site
     }
 
     // FIXME: `define_with_declaration` and `define_aliased_module` share common code, so this
@@ -498,9 +500,9 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
         modules
     }
 
-    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: NodeId, scope: ast::Scope) {
+    fn define(&mut self, kind: DefinitionKind, name: ast::Ident, site: NodeId, scope: ast::Scope) -> ast::DefId {
         let rib = self.ribs.last_mut().expect(".define neeeds to be called in valid TFGRib");
-        rib.define(kind, name, site, scope, self.resolution);
+        rib.define(kind, name, site, scope, self.resolution)
     }
 
     fn declare(&mut self, node: NodeId, kind: DefinitionKind) -> ast::DefId {
@@ -544,32 +546,36 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                 self.define(DefinitionKind::ParamTy, name, param.node_id, ast::Scope::Export),
             ast::GenericParamKind::Const(name, _) => 
                 self.define(DefinitionKind::ParamConst, name, param.node_id, ast::Scope::Export),
-        }
+        };
     }
 
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
         match &item.kind {
             ast::ItemKind::Struct(stc) => {
-                self.define(DefinitionKind::Struct, stc.ident, item.node_id, item.scope);
+                let site = self.define(DefinitionKind::Struct, stc.ident, item.node_id, item.scope);
+                let _ = item.def_id.set(site);
                 self.with_rib(item.node_id, |this| {
                     node_visitor::visit_slice(&stc.generics, |generic| this.visit_generic_param(generic));
                     node_visitor::visit_slice(stc.fields, |field_def| this.visit_field_def(field_def));
                 });
             }, 
             ast::ItemKind::Enum(en) => {
-                self.define(DefinitionKind::Enum, en.ident, item.node_id, item.scope);
+                let site = self.define(DefinitionKind::Enum, en.ident, item.node_id, item.scope);
+                let _ = item.def_id.set(site);
                 node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
             },
             ast::ItemKind::Function(function) => {
-                self.define(DefinitionKind::Function, function.ident, item.node_id, item.scope);
+                let site = self.define(DefinitionKind::Function, function.ident, item.node_id, item.scope);
+                let _ = item.def_id.set(site);
                 self.with_rib(item.node_id, |this| {
                     node_visitor::visit_fn(function, this);
                 });
             },
             ast::ItemKind::GlobalVar(global) => {
-                self.define(
+                let site = self.define( 
                     if global.constant {DefinitionKind::Const} else {DefinitionKind::Static},
                     global.ident, item.node_id, item.scope);
+                let _ = item.def_id.set(site);
                 node_visitor::visit_option(global.ty, |ty| self.visit_ty_expr(ty));
                 node_visitor::visit_option(global.init, |expr| self.visit_expr(expr));
             }
@@ -743,18 +749,24 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
     }
 
     fn resolve_path_segment(
-        &self,
+        &mut self,
         segments: &'tcx [ast::PathSegment<'tcx>],
         rib_stack: &[NodeId],
         in_local_space: bool
     ) -> Option<Vec<ValueModuleResolution>> {
-        if segments[0].generic_args.len() > 0 {
+        if let None = segments[0].ident {
+            self.visit_generic_argument(&segments[0].generic_args[0]);
             return None;
         }
 
         let mut flags = SearchFlags::all();
         if segments.len() > 1 {
             flags.remove(SearchFlags::VARIABLES);
+        }
+
+        if segments[0].generic_args.len() > 0 {
+            flags.remove(SearchFlags::VARIABLES);
+            flags.remove(SearchFlags::MODULES);
         }
 
         let ident = segments[0].ident.unwrap();
@@ -781,14 +793,21 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
             results.push(ValueModuleResolution::Value(Resolution::Primitive(ident.symbol)));
         }
 
+        if segments[0].generic_args.len() > 0 {
+            let resolution = results.get_resolution().unwrap_or(Resolution::Err);
+            segments[0].resolve(resolution);
+            return None;
+        }
+
         Some(results)
     }
 
-    fn resolve_path(&self, path: &'tcx ast::Path<'tcx>) -> Result<Vec<Resolution>, PathResolutionError> {
+    fn resolve_path(&mut self, path: &'tcx ast::Path<'tcx>) -> Result<Vec<Resolution>, PathResolutionError> {
         let mut node_id;
 
         let mut segments = path.segments;
-        let mut rib_stack: &[NodeId] = &self.tfg_ribs;
+        let tfg_ribs = self.tfg_ribs.clone();
+        let mut rib_stack: &[NodeId] = &tfg_ribs;
         let mut in_local_space = true;
 
         let mut prev: Option<ast::Ident> = None;
@@ -839,7 +858,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         Err(PathResolutionError::Barrier)
     }
 
-    fn resolve_path_in_space(&self, space: NameSpace, path: &'tcx ast::Path<'tcx>) {
+    fn resolve_path_in_space(&mut self, space: NameSpace, path: &'tcx ast::Path<'tcx>) {
         let span = match self.resolve_path(path) {
             Ok(results) => {
                 if let Some(resolution) = results.select_priority(&[space]) {
@@ -855,9 +874,10 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         Message::error(format!("cannot find {space} `{name}`", name = path.segments.last().unwrap().ident.unwrap().symbol))
             .at(span)
             .push(self.resolution.diagnostics);
+        path.segments.last().unwrap().resolve(Resolution::Err);
     }
  
-    fn resolve_priority(&self, spaces: &[NameSpace], path: &'tcx ast::Path<'tcx>) {
+    fn resolve_priority(&mut self, spaces: &[NameSpace], path: &'tcx ast::Path<'tcx>) {
         let span = match self.resolve_path(path) {
             Ok(results) => {
                 if let Some(resolution) = results.select_priority(spaces) {
@@ -873,6 +893,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         Message::error(format!("cannot find {space} `{name}`", space = spaces[0], name = path.segments.last().unwrap().ident.unwrap().symbol))
             .at(span)
             .push(self.resolution.diagnostics);
+        path.segments.last().unwrap().resolve(Resolution::Err);
     }
 }
 

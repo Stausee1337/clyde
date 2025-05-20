@@ -569,7 +569,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             }
             ast::StmtKind::Block(ast_block) =>
                 self.cover_ast_block(block, ast_block),
-            ast::StmtKind::Item(_item) => todo!(),
+            ast::StmtKind::Item(_item) => block,
             ast::StmtKind::Err => block
         }
     }
@@ -1169,7 +1169,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::ExprKind::Path(path) => match path.resolution() {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
                     (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Function)) =>
+                Some(ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Variant)) =>
                     (block, Operand::Global(Global::from_definition(self.tcx, *def_id))),
                 Some(ast::Resolution::Def(_, DefinitionKind::Static)) => {
                     // FIXME: remove duplicaiton
