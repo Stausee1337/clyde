@@ -3,9 +3,10 @@ use std::{collections::VecDeque, fmt::Write, io, path::{Path, PathBuf}, rc::Rc, 
 
 use foldhash::quality::RandomState;
 use hashbrown::{self, HashMap, hash_map::Entry};
+use index_vec::IndexVec;
 use sha1::Digest;
 
-use crate::{diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, IntoNode, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, IntoNode, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
 use super::node_visitor::{self, Visitor};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1162,5 +1163,136 @@ pub fn resolve_from_entry<'tcx>(
     rpass.resolve(modules);
 
     resolution.results(entry.node_id)
+}
+
+pub struct ParentCollector {
+    owner: ast::OwnerId,
+    parent_stack: Vec<NodeId>,
+    nodes: IndexVec<ast::LocalId, Option<NodeId>>
+}
+
+impl ParentCollector {
+    fn new(owner: &ast::Owner) -> Self {
+        let mut nodes = IndexVec::new();
+        nodes.resize(owner.children.len(), None);
+
+        Self {
+            owner: owner.id,
+            parent_stack: vec![],
+            nodes
+        }
+    }
+
+    fn record_and_parent(&mut self, node_id: NodeId, f: impl FnOnce(&mut Self)) {
+        if node_id.owner == self.owner {
+            self.nodes[node_id.local] = self.parent_stack.last().map(|x| *x);
+        }
+        self.parent_stack.push(node_id);
+        f(self);
+        self.parent_stack.pop();
+    }
+
+    fn as_map(self) -> Result<ParentMap, NodeId> {
+        let nodes = self.nodes
+            .into_iter_enumerated()
+            .map(|(idx, parent_id)| {
+                let Some(parent_id) = parent_id else {
+                    return Err(idx);
+                };
+                Ok(parent_id)
+            })
+            .try_collect::<IndexVec<_, _>>();
+        nodes
+            .map(|nodes| ParentMap { nodes })
+            .map_err(|local| NodeId { local, owner: self.owner })
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for ParentCollector {
+    fn visit(&mut self, tree: &'tcx ast::SourceFile<'tcx>) {
+        self.record_and_parent(tree.node_id, |this| {
+            node_visitor::noop_visit(tree, this);
+        });
+    }
+
+    fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
+        self.record_and_parent(item.node_id, |this| {
+            if !matches!(item.kind, ast::ItemKind::Struct(..) | ast::ItemKind::Enum(..) | ast::ItemKind::Function(..)) || this.parent_stack.len() == 1 {
+                node_visitor::noop_visit_item_kind(&item.kind, this);
+            }
+        });
+    }
+ 
+    fn visit_stmt(&mut self, stmt: &'tcx ast::Stmt<'tcx>) {
+        self.record_and_parent(stmt.node_id, |this| {
+            node_visitor::noop_visit_stmt_kind(&stmt.kind, this);
+        });
+    }
+
+    fn visit_param(&mut self, param: &'tcx ast::Param<'tcx>) {
+        self.record_and_parent(param.node_id, |this| {
+            node_visitor::noop_visit_param(param, this);
+        });
+    }
+
+    fn visit_expr(&mut self, expr: &'tcx ast::Expr<'tcx>) {
+        self.record_and_parent(expr.node_id, |this| {
+            node_visitor::noop_visit_expr_kind(&expr.kind, this);
+        });
+    }
+
+    fn visit_generic_param(&mut self, param: &'tcx ast::GenericParam<'tcx>) {
+        self.record_and_parent(param.node_id, |this| {
+            node_visitor::noop_visit_generic_param_kind(&param.kind, this);
+        });
+    }
+
+    fn visit_ty_expr(&mut self, ty: &'tcx ast::TypeExpr<'tcx>) {
+        self.record_and_parent(ty.node_id, |this| {
+            node_visitor::noop_visit_ty_expr_kind(&ty.kind, this);
+        });
+    }
+
+    fn visit_field_def(&mut self, field_def: &'tcx ast::FieldDef<'tcx>) {
+        self.record_and_parent(field_def.node_id, |this| {
+            node_visitor::noop_visit_field_def(field_def, this);
+        });
+    }
+    
+    fn visit_variant_def(&mut self, variant_def: &'tcx ast::VariantDef<'tcx>) {
+        self.record_and_parent(variant_def.node_id, |this| {
+            node_visitor::noop_visit_variant_def(variant_def, this);
+        });
+    }
+
+    fn visit_nested_const(&mut self, cnst: &'tcx ast::NestedConst<'tcx>) {
+        self.record_and_parent(cnst.node_id, |this| {
+            node_visitor::noop_visit_nested_const(cnst, this);
+        });
+    }
+}
+
+pub struct ParentMap {
+    pub nodes: IndexVec<ast::LocalId, NodeId>
+}
+
+pub fn parent_map<'tcx>(tcx: TyCtxt<'tcx>, owner: ast::OwnerId) -> &'tcx ParentMap {
+    let owners = tcx.resolutions.ast_info.global_owners.borrow(); 
+
+    let owner = &owners[owner];
+    let mut collector = ParentCollector::new(owner);
+    match owner.node {
+        ast::Node::Item(item) => collector.visit_item(item),
+        ast::Node::SourceFile(source) => collector.visit(source),
+        _ => unreachable!("cannot be owner node")
+    }
+
+    match collector.as_map() {
+        Ok(map) => tcx.arena.alloc(map),
+        Err(node_id) => {
+            let node = tcx.get_node_by_id(node_id);
+            panic!("node {node:?} doesn't have a parent");
+        }
+    }
 }
 

@@ -81,7 +81,8 @@ impl Session {
             fn_sig: typecheck::fn_sig,
             enum_variant: typecheck::enum_variant,
             build_ir: intermediate::build_ir,
-            layout_of: type_ir::layout_of
+            layout_of: type_ir::layout_of,
+            parent_map: resolve::parent_map
         };
         let arena = bumpalo::Bump::new();
 

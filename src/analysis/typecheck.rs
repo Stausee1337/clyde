@@ -452,7 +452,6 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
                 true
             }
-            // ast::ExprKind::ShorthandEnum(..) => false,
             ast::ExprKind::Block(_) => true, // block is to complicated, so it's going to be matched
             ast::ExprKind::FunctionCall(..) | ast::ExprKind::TypeInit(..) |
             ast::ExprKind::Subscript(..) | ast::ExprKind::Field(..) |
@@ -1364,13 +1363,19 @@ impl<'tcx> LoweringCtxt<'tcx> {
             }
             prev = ident;
             match ty {
-                Ty(TyKind::Enum(enm)) => {                    
-                    let field = enm.variants().find(|def| def.symbol == ident.symbol);
+                Ty(TyKind::Enum(enm)) => {    
+                    let mut variant = None;
+                    for variant_id in &enm.variants {
+                        let (_, variant_def) = self.tcx.enum_variant(*variant_id);
+                        if variant_def.symbol == ident.symbol {
+                            variant = Some(variant_def);
+                        }
+                    }
 
-                    if let Some(variant) = field {
+                    if let Some(variant) = variant {
                         segment.resolve(ast::Resolution::Def(variant.def, DefinitionKind::Variant));
                     } else {
-                        Message::error(format!("can't find variant `{}` on enum {ty}", ident.symbol))
+                        Message::error(format!("can't find variant `{}` on enum `{ty}`", ident.symbol))
                             .at(ident.span)
                             .push(self.diagnostics());
                         segment.resolve(ast::Resolution::Err);
@@ -1510,30 +1515,21 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 if let Some(repr) = enm.representation {
                     let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
                     let ty = ctxt.lower_ty(repr);
-                    if !matches!(ty, Ty(TyKind::Int(..) | TyKind::Char | TyKind::Float(..))) {
+                    if !matches!(ty, Ty(TyKind::Int(..) | TyKind::Char)) {
                         Message::error(format!("representation for enum `{}` is not allowed to be of type {ty}", enm.ident.symbol))
                             .at(repr.span)
-                            .note("allowed types are char, {integers} and {floats}")
+                            .note("allowed types are char and {integers}")
                             .push(tcx.diagnostics());
+                        representation = Some(Ty::new_error(tcx));
                     } else {
                         representation = Some(ty);
                     }
                 }
 
-                let mut variants = vec![];
-                for variant in enm.variants {
-                    let def_id = *variant.def_id.get().unwrap();
-                    let discriminant = variant
-                        .discriminant
-                        .map(|cnst| type_ir::Const::from_definition(tcx, *cnst.def_id.get().unwrap()))
-                        .map(|cnst| type_ir::VariantDescriminant::Uncalculated(cnst))
-                        .unwrap_or_default();
-                    variants.push(type_ir::VariantDef {
-                        def: def_id,
-                        symbol: variant.name.symbol,
-                        discriminant: Cell::new(discriminant)
-                    });
-                }
+                let variants = enm.variants
+                    .iter()
+                    .map(|v| *v.def_id.get().unwrap())
+                    .collect::<Vec<_>>();
 
                 Ty::new_enum(tcx, type_ir::Enum::new(def_id, enm.ident.symbol, representation, variants))
             }
@@ -1562,11 +1558,37 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             ctx.lower_ty(&field.ty)
         }
         ast::Node::Variant(..) => tcx.enum_variant(def_id).0,
-        ast::Node::NestedConst(_nested) => {
-            // FIXME: GenericArgs aren't supported at all currently,
-            // making the only other place for a NestedConst ArrayCap,
-            // which is always nuint
-            tcx.basic_types.nuint
+        ast::Node::NestedConst(nested) => {
+            let parent_node_id = tcx.parent_of(nested.node_id);
+            let parent_node = tcx.get_node_by_id(parent_node_id);
+            match parent_node {
+                ast::Node::TypeExpr(ty) if let ast::TypeExprKind::Array(_) = ty.kind =>
+                    tcx.basic_types.nuint,
+                ast::Node::TypeExpr(ast::TypeExpr { kind: ast::TypeExprKind::Path(_path), .. })
+                    | ast::Node::Expr(ast::Expr { kind: ast::ExprKind::Path(_path), .. }) =>
+                    todo!("resolve path partially"),
+                ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(ast::Function { member_path: Some(_path), .. }), .. }) =>
+                    todo!("resolve path partially"),
+                ast::Node::Variant(_) => {
+                    let enum_node_id = tcx.parent_of(parent_node.node_id());
+                    let ast::Node::Item(item @ ast::Item { kind: ast::ItemKind::Enum(..), .. }) = tcx.get_node_by_id(enum_node_id) else {
+                        unreachable!("parent of Variant must be Enum")
+                    };
+
+                    let ty = tcx.type_of(*item.def_id.get().unwrap());
+
+                    let Ty(TyKind::Enum(enm)) = ty else {
+                        unreachable!("")
+                    };
+
+                    // FIXME: Use unknown int-type here (e.g. {integer}). Important is just to know
+                    // that this is an integer (or char alternatively) when trying to evaluate the
+                    // const and that the user-chosen signedness, not the exact size in case we
+                    // stil need to calculate
+                    enm.representation.unwrap_or(tcx.basic_types.long)
+                }
+                _ => unreachable!("TODO: ast::Node::Item()")
+            }
         }
         _ => panic!("only items can be declarations")
     }
@@ -1654,8 +1676,6 @@ fn check_valid_intrinsic(
         Ok(true)
     };
 
-    
-
     if let Ok(false) = closure() {
         Message::error(format!("intrinsic `{name}` doesn't match the expected signature"))
             .at(ident.span)
@@ -1666,30 +1686,32 @@ fn check_valid_intrinsic(
     true
 }
 
-pub fn enum_variant<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> (Ty<'tcx>, &'tcx type_ir::VariantDef) {
+pub fn enum_variant<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> (Ty<'tcx>, &'tcx type_ir::VariantDef<'tcx>) {
     let node = tcx.node_by_def_id(def_id);
     let ast::Node::Variant(variant) = node else {
         panic!("non-variant definition in enum_variant")
     };
 
-    let global_owners = tcx.resolutions.ast_info.global_owners.borrow();
-    let owner = &global_owners[node.node_id().owner];
+    let parent_node_id = tcx.parent_of(node.node_id());
+    let parent_node = tcx.get_node_by_id(parent_node_id);
 
-    let ast::Node::Item(enm @ ast::Item { kind: ast::ItemKind::Enum(_), .. }) = owner.node else {
+    let ast::Node::Item(enm @ ast::Item { kind: ast::ItemKind::Enum(_), .. }) = parent_node else {
         panic!("non-enum owner for variant def")
     };
 
-    let def_id = *variant.def_id.get().unwrap();
     let ty = tcx.type_of(*enm.def_id.get().unwrap());
 
-    let Ty(TyKind::Enum(enm)) = ty else {
-        panic!("non-enum type for enum Node")
-    };
-
-    let variant = enm
-        .variants()
-        .find(|x| x.def == def_id)
-        .unwrap();
+    let def_id = *variant.def_id.get().unwrap();
+    let discriminant = variant
+        .discriminant
+        .map(|cnst| type_ir::Const::from_definition(tcx, *cnst.def_id.get().unwrap()))
+        .map(|cnst| type_ir::VariantDescriminant::Uncalculated(cnst))
+        .unwrap_or_default();
+    let variant = tcx.arena.alloc(type_ir::VariantDef {
+        def: def_id,
+        symbol: variant.name.symbol,
+        discriminant: Cell::new(discriminant)
+    });
 
     (ty, variant)
 }

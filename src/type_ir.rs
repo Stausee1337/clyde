@@ -502,7 +502,7 @@ pub struct Enum<'tcx> {
     pub def: DefId,
     pub name: Symbol,
     pub representation: Option<Ty<'tcx>>,
-    variants: Vec<VariantDef<'tcx>>,
+    pub variants: Vec<DefId>,
 }
 
 impl<'tcx> Enum<'tcx> {
@@ -510,13 +510,9 @@ impl<'tcx> Enum<'tcx> {
         def: DefId,
         name: Symbol,
         representation: Option<Ty<'tcx>>,
-        variants: Vec<VariantDef<'tcx>>,
+        variants: Vec<DefId>,
     ) -> Self {
         Self { def, name, representation, variants }
-    }
-
-    pub fn variants(&self) -> impl Iterator<Item = &VariantDef<'tcx>> {
-        self.variants.iter()
     }
 }
 
@@ -1226,6 +1222,9 @@ impl<'tcx> Layout<'tcx> {
 pub enum LayoutError {
     /// The Ty was erroneous to begin with (TyKind::Error), no sensible layout can be computed
     Erroneous,
+    /// A struct is too big for the backend to handle, or an enum has to many variants for the
+    /// representation chosen
+    TooBig,
     /// The Ty's layout is cyclic: Ty contains itself without any indirection
     Cyclic
 }
@@ -1361,6 +1360,101 @@ impl<'tcx> LayoutCtxt<'tcx> {
         ))
     }
 
+    fn layout_for_enum(&self, enm: &'tcx Enum<'tcx>) -> Result<Layout<'tcx>, LayoutError> {
+        if let Some(Ty(TyKind::Err)) = enm.representation {
+            return Err(LayoutError::Erroneous);
+        }
+        let mut prev_discriminant: i128 = 0;
+        let mut min_discriminant = i128::MAX;
+        let mut max_discriminant = i128::MIN;
+        let mut erroneous = false;
+        for variant_id in &enm.variants {
+            let (_, variant) = self.tcx.enum_variant(*variant_id);
+
+            let discriminant = match variant.discriminant.get() {
+                VariantDescriminant::Lazy => prev_discriminant + 1, 
+                VariantDescriminant::Uncalculated(cnst) if let Const(ConstKind::Err) = cnst => {
+                    erroneous = true;
+                    continue;
+                }
+                VariantDescriminant::Uncalculated(cnst) => {
+                    cnst.downcast_unsized::<dyn ToPrimitive>()
+                        .unwrap()
+                        .to_i128()
+                        .unwrap()
+                }
+                VariantDescriminant::Calculated(..) => unreachable!()
+            };
+            variant.discriminant.set(VariantDescriminant::Calculated(discriminant));
+            min_discriminant = min_discriminant.min(discriminant);
+            max_discriminant = max_discriminant.max(discriminant);
+
+            prev_discriminant = discriminant;
+        }
+        if erroneous {
+            return Err(LayoutError::Erroneous);
+        }
+
+        let repr = match enm.representation {
+            Some(repr) => {
+                let layout = self.tcx.layout_of(repr)?;
+                let BackendRepr::Scalar(Scalar::Int(int, signed)) = layout.repr else {
+                    unreachable!()
+                };
+
+                if min_discriminant < 0 && !signed {
+                    let ast::Node::Item(item) = self.tcx.node_by_def_id(enm.def) else { unreachable!() };
+                    Message::error(format!("some variants of enum `{}` have negative discriminats", enm.name))
+                        .at(item.span)
+                        .note(format!("specifiy a signed represenation, using `enum {}: <type>`", enm.name))
+                        .push(self.tcx.diagnostics());
+                    return Err(LayoutError::TooBig);
+                }
+                
+                let fit_fn = |value: i128| {
+                    if signed {
+                        Integer::fit_signed(value).unwrap()
+                    } else {
+                        Integer::fit_unsigned(value as u64)
+                    }
+                };
+
+                let min_size = fit_fn(min_discriminant).size(self).max(fit_fn(max_discriminant).size(self));
+                if int.size(self) < min_size {
+                    let ast::Node::Item(item) = self.tcx.node_by_def_id(enm.def) else { unreachable!() };
+                    Message::error(format!("all variants in enum `{}` don't fit into representation of {repr}", enm.name))
+                        .at(item.span)
+                        .note(format!("specifiy a bigger represenation, using `enum {}: <type>`", enm.name))
+                        .push(self.tcx.diagnostics());
+                    return Err(LayoutError::TooBig);
+                }
+
+                repr
+            }
+            None if enm.variants.len() > 0 => {
+                let a = Integer::fit_signed(min_discriminant).unwrap();
+                let Some(b) = Integer::fit_signed(max_discriminant) else {
+                    let ast::Node::Item(item) = self.tcx.node_by_def_id(enm.def) else { unreachable!() };
+                    Message::error(format!("variants of enum `{}` don't fit into a sigend integer", enm.name))
+                        .at(item.span)
+                        .note(format!("specifiy a specific represenation, using `enum {}: <type>`", enm.name))
+                        .push(self.tcx.diagnostics());
+                    return Err(LayoutError::TooBig);
+                };
+                let size = a.size(self).max(b.size(self));
+
+                if size <= Integer::I32.size(self) {
+                    self.tcx.basic_types.int
+                } else {
+                    Ty::new_int(self.tcx, Integer::I64, true)
+                }
+            }
+            None => self.tcx.basic_types.int
+        };
+
+        Ok(self.tcx.layout_of(repr)?.layout)
+    }
+
     fn calculate_layout_for_ty(&self, ty: Ty<'tcx>) -> Result<TyLayoutTuple<'tcx>, LayoutError> {
         let layout = match ty {
             Ty(TyKind::Void) | Ty(TyKind::Never) =>
@@ -1377,14 +1471,12 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 self.tcx.layout_of(self.tcx.basic_types.uint)?.layout,
             Ty(TyKind::String) =>
                 self.layout_for_array_like(false),
-
             Ty(TyKind::Int(integer, signedness)) =>
                 self.layout_for_integer(*integer, *signedness),
             Ty(TyKind::Float(float)) =>
                 self.layout_for_float(*float),
-            Ty(TyKind::Enum(_)) =>
-                // FIXME: ensure validity, respect user prefrences and make sure everything fits
-                self.layout_for_integer(Integer::I32, true),
+            Ty(TyKind::Enum(enm)) => 
+                self.layout_for_enum(enm)?,
             Ty(TyKind::Adt(adt)) => {
                 match adt {
                     AdtDef(AdtKind::Struct(strct)) => {

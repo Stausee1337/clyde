@@ -1784,9 +1784,13 @@ impl Scalar {
 impl<'tcx> type_ir::Global<'tcx> {
     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
         match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::EnumVariant { def } | type_ir::GlobalKind::Static { def, .. }) => {
+            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) => {
                 let ast::Node::Item(item) = tcx.node_by_def_id(*def) else { unreachable!() };
                 item.get_name(tcx)
+            }
+            type_ir::Global(type_ir::GlobalKind::EnumVariant { def }) => {
+                let (_, variant) = tcx.enum_variant(*def);
+                variant.symbol
             }
             type_ir::Global(type_ir::GlobalKind::Indirect { allocation, .. }) => {
                 let id = allocation.as_ptr().addr();

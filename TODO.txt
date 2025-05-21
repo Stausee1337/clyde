@@ -16,24 +16,26 @@ Ordered (by priority):
 √ Codegen
     √ Refactor Consts
     √ Parser Recovery and Tree-like AST Node ownership
-- Directives (`#include`, etc ...)
+√ Directives (`#include`, etc ...)
     √ Files and Imports AND propper Name mangling for clyde functions
     √ `#c_call` for non-mangled names
-    - `#compiler_intrinsic` calls
-    - Behavioural tests (and testing suite) to have some foundational test cases
+    √ `#compiler_intrinsic` calls
 - Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
-    - Namespaces
-    - Enums
+    √ Namespaces
+    √ Enums
+    - Extended Name mangling
 - Generic Functions and Adts
+    - Methods
+    - Overloaded Functions
+    - deeply type dependent path resolval
     - Monomorphization
-    - Nullabilties (Optional<T> modeled as T? and null == None)
-    - Default initialization and Discriminats
-- Methods
-- Overloaded Functions
+    - Behavioural tests (and testing suite) to have some foundational test cases
 - Operator Overloading
 
 Unodered (Ideas for implementations):
-- Switch stmts using `if <expr> == {`
+- Patterns
+    - Switch stmts using `if <expr> == {`
+    - Nullabilties (Optional<T> modeled as T? and null == None)
 - Type Inference variables
     - enabling floating point types f32/f64
 - Parser hardening (better error handling + recovery)
@@ -47,7 +49,8 @@ Unodered (Ideas for implementations):
     - `#if` Polymorphism (with narrowing using if-stmts)
 - Duck-Typing polymorphism `fnname<T: ~LooksLike>(T similar)`
 - Error handling `int mayerror(...) !MyError`
-- Moving values (Borrowck), Refrences, RAII (Destructors)
+- Moving values (Borrowck), Refrences, RAII (Destructors) 
+    - Default initialization and Discriminats
 - Dead Code dectection and warnings
 
 

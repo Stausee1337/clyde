@@ -3,7 +3,7 @@ use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHashe
 use foldhash::quality::FixedState;
 use hashbrown::hash_table::{HashTable, Entry as TableEntry, VacantEntry, OccupiedEntry};
 
-use crate::{analysis::{intermediate, resolve::ResolutionResults, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::{ast::{self, DefId, NodeId}, symbol::Symbol}, target, type_ir};
+use crate::{analysis::{intermediate, resolve::{self, ResolutionResults}, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::{ast::{self, DefId, NodeId}, symbol::Symbol}, target, type_ir};
 
 pub struct GlobalCtxt<'tcx> {
     pub resolutions: ResolutionResults<'tcx>,
@@ -108,6 +108,11 @@ impl<'tcx> TyCtxt<'tcx> {
         def.kind
     }
 
+    pub fn parent_of(self, node: NodeId) -> ast::NodeId {
+        let map = self.parent_map(node.owner);
+        map.nodes[node.local]
+    }
+
     pub fn module_info(self, module: &'tcx ast::SourceFile<'tcx>) -> ModuleInfo {
         let path = &self.resolutions.node_to_path_map[&module.node_id];
         let file_name = path.file_name().unwrap();
@@ -144,11 +149,13 @@ macro_rules! define_queries {
 }
 
 define_queries! {
-    fn type_of(key: ast::DefId) -> type_ir::Ty<'tcx>;
-    fn typecheck(key: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
-    fn fn_sig(key: ast::DefId) -> type_ir::Signature<'tcx>;
-    fn build_ir(key: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
-    fn enum_variant(id: DefId) -> (type_ir::Ty<'tcx>, &'tcx type_ir::VariantDef<'tcx>);
+    fn type_of(id: ast::DefId) -> type_ir::Ty<'tcx>;
+    fn typecheck(id: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
+    fn fn_sig(id: ast::DefId) -> type_ir::Signature<'tcx>;
+    fn build_ir(id: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
+    fn enum_variant(id: ast::DefId) -> (type_ir::Ty<'tcx>, &'tcx type_ir::VariantDef<'tcx>);
+
+    fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
 
     #[handle_cycle_error]
     fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TyLayoutTuple<'tcx>, type_ir::LayoutError>;

@@ -3,7 +3,9 @@ use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Fun
 
 
 pub trait Visitor<'tcx>: Sized {
-    fn visit(&mut self, tree: &'tcx SourceFile<'tcx>);
+    fn visit(&mut self, tree: &'tcx SourceFile<'tcx>) {
+        noop_visit(tree, self);
+    }
 
     fn visit_item(&mut self, item: &'tcx Item<'tcx>) {
         noop_visit_item_kind(&item.kind, self);
@@ -17,37 +19,22 @@ pub trait Visitor<'tcx>: Sized {
         noop_visit_param(param, self);
     }
 
-    fn visit_field_def(&mut self, field_def: &'tcx FieldDef<'tcx>) {
-        self.visit_ty_expr(&field_def.ty);
-        visit_option(field_def.default_init, |default_init| self.visit_expr(default_init));
-    }
-    
-    fn visit_variant_def(&mut self, variant_def: &'tcx VariantDef<'tcx>) {
-        visit_option(variant_def.discriminant, |sset| self.visit_nested_const(sset));
-    }
-
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
         noop_visit_expr_kind(&expr.kind, self);
     }
 
-    fn visit_nested_const(&mut self, expr: &'tcx NestedConst<'tcx>) {
-        self.visit_expr(&expr.expr);
-    }
-
     fn visit_argument(&mut self, arg: &'tcx FunctionArgument<'tcx>) {
-        noop_visit_argument(arg, self);
+        match arg {
+            FunctionArgument::Direct(expr) => self.visit_expr(expr),
+            FunctionArgument::Keyword(_, expr) => self.visit_expr(expr)
+        }
     }
 
     fn visit_generic_argument(&mut self, arg: &'tcx GenericArgument<'tcx>) {
-        noop_visit_generic_argument(arg, self);
-    }
-
-    fn visit_type_init(&mut self, init: &'tcx TypeInitKind<'tcx>) {
-        match init {
-            TypeInitKind::Field(_, expr) =>
-                self.visit_expr(expr),
-            TypeInitKind::Direct(expr) =>
-                self.visit_expr(expr)
+        match &arg.kind {
+            GenericArgumentKind::Ty(expr) => self.visit_ty_expr(expr),
+            GenericArgumentKind::Expr(expr) => self.visit_nested_const(expr),
+            GenericArgumentKind::Literal(cnst) => self.visit_literal(cnst),
         }
     }
 
@@ -59,12 +46,27 @@ pub trait Visitor<'tcx>: Sized {
         noop_visit_ty_expr_kind(&ty.kind, self);
     }
 
-    fn visit_block(&mut self, block: &'tcx Block<'tcx>) {
-        visit_slice(&block.stmts, |stmt| self.visit_stmt(stmt));
+    fn visit_field_def(&mut self, field_def: &'tcx FieldDef<'tcx>) {
+        noop_visit_field_def(field_def, self);
+    }
+    
+    fn visit_variant_def(&mut self, variant_def: &'tcx VariantDef<'tcx>) {
+        noop_visit_variant_def(variant_def, self);
     }
 
-    fn visit_literal(&mut self, cnst: &'tcx Literal) {
-        noop(cnst);
+    fn visit_nested_const(&mut self, cnst: &'tcx NestedConst<'tcx>) {
+        noop_visit_nested_const(cnst, self);
+    }
+
+    fn visit_type_init(&mut self, init: &'tcx TypeInitKind<'tcx>) {
+        match init {
+            TypeInitKind::Field(_, expr) => self.visit_expr(expr),
+            TypeInitKind::Direct(expr) => self.visit_expr(expr)
+        }
+    }
+
+    fn visit_block(&mut self, block: &'tcx Block<'tcx>) {
+        visit_slice(&block.stmts, |stmt| self.visit_stmt(stmt));
     }
 
     fn visit_path(&mut self, path: &'tcx Path<'tcx>) {
@@ -73,6 +75,10 @@ pub trait Visitor<'tcx>: Sized {
 
     fn visit_path_segment(&mut self, segment: &'tcx PathSegment<'tcx>) {
         visit_slice(segment.generic_args, |arg| self.visit_generic_argument(arg));
+    }
+
+    fn visit_literal(&mut self, cnst: &'tcx Literal) {
+        noop(cnst);
     }
 
     fn visit_control_flow(&mut self, control_flow: &'tcx ControlFlow) {
@@ -224,23 +230,27 @@ pub fn noop_visit_ty_expr_kind<'tcx, T: Visitor<'tcx>>(ty_kind: &'tcx TypeExprKi
     }
 }
 
-pub fn noop_visit_argument<'tcx, T: Visitor<'tcx>>(arg: &'tcx FunctionArgument<'tcx>, vis: &mut T) {
-    match arg {
-        FunctionArgument::Direct(expr) => vis.visit_expr(expr),
-        FunctionArgument::Keyword(_, expr) => vis.visit_expr(expr)
-    }
-}
-
-pub fn noop_visit_generic_argument<'tcx, T: Visitor<'tcx>>(arg: &'tcx GenericArgument<'tcx>, vis: &mut T) {
-    match &arg.kind {
-        GenericArgumentKind::Ty(expr) => vis.visit_ty_expr(expr),
-        GenericArgumentKind::Expr(expr) => vis.visit_nested_const(expr),
-        GenericArgumentKind::Literal(cnst) => vis.visit_literal(cnst),
-    }
+pub fn noop_visit<'tcx, T: Visitor<'tcx>>(tree: &'tcx SourceFile<'tcx>, vis: &mut T) {
+    visit_slice(tree.items, |item| vis.visit_item(item));
 }
 
 pub fn noop_visit_param<'tcx, T: Visitor<'tcx>>(param: &'tcx Param<'tcx>, vis: &mut T) {
     vis.visit_ty_expr(&param.ty);
 }
 
-fn noop<T>(_v: T) {}
+pub fn noop_visit_field_def<'tcx, T: Visitor<'tcx>>(field_def: &'tcx FieldDef<'tcx>, vis: &mut T) {
+    vis.visit_ty_expr(&field_def.ty);
+    visit_option(field_def.default_init, |default_init| vis.visit_expr(default_init));
+}
+
+pub fn noop_visit_variant_def<'tcx, T: Visitor<'tcx>>(variant_def: &'tcx VariantDef<'tcx>, vis: &mut T) {
+    visit_option(variant_def.discriminant, |sset| vis.visit_nested_const(sset));
+}
+
+pub fn noop_visit_nested_const<'tcx, T: Visitor<'tcx>>(cnst: &'tcx NestedConst<'tcx>, vis: &mut T) {
+    vis.visit_expr(&cnst.expr);
+}
+
+
+
+pub fn noop<T>(_v: T) {}
