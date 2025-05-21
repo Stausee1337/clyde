@@ -829,6 +829,15 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             return Ok(());
         }
 
+        if Token![::=].matches(current) && did_expect(Token![=]) {
+            message.at(current.span).push(self.diagnostics);
+            return Ok(());
+        }
+        if Token![=].matches(current) && did_expect(Token![::=]) {
+            message.at(current.span).push(self.diagnostics);
+            return Ok(());
+        }
+
         let skipped_tree;
         match current.kind {
             TokenKind::Punctuator(Punctuator::LParen) => {
@@ -2243,17 +2252,18 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
                     let discriminant;
                     let end;
-                    if this.bump_if(Token![=]).is_some() {
+                    this.expect_either(&[Token![;], Token![::=]])?;
+                    if this.bump_if(Token![::=]).is_some() || this.bump_if(Token![=]).is_some() {
                         let expr = this.parse_expr(Restrictions::empty())
                             .unwrap_or_else(|span| this.make_expr(ast::ExprKind::Err, span));
                         let expr = this.make_nested_const(expr);
                         end = expr.span;
                         discriminant = Some(expr);
+                        this.expect_one(Token![;])?;
                     } else {
                         end = name.span;
                         discriminant = None;
                     }
-                    this.expect_one(Token![;])?;
 
                     let span = Span::interpolate(start, end);
                     this.cursor.advance();

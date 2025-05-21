@@ -20,16 +20,16 @@ Ordered (by priority):
     √ Files and Imports AND propper Name mangling for clyde functions
     √ `#c_call` for non-mangled names
     √ `#compiler_intrinsic` calls
-- Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
+√ Complex Paths (Parsing + Resolving): `Path` will replace `Name` completely
     √ Namespaces
     √ Enums
-    - Extended Name mangling
 - Generic Functions and Adts
+    - Extended Name mangling
     - Methods
     - Overloaded Functions
     - deeply type dependent path resolval
     - Monomorphization
-    - Behavioural tests (and testing suite) to have some foundational test cases
+- Behavioural tests (and testing suite) to have some foundational test cases
 - Operator Overloading
 
 Unodered (Ideas for implementations):
@@ -38,7 +38,6 @@ Unodered (Ideas for implementations):
     - Nullabilties (Optional<T> modeled as T? and null == None)
 - Type Inference variables
     - enabling floating point types f32/f64
-- Parser hardening (better error handling + recovery)
 - Mutabilities (const/mutable variables, ptrs, etc ...)
 - Complex Syntax Extensions 
     - Macros (calls to `#expand` fns in all sorts of places)
