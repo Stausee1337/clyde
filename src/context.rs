@@ -92,6 +92,12 @@ impl<'tcx> Deref for TyCtxt<'tcx> {
 }
 
 impl<'tcx> TyCtxt<'tcx> {
+    pub fn owner_node(self, node_id: NodeId) -> ast::Node<'tcx> {
+        let global_owners = self.resolutions.ast_info.global_owners.borrow();
+        let owner = &global_owners[node_id.owner];
+        owner.node
+    }
+
     pub fn get_node_by_id(self, node_id: NodeId) -> ast::Node<'tcx> {
         let global_owners = self.resolutions.ast_info.global_owners.borrow();
         let owner = &global_owners[node_id.owner];
@@ -110,7 +116,7 @@ impl<'tcx> TyCtxt<'tcx> {
 
     pub fn parent_of(self, node: NodeId) -> ast::NodeId {
         let map = self.parent_map(node.owner);
-        map.nodes[node.local]
+        map.nodes[node.local].expect("tcx.parent_of(..) executed on dead node")
     }
 
     pub fn module_info(self, module: &'tcx ast::SourceFile<'tcx>) -> ModuleInfo {

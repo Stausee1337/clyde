@@ -1,17 +1,18 @@
 
 enum OpenMode {
-    Reading,
-    Writing
+    Reading;
+    Writing;
 }
 
 struct Stmt {
     enum StmtKind {
-        Expr,
-        Block,
+        Expr;
+        Block;
     }
 
     Span span;
     NodeId node_id;
+
 #if StmtKind kind == {
     ::Expr =>
         using Expr *expr,
@@ -20,30 +21,21 @@ struct Stmt {
 }
 }
 
-/*union Stmt {
-#switch enum #infer kind {
-    #case ::Expr => using Expr expr,
-    #case ::Block => using Block block,
-}
-    Span span;
-    NodeId node_id;
-}*/
-
 struct Vector2 {
     byte x;
     byte y;
 }
 
-void exit(int code);
-void println(str message);
-(int, int) file_open(str path, OpenMode mode);
+void exit(int code) #link;
+void println(str message) #link;
+tuple<int, int> file_open(str path, OpenMode mode) #link;
 
-nuint len(str slice[]) {
-    var slice = transmute((nuint, void*))slice;
+nuint len(string[] slice) {
+    var (data, len) = to_raw_parts(slice);
     return slice.0;
 }
 
-int main(str argv[]) {
+int main(string[] argv) {
     nuint idx = 0;
     file_open("", ::Reading);
     for arg in argv {

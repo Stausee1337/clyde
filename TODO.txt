@@ -24,6 +24,7 @@ Ordered (by priority):
     √ Namespaces
     √ Enums
 - Generic Functions and Adts
+    - Simple non-inferred instatiation
     - Extended Name mangling
     - Methods
     - Overloaded Functions

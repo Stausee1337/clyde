@@ -555,6 +555,12 @@ impl<'tcx> VariantDef<'tcx> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamTy {
+    pub index: usize,
+    pub symbol: Symbol
+}
+
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum TyKind<'tcx> {
     Bool,
@@ -572,6 +578,7 @@ pub enum TyKind<'tcx> {
     Tuple(&'tcx [Ty<'tcx>]),
     DynamicArray(Ty<'tcx>),
     Function(DefId),
+    Param(ParamTy),
     Never,
     Err
 }
@@ -616,6 +623,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             // TODO: query function name and display it here
             TyKind::Function(_) => write!(f, "function"),
             TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
+            TyKind::Param(param_ty) => write!(f, "{}", param_ty.symbol),
             TyKind::Tuple(tys) => {
                 f.write_str("tuple<")?;
                 for (idx, ty) in tys.iter().enumerate() {
@@ -681,6 +689,13 @@ impl<'tcx> Ty<'tcx> {
         tcx.intern_ty(TyKind::Tuple(tys))
     }
 
+    pub fn new_param(tcx: TyCtxt<'tcx>, symbol: Symbol, index: usize) -> Ty<'tcx> {
+        tcx.intern_ty(TyKind::Param(ParamTy {
+            symbol,
+            index
+        }))
+    }
+
     /// Searches slice types for bendable types (Never, Err)
     /// while preferring Err over Never
     pub fn with_bendable(types: &[Ty<'tcx>]) -> Option<Ty<'tcx>> {
@@ -739,6 +754,7 @@ impl Symbol {
             sym::string => true,
             sym::float => true,
             sym::double => true,
+            sym::tuple => true,
             _ => false
         }
     }
@@ -1225,6 +1241,9 @@ pub enum LayoutError {
     /// A struct is too big for the backend to handle, or an enum has to many variants for the
     /// representation chosen
     TooBig,
+    /// For the type provided no sensible layout can be computed as it is not specific. This can
+    /// happen for `Param` or `Infer` types.
+    Inspecific,
     /// The Ty's layout is cyclic: Ty contains itself without any indirection
     Cyclic
 }
@@ -1546,6 +1565,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     Fields::Struct { fields: IndexVec::new() },
                     BackendRepr::Memory
                 ),
+            Ty(TyKind::Param(_)) => return Err(LayoutError::Inspecific),
             Ty(TyKind::Err) => return Err(LayoutError::Erroneous),
         };
         Ok(TyLayoutTuple { ty, layout })

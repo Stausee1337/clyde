@@ -66,6 +66,19 @@ impl<'ast> Node<'ast> {
         }
     }
 
+    pub fn generics(self) -> &'ast [&'ast GenericParam<'ast>] {
+        let Node::Item(item) = self else {
+            panic!("node.generics() called for {self:?}");
+        };
+
+        match item.kind {
+            ItemKind::Function(func) => func.sig.generics,
+            ItemKind::Struct(strct) => strct.generics,
+            _ => unreachable!("item {item:?} does not have generics")
+        }
+
+    }
+
     /*pub fn span(self) -> Span {
         match self {
             Node::Expr(expr) => expr.span,

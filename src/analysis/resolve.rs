@@ -31,9 +31,9 @@ impl TryFrom<DefinitionKind> for NameSpace {
     fn try_from(value: DefinitionKind) -> Result<Self, ()> {
         use DefinitionKind as D;
         Ok(match value {
-            D::Struct | D::Enum => NameSpace::Type,
+            D::Struct | D::Enum | D::ParamTy => NameSpace::Type,
             D::Function => NameSpace::Function,
-            D::Static | D::Const => NameSpace::Variable,
+            D::Static | D::Const | D::ParamConst => NameSpace::Variable,
             _ => return Err(())
         })
     }
@@ -753,10 +753,14 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         &mut self,
         segments: &'tcx [ast::PathSegment<'tcx>],
         rib_stack: &[NodeId],
+        hit_a_barrier: bool,
         in_local_space: bool
     ) -> Option<Vec<ValueModuleResolution>> {
-        if let None = segments[0].ident {
-            self.visit_generic_argument(&segments[0].generic_args[0]);
+        if matches!(segments[0].ident, None) || hit_a_barrier {
+            let segment = &segments[0];
+            for arg in segment.generic_args {
+                self.visit_generic_argument(arg);
+            }
             return None;
         }
 
@@ -795,8 +799,12 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         }
 
         if segments[0].generic_args.len() > 0 {
+            let segment = &segments[0];
             let resolution = results.get_resolution().unwrap_or(Resolution::Err);
-            segments[0].resolve(resolution);
+            segment.resolve(resolution);
+            for arg in segment.generic_args {
+                self.visit_generic_argument(arg);
+            }
             return None;
         }
 
@@ -810,9 +818,18 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         let tfg_ribs = self.tfg_ribs.clone();
         let mut rib_stack: &[NodeId] = &tfg_ribs;
         let mut in_local_space = true;
+        let mut hit_a_barrier = false;
 
         let mut prev: Option<ast::Ident> = None;
-        while let Some(results) = self.resolve_path_segment(segments, rib_stack, in_local_space) {
+        while segments.len() > 0 {
+            let Some(results) = self.resolve_path_segment(segments, rib_stack, hit_a_barrier, in_local_space) else {
+                hit_a_barrier = true;
+                prev = segments[0].ident;
+                segments = &segments[1..];
+                in_local_space = false;
+                continue;
+            };
+
             if segments.len() > 1 {
                 if let Some(module) = results.get_module() {
                     node_id = module.map_err(|_| PathResolutionError::Emitted)?;
@@ -868,7 +885,11 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
                 };
                 path.segments.last().unwrap().span
             }
-            Err(PathResolutionError::Emitted) | Err(PathResolutionError::Barrier) => return,
+            Err(PathResolutionError::Emitted) => {
+                path.segments.last().unwrap().resolve(Resolution::Err);
+                return;
+            }
+            Err(PathResolutionError::Barrier) => return,
             Err(PathResolutionError::End(span)) => span, 
         };
 
@@ -887,7 +908,11 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
                 };
                 path.segments.last().unwrap().span
             }
-            Err(PathResolutionError::Emitted | PathResolutionError::Barrier) => return,
+            Err(PathResolutionError::Emitted) => {
+                path.segments.last().unwrap().resolve(Resolution::Err);
+                return;
+            }
+            Err(PathResolutionError::Barrier) => return,
             Err(PathResolutionError::End(span)) => span, 
         };
 
@@ -1192,19 +1217,8 @@ impl ParentCollector {
         self.parent_stack.pop();
     }
 
-    fn as_map(self) -> Result<ParentMap, NodeId> {
-        let nodes = self.nodes
-            .into_iter_enumerated()
-            .map(|(idx, parent_id)| {
-                let Some(parent_id) = parent_id else {
-                    return Err(idx);
-                };
-                Ok(parent_id)
-            })
-            .try_collect::<IndexVec<_, _>>();
-        nodes
-            .map(|nodes| ParentMap { nodes })
-            .map_err(|local| NodeId { local, owner: self.owner })
+    fn as_map(self) -> ParentMap {
+        ParentMap { nodes: self.nodes }
     }
 }
 
@@ -1273,7 +1287,7 @@ impl<'tcx> Visitor<'tcx> for ParentCollector {
 }
 
 pub struct ParentMap {
-    pub nodes: IndexVec<ast::LocalId, NodeId>
+    pub nodes: IndexVec<ast::LocalId, Option<NodeId>>
 }
 
 pub fn parent_map<'tcx>(tcx: TyCtxt<'tcx>, owner: ast::OwnerId) -> &'tcx ParentMap {
@@ -1287,12 +1301,6 @@ pub fn parent_map<'tcx>(tcx: TyCtxt<'tcx>, owner: ast::OwnerId) -> &'tcx ParentM
         _ => unreachable!("cannot be owner node")
     }
 
-    match collector.as_map() {
-        Ok(map) => tcx.arena.alloc(map),
-        Err(node_id) => {
-            let node = tcx.get_node_by_id(node_id);
-            panic!("node {node:?} doesn't have a parent");
-        }
-    }
+    tcx.arena.alloc(collector.as_map())
 }
 

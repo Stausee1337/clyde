@@ -906,6 +906,12 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .push(self.diagnostics());
                 self.last_error.set(Some(()));
             }
+            Ty(TyKind::Param(_)) => {
+                Message::error(format!("expected struct, found type paramaeter `{ty}`"))
+                    .at(span)
+                    .push(self.diagnostics());
+                self.last_error.set(Some(()));
+            }
             Ty(TyKind::Adt(adt)) => match adt {
                 AdtDef(type_ir::AdtKind::Struct(strct)) => {
                     // FIXME: Don't build reverse field lookup every time
@@ -1425,8 +1431,13 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 (self.tcx.type_of(*def_id), ResolutionKind::Value),
             ast::Resolution::Def(def_id, DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy) =>
                 (self.tcx.type_of(*def_id), ResolutionKind::Type),
-            ast::Resolution::Primitive(sym) =>
-                (sym.get_primitive_ty(self.tcx).unwrap(), ResolutionKind::Type),
+            ast::Resolution::Primitive(sym) => {
+                if *sym == sym::tuple {
+                    (Ty::new_tuple(self.tcx, &[]), ResolutionKind::Type)
+                } else {
+                    (sym.get_primitive_ty(self.tcx).unwrap(), ResolutionKind::Type)
+                }
+            }
             ast::Resolution::Err =>
                 return Ty::new_error(self.tcx),
             ast::Resolution::Def(_, _) => panic!("invalid resolution for path"),
@@ -1553,6 +1564,22 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             ast::ItemKind::Err =>
                 panic!("resolved Err to Definiton")
         }
+        ast::Node::GenericParam(param) => {
+            match param.kind {
+                ast::GenericParamKind::Type(ty) => {
+                    let owner_node = tcx.owner_node(param.node_id);
+
+                    let generics = owner_node.generics();
+                    let index = generics
+                        .iter()
+                        .position(|p| p.node_id == param.node_id)
+                        .expect("`param` should be a generic param on its owner");
+
+                    Ty::new_param(tcx, ty.symbol, index)
+                }
+                ast::GenericParamKind::Const(..) => todo!()
+            }
+        }
         ast::Node::FieldDef(field) => {
             let ctx = LoweringCtxt::new(tcx, LoweringMode::Unbound);
             ctx.lower_ty(&field.ty)
@@ -1658,6 +1685,21 @@ fn check_valid_intrinsic(
                 early!(matches!(param!(), Some(Ty(TyKind::String))));
                 early!(matches!(param!(), None));
                 early!(matches!(result_ty, Ty(TyKind::Int(type_ir::Integer::ISize, false))));
+            }
+            sym::slice_to_raw_parts => {
+                early!(matches!(param!(), Some(Ty(TyKind::Slice(Ty(TyKind::Param(type_ir::ParamTy { index: 0, .. })))))));
+                early!(matches!(param!(), None));
+                let Ty(TyKind::Tuple(tuple)) = result_ty else {
+                    return Ok(false);
+                };
+                println!("return ty is a tuple");
+                let mut tuple = tuple.iter();
+                early!(matches!(tuple.next(), Some(Ty(TyKind::Refrence(Ty(TyKind::Param(type_ir::ParamTy { index: 0, .. })))))));
+                println!("tuple.0 is T*");
+                early!(matches!(tuple.next(), Some(Ty(TyKind::Int(type_ir::Integer::ISize, false)))));
+                println!("tuple.1 is nuint");
+                early!(matches!(tuple.next(), None));
+                println!("tuple len == 2");
             }
             sym::string_from_raw_parts => {
                 early!(matches!(param!(), Some(Ty(TyKind::Refrence(Ty(TyKind::Int(type_ir::Integer::I8, false)))))));
