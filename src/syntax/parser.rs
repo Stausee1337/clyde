@@ -77,6 +77,10 @@ impl<'src> TokenCursor<'src> {
         unsafe { *self.current }
     }
 
+    fn end(&self) -> &Token<'src> {
+        unsafe { &*self.end }
+    }
+
     fn lookahead(&self) -> Token<'src> {
         if self.end <= self.current {
             return unsafe { *self.current };
@@ -1273,64 +1277,63 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
     }
 
-    fn maybe_parse_generic_args(&mut self) -> ParseTry<'src, &'ast [ast::GenericArgument<'ast>]> {
-        // searches through the token stream if there is a corresponding closing delimiter `>`
-        // or if any other closing delimiters intefere with the plausiblity of a generic args sequence
-        let result = {
-            // breaks once we've seen one more closing then opening delimiter
-            macro_rules! sub {
-                ($stack:ident) => {{
-                    let Some(s) = $stack.checked_sub(1) else {
-                        return ControlFlow::Break(false);
-                    };
-                    $stack = s;  
-                }};
-            }
+    // searches through the token stream if there is a corresponding closing delimiter `>`
+    // or if any other closing delimiters intefere with the plausiblity of a generic args sequence
+    fn check_if_angle_tree(&mut self) -> Option<(bool, TokenCursor<'src>)> {
+        // breaks once we've seen one more closing then opening delimiter
+        macro_rules! sub {
+            ($stack:ident) => {{
+                let Some(s) = $stack.checked_sub(1) else {
+                    return ControlFlow::Break(false);
+                };
+                $stack = s;  
+            }};
+        }
 
-            // FIXME: we actually should be creating another delimiter stack, reporing them like we
-            // do in the lexer at TokenStream::build
-            // Stacks
-            let mut angle = 0usize;
-            let mut paren = 0usize;
-            let mut curly = 0usize;
-            let mut bracket = 0usize;
+        // FIXME: we actually should be creating another delimiter stack, reporing them like we
+        // do in the lexer at TokenStream::build
+        // Stacks
+        let mut angle = 0usize;
+        let mut paren = 0usize;
+        let mut curly = 0usize;
+        let mut bracket = 0usize;
 
-            let result = self.cursor.substream(|token| {
-                match token.kind {
-                    TokenKind::Punctuator(Token![<]) =>
-                        angle += 1,
-                    TokenKind::Punctuator(Punctuator::LParen) =>
-                        paren += 1,
-                    TokenKind::Punctuator(Punctuator::LCurly) =>
-                        curly += 1,
-                    TokenKind::Punctuator(Punctuator::LBracket) =>
-                        bracket += 1,
+        let result = self.cursor.substream(|token| {
+            match token.kind {
+                TokenKind::Punctuator(Token![<]) =>
+                    angle += 1,
+                TokenKind::Punctuator(Punctuator::LParen) =>
+                    paren += 1,
+                TokenKind::Punctuator(Punctuator::LCurly) =>
+                    curly += 1,
+                TokenKind::Punctuator(Punctuator::LBracket) =>
+                    bracket += 1,
 
-                    TokenKind::Punctuator(Token![>]) => {
-                        angle -= 1;
-                        if angle == 0 {
-                            return ControlFlow::Break(true);
-                        }
+                TokenKind::Punctuator(Token![>]) => {
+                    angle -= 1;
+                    if angle == 0 {
+                        return ControlFlow::Break(true);
                     }
-                    TokenKind::Punctuator(Punctuator::RParen) =>
-                        sub!(paren),
-                    TokenKind::Punctuator(Punctuator::RCurly) =>
-                        sub!(curly),
-                    TokenKind::Punctuator(Punctuator::RBracket) =>
-                        sub!(bracket),
-                    _ => ()
                 }
-                ControlFlow::Continue(())
-            });
+                TokenKind::Punctuator(Punctuator::RParen) =>
+                    sub!(paren),
+                TokenKind::Punctuator(Punctuator::RCurly) =>
+                    sub!(curly),
+                TokenKind::Punctuator(Punctuator::RBracket) =>
+                    sub!(bracket),
+                _ => ()
+            }
+            ControlFlow::Continue(())
+        });
 
-            result
-        };
-        
-        let Some((true, cursor)) = result else {
-            return match result {
-                Some((_, cursor)) => ParseTry::Never(cursor),
-                None => ParseTry::Never(self.cursor.fork()) // None = cursor at EOS
-            };
+        result
+    }
+
+    fn maybe_parse_generic_args(&mut self) -> ParseTry<'src, &'ast [ast::GenericArgument<'ast>]> { 
+        let cursor = match self.check_if_angle_tree() {
+            Some((true, cursor)) => cursor,
+            Some((_, cursor)) => return ParseTry::Never(cursor),
+            None => return ParseTry::Never(self.cursor.fork()) // None = cursor at EOS
         };
 
         let prev_cursor = std::mem::replace(&mut self.cursor, cursor);
@@ -2471,7 +2474,15 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
     fn parse_global_alias(&mut self) -> PRes<(ast::ItemKind<'ast>, Span)> {
         let ident = self.bump_on::<ast::Ident>().unwrap();
+
+        let generics = if self.bump_if(Token![<]).is_some() {
+            self.parse_generic_params()?
+        } else {
+            &[]
+        };
+
         self.bump_if(Token![::]).unwrap();
+ 
         let directive = self.match_on::<Directive>().unwrap();
         match directive {
             Token![#include] => {
@@ -2479,6 +2490,18 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     .unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
                 let span = Span::interpolate(ident.span, import.span); 
                 return Ok((ast::ItemKind::Alias(ast::Alias { ident, item: import }), span));
+            }
+            Token![#type] => {
+                let start = self.cursor.span();
+                self.cursor.advance();
+                let ty = self.parse_ty_expr()
+                    .unwrap_or_else(|span| self.make_ty_expr(ast::TypeExprKind::Err, span));
+                println!("{generics:?}");
+                println!("{ty:#?}");
+                self.expect_one(Token![;])?;
+                self.cursor.advance();
+
+                Ok((ast::ItemKind::Err, Span::interpolate(start, ty.span)))
             }
             _ => {
                 let span = self.cursor.span();
@@ -2521,31 +2544,49 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             Alias,
         }
         let mut detected_kind = Kind::None;
+        {
+            let cursor = self.cursor.fork();
+            let actual_cursor = std::mem::replace(&mut self.cursor, cursor);
+            if self.bump_on::<ast::Ident>().is_none() {
+                return ItemHeader::None;
+            }
 
-        let ty = match self.maybe_parse_ty_expr() {
-            ParseTry::Sure(ty) => Some(ty),
-            ParseTry::Doubt(ty, cursor) => {
-                if matches!(cursor.current().kind, TokenKind::Symbol(..)) {
+            let mut is_generic = false;
+            if self.matches(Token![<]) {
+                match self.check_if_angle_tree() {
+                    Some((true, small_cursor)) => 
+                        self.cursor.advance_to(small_cursor.end()),
+                    Some(..) => return ItemHeader::None,
+                    None => return ItemHeader::None // None = cursor at EOS
+                };
+                self.cursor.advance();
+                is_generic = true;
+            }
+
+            match self.cursor.current().kind {
+                TokenKind::Punctuator(Token![::=]) if !is_generic =>
+                    detected_kind = Kind::TypelessConst,
+                TokenKind::Punctuator(Token![::]) if matches!(self.cursor.lookahead().kind, TokenKind::Directive(_)) =>
+                    detected_kind = Kind::Alias,
+                _ => {}
+            }
+            self.cursor = actual_cursor;
+        }
+        let mut ty = None;
+        if let Kind::None = detected_kind {
+            ty = match self.maybe_parse_ty_expr() {
+                ParseTry::Sure(ty) => Some(ty),
+                ParseTry::Doubt(ty, cursor) => {
+                    if !matches!(cursor.current().kind, TokenKind::Symbol(..)) {
+                        return ItemHeader::None;
+                    }
                     self.cursor.sync(cursor);
                     Some(ty)
-                } else {
-                    let mut cursor = self.cursor.fork();
-                    cursor.advance();
-                    match cursor.current().kind {
-                        TokenKind::Punctuator(Token![::=]) =>
-                            detected_kind = Kind::TypelessConst,
-                        TokenKind::Punctuator(Token![::]) if matches!(cursor.lookahead().kind, TokenKind::Directive(_)) =>
-                            detected_kind = Kind::Alias,
-                        _ => {
-                            return ItemHeader::None;
-                        }
-                    }
-                    None
                 }
-            }
-            ParseTry::Never(..) =>
-                return ItemHeader::None,
-        };
+                ParseTry::Never(..) =>
+                    return ItemHeader::None,
+            };
+        }
 
         let static_var = ty.is_some()
             && matches!(self.cursor.current().kind, TokenKind::Symbol(..))

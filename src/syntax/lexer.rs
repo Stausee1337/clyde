@@ -103,6 +103,7 @@ macro_rules! Token {
     [#link] => { crate::syntax::lexer::Directive::Link };
     [#c_call] => { crate::syntax::lexer::Directive::CCall };
     [#include] => { crate::syntax::lexer::Directive::Include };
+    [#type] => { crate::syntax::lexer::Directive::Type };
     [#compiler_intrinsic] => { crate::syntax::lexer::Directive::CompilerIntrinsic };
 }
 
@@ -1272,6 +1273,8 @@ pub enum Directive {
     CompilerIntrinsic,
     #[str = "include"]
     Include,
+    #[str = "type"]
+    Type,
 }
 
 impl Tokenish for Directive {
