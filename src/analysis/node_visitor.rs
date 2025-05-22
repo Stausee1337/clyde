@@ -1,5 +1,5 @@
 
-use crate::syntax::ast::{self, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericArgumentKind, GenericParam, GenericParamKind, Item, ItemKind, Literal, NestedConst, Param, Path, PathSegment, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
+use crate::syntax::ast::{self, Alias, AliasKind, Block, ControlFlow, Expr, ExprKind, FieldDef, Function, FunctionArgument, GenericArgument, GenericArgumentKind, GenericParam, GenericParamKind, Import, Item, ItemKind, Literal, NestedConst, Param, Path, PathSegment, SourceFile, Stmt, StmtKind, TypeExpr, TypeExprKind, TypeInitKind, VariantDef};
 
 
 pub trait Visitor<'tcx>: Sized {
@@ -77,6 +77,19 @@ pub trait Visitor<'tcx>: Sized {
         visit_slice(segment.generic_args, |arg| self.visit_generic_argument(arg));
     }
 
+    fn visit_alias(&mut self, alias: &'tcx Alias<'tcx>) {
+        visit_slice(&alias.generics, |generic| self.visit_generic_param(generic));
+        match alias.kind {
+            AliasKind::Type(ty) => self.visit_ty_expr(ty),
+            AliasKind::Import(import) => self.visit_import(import),
+            AliasKind::Err => ()
+        }
+    }
+
+    fn visit_import(&mut self, import: &'tcx Import) {
+        noop(import);
+    }
+
     fn visit_literal(&mut self, cnst: &'tcx Literal) {
         noop(cnst);
     }
@@ -117,8 +130,8 @@ pub fn noop_visit_item_kind<'tcx, T: Visitor<'tcx>>(item_kind: &'tcx ItemKind<'t
             visit_option(global_var.ty, |ty| vis.visit_ty_expr(ty));
             visit_option(global_var.init, |init| vis.visit_expr(init));
         }
-        ItemKind::Alias(alias) => vis.visit_item(alias.item),
-        ItemKind::Import(_) => (),
+        ItemKind::Alias(alias) => vis.visit_alias(alias),
+        ItemKind::Import(import) => vis.visit_import(import),
         ItemKind::Err => ()
     }
 }

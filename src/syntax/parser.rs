@@ -2486,22 +2486,50 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let directive = self.match_on::<Directive>().unwrap();
         match directive {
             Token![#include] => {
-                let import = self.parse_import_directive()
-                    .unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
-                let span = Span::interpolate(ident.span, import.span); 
-                return Ok((ast::ItemKind::Alias(ast::Alias { ident, item: import }), span));
+                if !generics.is_empty() {
+                    let span = Span::interpolate(
+                        generics.first().unwrap().span,
+                        generics.last().unwrap().span
+                    );
+                    Message::error("alias for `#include` must not have generic parameters")
+                        .at(span)
+                        .push(self.diagnostics);
+                }
+
+                let (span, kind) = match self.parse_import_directive() {
+                    Ok(import) => (import.span, ast::AliasKind::Import(import)),
+                    Err(span) => (span, ast::AliasKind::Err)
+                };
+                let span = Span::interpolate(ident.span, span); 
+                return Ok(
+                    (
+                        ast::ItemKind::Alias(ast::Alias {
+                            ident, kind,
+                            generics: &[]
+                        }),
+                        span
+                    )
+                );
             }
             Token![#type] => {
                 let start = self.cursor.span();
                 self.cursor.advance();
                 let ty = self.parse_ty_expr()
                     .unwrap_or_else(|span| self.make_ty_expr(ast::TypeExprKind::Err, span));
-                println!("{generics:?}");
-                println!("{ty:#?}");
                 self.expect_one(Token![;])?;
                 self.cursor.advance();
 
-                Ok((ast::ItemKind::Err, Span::interpolate(start, ty.span)))
+                let span = Span::interpolate(start, ty.span);
+                Ok(
+                    (
+                        ast::ItemKind::Alias(ast::Alias {
+                            ident,
+                            kind: ast::AliasKind::Type(ty),
+                            generics
+                        }),
+                        span
+                    )
+                )
             }
             _ => {
                 let span = self.cursor.span();
@@ -2726,7 +2754,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(DirectiveTrees(trees))
     }
 
-    fn parse_import_directive(&mut self) -> PRes<&'ast ast::Item<'ast>> {
+    fn parse_import_directive(&mut self) -> PRes<&'ast ast::Import> {
         let start = self.cursor.span();
         self.cursor.advance();
 
@@ -2740,9 +2768,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         let import = self.alloc(ast::Import {
             path: path?,
             span: Span::interpolate(start, end),
-            resolution: OnceCell::new()
         });
-        Ok(self.make_item(ast::ItemKind::Import(import), import.span))
+        Ok(import)
     }
 
     fn parse_scope_directive(&mut self) -> PRes<ast::Scope> {
@@ -2768,8 +2795,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         if let Some(directive) = self.match_on::<Directive>() {
             match directive {
                 Token![#include] => {
-                    let import = self.parse_import_directive()
-                        .unwrap_or_else(|span| self.make_item(ast::ItemKind::Err, span));
+                    let import = match self.parse_import_directive() {
+                        Ok(import) => self.make_item(ast::ItemKind::Import(import), import.span),
+                        Err(span) => self.make_item(ast::ItemKind::Err, span)
+                    };
                     return Some(import);
                 }
                 Token![#scope] if !in_block_scope =>

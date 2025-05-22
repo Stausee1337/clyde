@@ -320,16 +320,20 @@ pub enum Scope {
 #[derive(Debug, Clone, Copy)]
 pub struct Alias<'ast> {
     pub ident: Ident,
-    pub item: &'ast Item<'ast>
+    pub kind: AliasKind<'ast>,
+    pub generics: &'ast [&'ast GenericParam<'ast>],
 }
 
-#[derive(Debug, Clone)]
-pub struct FileError;
+#[derive(Debug, Clone, Copy)]
+pub enum AliasKind<'ast> {
+    Type(&'ast TypeExpr<'ast>),
+    Import(&'ast Import),
+    Err
+}
 
 #[derive(Debug, Clone)]
 pub struct Import {
     pub path: String,
-    pub resolution: OnceCell<Result<NodeId, FileError>>,
     pub span: Span,
 }
 

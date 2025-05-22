@@ -586,12 +586,20 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                 return;
             }
             ast::ItemKind::Alias(alias) => {
-                let ast::ItemKind::Import(import) = alias.item.kind else {
-                    unreachable!("non-import aliases are currently unsupported");
-                };
-                let file = self.current_file.expect("visit_import should be operating within source file");
-                self.push_import(file, &import.path, Some(alias.ident.symbol), item.span);
-                return; // don't mangle the names of Import aliases
+                match alias.kind {
+                    ast::AliasKind::Import(import) => {
+                        let file = self.current_file.expect("visit_import should be operating within source file");
+                        self.push_import(file, &import.path, Some(alias.ident.symbol), item.span);
+                        return; // don't mangle the names of Import aliases
+                    }
+                    ast::AliasKind::Type(ty) => {
+                        self.with_rib(item.node_id, |this| {
+                            node_visitor::visit_slice(&alias.generics, |generic| this.visit_generic_param(generic));
+                            this.visit_ty_expr(ty);
+                        });
+                    }
+                    ast::AliasKind::Err => ()
+                }
             }
             ast::ItemKind::Err => return
         }
@@ -1039,9 +1047,14 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_option(global_var.ty, |ty| self.visit_ty_expr(ty));
                 node_visitor::visit_option(global_var.init, |expr| self.visit_expr(expr));
             }
+            ast::ItemKind::Alias(alias) if let ast::AliasKind::Type(ty) = alias.kind => {
+                self.with_tbg_rib(item.node_id, |this| {
+                    node_visitor::visit_slice(&alias.generics, |generic| this.visit_generic_param(generic));
+                    this.visit_ty_expr(ty);
+                });
+            }, 
+            ast::ItemKind::Alias(..) => (),
             ast::ItemKind::Import(..) => (), // import doesn't have relevance at this stage
-            ast::ItemKind::Alias(_alias) => (), // `#type` aliases will have a relevance here but
-                                                // they don't exist yet
             ast::ItemKind::Err => ()
         }
     }
