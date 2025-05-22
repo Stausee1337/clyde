@@ -31,7 +31,7 @@ impl TryFrom<DefinitionKind> for NameSpace {
     fn try_from(value: DefinitionKind) -> Result<Self, ()> {
         use DefinitionKind as D;
         Ok(match value {
-            D::Struct | D::Enum | D::ParamTy => NameSpace::Type,
+            D::Struct | D::Enum | D::ParamTy | D::TypeAlias => NameSpace::Type,
             D::Function => NameSpace::Function,
             D::Static | D::Const | D::ParamConst => NameSpace::Variable,
             _ => return Err(())
@@ -201,7 +201,7 @@ impl TFGRib {
     fn define_with_declaration(&mut self, symbol: Symbol, declaration: Declaration, diagnostics: &DiagnosticsCtxt) {
         let kind = declaration.kind;
         let space = match kind {
-            DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy => &mut self.types,
+            DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy | DefinitionKind::TypeAlias => &mut self.types,
             DefinitionKind::Function => &mut self.functions,
             DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::ParamConst => &mut self.globals,
             _ => unreachable!("invalid Definition in define")
@@ -593,6 +593,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                         return; // don't mangle the names of Import aliases
                     }
                     ast::AliasKind::Type(ty) => {
+                        let _site = self.define(DefinitionKind::TypeAlias, alias.ident, item.node_id, item.scope);
                         self.with_rib(item.node_id, |this| {
                             node_visitor::visit_slice(&alias.generics, |generic| this.visit_generic_param(generic));
                             this.visit_ty_expr(ty);
@@ -981,7 +982,7 @@ impl ResolutionsExt for Vec<Resolution> {
             let ns = match res {
                 Resolution::Local(_) => NameSpace::Variable,
                 Resolution::Primitive(_) => NameSpace::Type,
-                Resolution::Def(_, DefinitionKind::Enum | DefinitionKind::Struct | DefinitionKind::ParamTy)
+                Resolution::Def(_, DefinitionKind::Enum | DefinitionKind::Struct | DefinitionKind::ParamTy | DefinitionKind::TypeAlias)
                     => NameSpace::Type,
                 Resolution::Def(_, DefinitionKind::Const | DefinitionKind::Static | DefinitionKind::ParamConst)
                     => NameSpace::Variable,

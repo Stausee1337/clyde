@@ -24,6 +24,9 @@ pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
                 // check if signature is well-formed for bodyless (external) fns
                 has_errors |= tcx.fn_sig(*def).has_errors,
             Node::Item(..) =>
+                // FIXME: this should be replaced with an actual and percice well fromed check,
+                // also including a check for recusrive type aliases, which currently will just
+                // cause a silent Err without any explanation
                 has_errors |= tcx.layout_of(tcx.type_of(*def)).is_err(),
             _ => ()
         }

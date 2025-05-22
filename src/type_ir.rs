@@ -640,6 +640,12 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
     }
 }
 
+impl<'tcx> FromCycleError<'tcx> for Ty<'tcx> {
+    fn from_cycle_error(tcx: TyCtxt<'tcx>) -> Self {
+        Ty::new_error(tcx)
+    }
+}
+
 impl<'tcx> Ty<'tcx> {
     pub fn new_array(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, cnst: Const<'tcx>) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Array(ty, cnst))

@@ -1429,7 +1429,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
             }
             ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Static | DefinitionKind::Const | DefinitionKind::ParamConst) =>
                 (self.tcx.type_of(*def_id), ResolutionKind::Value),
-            ast::Resolution::Def(def_id, DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy) =>
+            ast::Resolution::Def(def_id, DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy | DefinitionKind::TypeAlias) =>
                 (self.tcx.type_of(*def_id), ResolutionKind::Type),
             ast::Resolution::Primitive(sym) => {
                 if *sym == sym::tuple {
@@ -1497,7 +1497,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         Ty::new_array(self.tcx, ty, cap)
                     },
                     ast::ArrayCapacity::Dynamic => {
-                        let ty = self.lower_ty(ty);
+                        let ty = self.lower_ty(array.ty);
                         Ty::new_dyn_array(self.tcx, ty)
                     }
                 }
@@ -1560,9 +1560,12 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 todo!("ty-class global consts")
             },
             ast::ItemKind::Import(_) => panic!("resolved Import to Definition"),
-            ast::ItemKind::Alias(alias) => todo!(),
-            ast::ItemKind::Err =>
-                panic!("resolved Err to Definiton")
+            ast::ItemKind::Alias(alias) if let ast::AliasKind::Type(ty) = alias.kind => {
+                let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
+                ctxt.lower_ty(ty)
+            },
+            ast::ItemKind::Alias(alias) => panic!("resolved AliasKind {:?} to Definition", alias.kind),
+            ast::ItemKind::Err => panic!("resolved Err to Definiton")
         }
         ast::Node::GenericParam(param) => {
             match param.kind {

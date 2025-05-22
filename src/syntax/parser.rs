@@ -2584,8 +2584,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 match self.check_if_angle_tree() {
                     Some((true, small_cursor)) => 
                         self.cursor.advance_to(small_cursor.end()),
-                    Some(..) => return ItemHeader::None,
-                    None => return ItemHeader::None // None = cursor at EOS
+                    _ => {
+                        self.cursor = actual_cursor;
+                        return ItemHeader::None;
+                    }
                 };
                 self.cursor.advance();
                 is_generic = true;
@@ -2666,14 +2668,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 ItemHeader::Err(span) =>
                     return Err(span),
                 ItemHeader::None => {
-                    if !force_static_kewyord {
-                        // emit propper error
-                        match this.parse_ty_expr() {
-                            Err(err) => return Err(err),
-                            Ok(..) => unreachable!()
-                        }
+                    if force_static_kewyord {
+                        return Err(Span::NULL);
                     }
-                    return Err(Span::NULL)
+                    this.parse_ty_expr()?
                 },
             };
 

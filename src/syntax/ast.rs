@@ -74,6 +74,7 @@ impl<'ast> Node<'ast> {
         match item.kind {
             ItemKind::Function(func) => func.sig.generics,
             ItemKind::Struct(strct) => strct.generics,
+            ItemKind::Alias(alias) => alias.generics,
             _ => unreachable!("item {item:?} does not have generics")
         }
 
@@ -176,6 +177,7 @@ pub enum DefinitionKind {
     Const,
     NestedConst,
     Field,
+    TypeAlias,
     Variant,
     ParamTy,
     ParamConst,

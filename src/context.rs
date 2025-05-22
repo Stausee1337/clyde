@@ -155,14 +155,13 @@ macro_rules! define_queries {
 }
 
 define_queries! {
+    #[handle_cycle_error]
     fn type_of(id: ast::DefId) -> type_ir::Ty<'tcx>;
     fn typecheck(id: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
     fn fn_sig(id: ast::DefId) -> type_ir::Signature<'tcx>;
     fn build_ir(id: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
     fn enum_variant(id: ast::DefId) -> (type_ir::Ty<'tcx>, &'tcx type_ir::VariantDef<'tcx>);
-
     fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
-
     #[handle_cycle_error]
     fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TyLayoutTuple<'tcx>, type_ir::LayoutError>;
 }
