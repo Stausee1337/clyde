@@ -28,6 +28,13 @@ struct Restrictions: u32 {
 }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ItemContext {
+    Module,
+    Block,
+    Struct
+}
+
 pub struct TokenCursor<'src> {
     current: *mut Token<'src>,
     end: *mut Token<'src>
@@ -2057,7 +2064,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         // likely errored, so don't warn here as they probably aren't actually redundant
         self.remove_redundant_semis(false);
 
-        if let Some(item) = self.parse_item_or_directive(true) {
+        if let Some(item) = self.parse_item_or_directive(ItemContext::Block) {
             return Ok(self.make_stmt(ast::StmtKind::Item(item), item.span));
         }
 
@@ -2173,10 +2180,15 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
             this.expect_either(&[Punctuator::LCurly, Token![;]])?;
             let mut fields = vec![];
+            let mut items = vec![];
 
             if this.bump_if(Punctuator::LCurly).is_some() {
                 let _ = this.fail_parse_tree(Delimiter::Curly, |this| {
                     while !this.matches(Punctuator::RCurly) {
+                        if let Some(item) = this.parse_item_or_directive(ItemContext::Struct) {
+                            items.push(item);
+                            continue;
+                        }
                         let start = this.cursor.span();
 
                         let ty = this.parse_ty_expr()
@@ -2207,6 +2219,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             this.cursor.advance();
 
             let fields = this.alloc_slice(&fields);
+            let items = this.alloc_slice(&items);
 
             let span = Span::interpolate(start, end);
             Ok((
@@ -2214,6 +2227,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                     ident,
                     generics,
                     fields,
+                    items
                 }),
                 span
             ))
@@ -2472,7 +2486,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         ))
     }
 
-    fn parse_global_alias(&mut self) -> PRes<(ast::ItemKind<'ast>, Span)> {
+    fn parse_global_alias(&mut self, context: ItemContext) -> PRes<(ast::ItemKind<'ast>, Span)> {
         let ident = self.bump_on::<ast::Ident>().unwrap();
 
         let generics = if self.bump_if(Token![<]).is_some() {
@@ -2485,7 +2499,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
  
         let directive = self.match_on::<Directive>().unwrap();
         match directive {
-            Token![#include] => {
+            Token![#include] if context != ItemContext::Struct => {
                 if !generics.is_empty() {
                     let span = Span::interpolate(
                         generics.first().unwrap().span,
@@ -2534,17 +2548,20 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             _ => {
                 let span = self.cursor.span();
                 self.cursor.advance();
-                Message::error(format!("directive `#{directive}` is not valid here"))
-                    .at(span)
-                    .note("valid directives are `#include` and `#scope`")
-                    .push(self.diagnostics);
+                let mut msg = Message::error(format!("directive `#{directive}` is not valid here"))
+                    .at(span);
+                msg = match context {
+                    ItemContext::Struct => msg.note("valid directives are `#type`"),
+                    ItemContext::Module | ItemContext::Block => msg.note("valid directives are `#include` and `#type`"),
+                };
+                msg.push(self.diagnostics);
                 // TODO: compliation is erroneous now
                 return Err(span);
             }
         }
     }
 
-    fn understand_item(&mut self, force_static_kewyord: bool) -> ItemHeader<'ast> {
+    fn understand_item(&mut self, context: ItemContext) -> ItemHeader<'ast> {
         let cursor = self.cursor.fork();
         let prev_cursor = std::mem::replace(&mut self.cursor, cursor);
 
@@ -2622,7 +2639,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             && matches!(self.cursor.current().kind, TokenKind::Symbol(..))
             && (matches!(self.cursor.lookahead().kind, TokenKind::Punctuator(Token![=])) || matches!(self.cursor.lookahead().kind, TokenKind::Punctuator(Token![;])));
 
-        if static_var && force_static_kewyord {
+        if static_var && context != ItemContext::Module {
             self.cursor = prev_cursor;
             return ItemHeader::None;
         }
@@ -2640,7 +2657,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 }
             }
             Kind::Alias => {
-                match self.parse_global_alias() {
+                match self.parse_global_alias(context) {
                     Ok(item) => ItemHeader::Done(item.0, item.1),
                     Err(span) => ItemHeader::Err(span),
                 }
@@ -2649,7 +2666,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
     }
 
-    fn parse_item(&mut self, force_static_kewyord: bool) -> PRes<Option<&'ast ast::Item<'ast>>> {
+    fn parse_item(&mut self, context: ItemContext) -> PRes<Option<&'ast ast::Item<'ast>>> {
         if let Some(keyword) = self.match_on::<Keyword>() {
             match keyword {
                 Token![struct] =>
@@ -2661,14 +2678,14 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
 
         let res = self.with_owner(|this| {
-            let ty = match this.understand_item(force_static_kewyord) {
+            let ty = match this.understand_item(context) {
                 ItemHeader::Ty(ty) => ty,
                 ItemHeader::Done(item, span) =>
                     return Ok((item, span)),
                 ItemHeader::Err(span) =>
                     return Err(span),
                 ItemHeader::None => {
-                    if force_static_kewyord {
+                    if context != ItemContext::Module {
                         return Err(Span::NULL);
                     }
                     this.parse_ty_expr()?
@@ -2697,7 +2714,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             }
         });
         if let Err(span) = res && span == Span::NULL {
-            if !force_static_kewyord {
+            if context == ItemContext::Module {
                 unreachable!()
             }
             return Ok(None);
@@ -2789,35 +2806,35 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         Ok(scope)
     }
 
-    fn parse_item_or_directive(&mut self, in_block_scope: bool) -> Option<&'ast ast::Item<'ast>> {
+    fn parse_item_or_directive(&mut self, context: ItemContext) -> Option<&'ast ast::Item<'ast>> {
         if let Some(directive) = self.match_on::<Directive>() {
             match directive {
-                Token![#include] => {
+                Token![#include] if context != ItemContext::Struct => {
                     let import = match self.parse_import_directive() {
                         Ok(import) => self.make_item(ast::ItemKind::Import(import), import.span),
                         Err(span) => self.make_item(ast::ItemKind::Err, span)
                     };
                     return Some(import);
                 }
-                Token![#scope] if !in_block_scope =>
+                Token![#scope] if context != ItemContext::Block =>
                     self.currrent_item_scope = self.parse_scope_directive().unwrap_or_default(),
                 _ => {
                     let span = self.cursor.span();
                     self.cursor.advance();
                     let mut msg = Message::error(format!("directive `#{directive}` is not valid here"))
                         .at(span);
-                    if in_block_scope {
-                        msg = msg.note("valid directive is `#include`");
-                    } else {
-                        msg = msg.note("valid directives are `#include` and `#scope`");
-                    }
+                    msg = match context {
+                        ItemContext::Block => msg.note("valid directives are `#include`"),
+                        ItemContext::Struct => msg.note("valid directives are `#scope`"),
+                        ItemContext::Module => msg.note("valid directives are `#include` and `#scope`"),
+                    };
                     msg.push(self.diagnostics);
                 }
             }
 
             return None;
         }
-        self.parse_item(in_block_scope)
+        self.parse_item(context)
             .unwrap_or_else(|span| Some(self.make_item(ast::ItemKind::Err, span)))
     }
 
@@ -2826,7 +2843,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             let mut items = vec![];
 
             while !this.cursor.is_eos() {
-                if let Some(item) = this.parse_item_or_directive(false) {
+                if let Some(item) = this.parse_item_or_directive(ItemContext::Module) {
                     items.push(item);
                 }
             }

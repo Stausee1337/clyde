@@ -352,6 +352,7 @@ pub struct Struct<'ast> {
     pub ident: Ident,
     pub generics: &'ast [&'ast GenericParam<'ast>],
     pub fields: &'ast [&'ast FieldDef<'ast>],
+    pub items: &'ast [&'ast Item<'ast>]
 }
 
 #[derive(Debug)]
