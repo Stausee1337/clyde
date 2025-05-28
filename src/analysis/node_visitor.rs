@@ -121,6 +121,7 @@ pub fn noop_visit_item_kind<'tcx, T: Visitor<'tcx>>(item_kind: &'tcx ItemKind<'t
         ItemKind::Struct(stc) => {
             visit_slice(&stc.generics, |generic| vis.visit_generic_param(generic));
             visit_slice(&stc.fields, |field_def| vis.visit_field_def(field_def));
+            visit_slice(&stc.items, |item| vis.visit_item(item));
         }
         ItemKind::Enum(en) => {
             visit_option(en.representation, |repr| vis.visit_ty_expr(repr));

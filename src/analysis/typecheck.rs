@@ -1389,14 +1389,61 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     }
 
                     current_resolution = ResolutionKind::Value;
-                    break;
                 },
+                // FIXME: associated items will be able to appear on any items with some sort of
+                // path due to assocaited functions and not be limited to structures
+                Ty(TyKind::Adt(adt_def)) => {
+                    let AdtDef(AdtKind::Struct(strct)) = adt_def else {
+                        unreachable!()
+                    };
+                    let items = self.tcx.inner_items(strct.def);
+
+                    let mut resoltion = None;
+                    for (def_id, def_kind) in items {
+                        let ast::Node::Item(item) = self.tcx.node_by_def_id(*def_id) else {
+                            unreachable!()
+                        };
+                        if item.ident().symbol == ident.symbol {
+                            let ty = self.tcx.type_of(*def_id);
+                            // FIXME: maybe DefinitionKind::Function should be type
+                            let res_kind = match def_kind {
+                                DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::TypeAlias |
+                                DefinitionKind::ParamTy => ResolutionKind::Type,
+                                DefinitionKind::Const | DefinitionKind::Static | DefinitionKind::NestedConst |
+                                DefinitionKind::ParamConst | DefinitionKind::Variant | DefinitionKind::Function
+                                => ResolutionKind::Value,
+                                DefinitionKind::Field => unreachable!()
+                            };
+                            resoltion = Some((*def_id, *def_kind, ty, res_kind));
+                        }
+                    }
+
+                    if let Some((def_id, def_kind, new_ty, res_kind)) = resoltion {
+                        segment.resolve(ast::Resolution::Def(def_id, def_kind));
+                        ty = new_ty;
+                        current_resolution = res_kind;
+                    } else {
+                        Message::error(format!("can't find item `{}` on `{ty}`", ident.symbol))
+                            .at(ident.span)
+                            .push(self.diagnostics());
+                        segment.resolve(ast::Resolution::Err);
+                        ty = Ty::new_error(self.tcx);
+                    }
+                }
                 _ => {
                     current_resolution = resolution_kind;
                     ty = Ty::new_error(self.tcx);
+                    Message::error(format!("can't find item `{}` on `{ty}`", ident.symbol))
+                        .at(ident.span)
+                        .push(self.diagnostics());
+                    segment.resolve(ast::Resolution::Err);
                     path.segments.last().unwrap().resolve(ast::Resolution::Err);
                     break;
                 }
+            }
+
+            if current_resolution == ResolutionKind::Value {
+                break;
             }
         }
 
@@ -1412,7 +1459,6 @@ impl<'tcx> LoweringCtxt<'tcx> {
             Message::error(format!("expected {resolution_kind}-like, but found {current_resolution}-like"))
                 .at(prev.span)
                 .push(self.diagnostics());
-            path.segments.last().unwrap().resolve(ast::Resolution::Err);
             return Ty::new_error(self.tcx);
         }
 

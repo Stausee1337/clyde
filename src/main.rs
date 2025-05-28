@@ -4,6 +4,7 @@
 #![feature(ptr_metadata)]
 #![feature(unsize)]
 #![feature(never_type)]
+#![feature(iter_chain)]
 
 use std::{env, process::ExitCode};
 

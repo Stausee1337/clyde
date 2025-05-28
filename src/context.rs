@@ -119,6 +119,19 @@ impl<'tcx> TyCtxt<'tcx> {
         map.nodes[node.local].expect("tcx.parent_of(..) executed on dead node")
     }
 
+    // TODO: change to associated items and more complicated generic-solving query
+    // FIXME: associated items will be able to appear on any items also e.g. `int` as functions can
+    // be assoicated to any sort of path e.g.: `int int::max() { return ...; }`. Querying inner
+    // items by def_id is probably to narrow
+    pub fn inner_items(self, id: DefId) -> &'tcx [(DefId, ast::DefinitionKind)] {
+        let node = self.node_by_def_id(id);
+        let ast::Node::Item(ast::Item { kind: ast::ItemKind::Struct(..), .. }) = node else {
+            panic!("node {node:?} cannot not have inner items");
+        };
+
+        self.resolutions.inner_items.get(&id).map_or(&[], |vec| &vec)
+    }
+
     pub fn module_info(self, module: &'tcx ast::SourceFile<'tcx>) -> ModuleInfo {
         let path = &self.resolutions.node_to_path_map[&module.node_id];
         let file_name = path.file_name().unwrap();

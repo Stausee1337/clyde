@@ -6,7 +6,7 @@ use hashbrown::{self, HashMap, hash_map::Entry};
 use index_vec::IndexVec;
 use sha1::Digest;
 
-use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefinitionKind, IntoNode, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, files, session::Session, syntax::{ast::{self, DefId, DefinitionKind, IntoNode, NodeId, OutsideScope, Resolution}, lexer::Span, parser, symbol::{sym, Symbol}}};
 use super::node_visitor::{self, Visitor};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,7 @@ struct ResolutionState<'tcx> {
     node_to_path_map: HashMap<NodeId, PathBuf>,
     mangled_names: HashMap<NodeId, Symbol>,
     declarations: index_vec::IndexVec<ast::DefId, Definition>,
+    inner_items: HashMap<DefId, Vec<(DefId, DefinitionKind)>>,
     ast_info: &'tcx ast::AstInfo<'tcx>,
 }
 
@@ -76,6 +77,7 @@ pub struct ResolutionResults<'tcx> {
     pub declarations: index_vec::IndexVec<ast::DefId, Definition>,
     pub node_to_path_map: HashMap<NodeId, PathBuf>,
     pub mangled_names: HashMap<NodeId, Symbol>,
+    pub inner_items: HashMap<DefId, Vec<(DefId, DefinitionKind)>>
 }
 
 impl<'tcx> ResolutionState<'tcx> {
@@ -90,6 +92,7 @@ impl<'tcx> ResolutionState<'tcx> {
             node_to_path_map: Default::default(),
             mangled_names: Default::default(),
             declarations: Default::default(),
+            inner_items: Default::default(),
             ast_info
         }
     }
@@ -103,6 +106,7 @@ impl<'tcx> ResolutionState<'tcx> {
             declarations: self.declarations,
             node_to_path_map: self.node_to_path_map,
             mangled_names: self.mangled_names,
+            inner_items: self.inner_items
         }
     }
 }
@@ -558,6 +562,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                 self.with_rib(item.node_id, |this| {
                     node_visitor::visit_slice(&stc.generics, |generic| this.visit_generic_param(generic));
                     node_visitor::visit_slice(stc.fields, |field_def| this.visit_field_def(field_def));
+                    node_visitor::visit_slice(&stc.items, |item| this.visit_item(item));
                 });
             }, 
             ast::ItemKind::Enum(en) => {
@@ -679,7 +684,7 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
         }
     }
 
-    fn with_tbg_rib<F: FnOnce(&mut Self)>(&mut self, node: NodeId, do_work: F) {
+    fn with_tfg_rigb<F: FnOnce(&mut Self)>(&mut self, node: NodeId, do_work: F) {
         let Some(..) = self.resolution.rib_map.get(&node) else {
             panic!("{node:?} at doesn't have a TFGRib associated at name resolution");
         };
@@ -809,7 +814,9 @@ impl<'r, 'tcx> NameResolutionPass<'r, 'tcx> {
 
         if segments[0].generic_args.len() > 0 {
             let segment = &segments[0];
-            let resolution = results.get_resolution().unwrap_or(Resolution::Err);
+            let Some(resolution) = results.get_resolution() else {
+                return Some(results);
+            };
             segment.resolve(resolution);
             for arg in segment.generic_args {
                 self.visit_generic_argument(arg);
@@ -1011,7 +1018,7 @@ impl ResolutionsExt for Vec<Resolution> {
 
 impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
     fn visit(&mut self, tree: &'tcx ast::SourceFile<'tcx>) {
-        self.with_tbg_rib(tree.node_id, |this| {
+        self.with_tfg_rigb(tree.node_id, |this| {
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
         });
     }
@@ -1019,7 +1026,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {
         match &item.kind {
             ast::ItemKind::Function(function) => {
-                self.with_tbg_rib(item.node_id, |this| {
+                self.with_tfg_rigb(item.node_id, |this| {
                     node_visitor::visit_slice(&function.sig.generics, |generic| this.visit_generic_param(generic));
                     this.visit_ty_expr(function.sig.returns);
 
@@ -1035,10 +1042,21 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 })
             }
             ast::ItemKind::Struct(stc) => {
-                self.with_tbg_rib(item.node_id, |this| {
+                self.with_tfg_rigb(item.node_id, |this| {
                     node_visitor::visit_slice(&stc.generics, |generic| this.visit_generic_param(generic));
                     node_visitor::visit_slice(stc.fields, |field_def| this.visit_field_def(field_def));
+                    node_visitor::visit_slice(stc.items, |item| this.visit_item(item));
                 });
+                let def_id = *item.def_id.get().unwrap();
+                let tfg_rib = &self.resolution.rib_map[&item.node_id];
+                
+                let definitions = std::iter::chain(tfg_rib.types.values(), tfg_rib.globals.values())
+                    .filter_map(|decl| match decl.kind {
+                        DefinitionKind::ParamTy | DefinitionKind::ParamConst => None,
+                        _ => Some((decl.site, decl.kind))
+                    })
+                    .collect::<Vec<_>>();
+                self.resolution.inner_items.insert(def_id, definitions);
             }
             ast::ItemKind::Enum(en) => {
                 node_visitor::visit_option(en.representation, |repr| self.visit_ty_expr(repr));
@@ -1049,7 +1067,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 node_visitor::visit_option(global_var.init, |expr| self.visit_expr(expr));
             }
             ast::ItemKind::Alias(alias) if let ast::AliasKind::Type(ty) = alias.kind => {
-                self.with_tbg_rib(item.node_id, |this| {
+                self.with_tfg_rigb(item.node_id, |this| {
                     node_visitor::visit_slice(&alias.generics, |generic| this.visit_generic_param(generic));
                     this.visit_ty_expr(ty);
                 });
@@ -1147,7 +1165,7 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                 self.resolve_priority(&[NameSpace::Function, NameSpace::Variable], path);
             }
             ast::ExprKind::Block(body) => {
-                self.with_tbg_rib(expr.node_id, |this| {
+                self.with_tfg_rigb(expr.node_id, |this| {
                     this.with_rib(|this| {
                         this.visit_block(body);
                     });
