@@ -2692,6 +2692,13 @@ impl<'src, 'ast> Parser<'src, 'ast> {
                 },
             };
 
+            if context == ItemContext::Struct {
+                // In Struct contexts no functions can be parsed
+                let name = this.expect_any::<ast::Ident>()?;
+                this.cursor.advance();
+                return this.parse_global_item(Some(ty), name);
+            }
+
             match this.maybe_parse_path(PathMode::Function) {
                 ParseTry::Sure(path) => {
                     let name = this.bump_on::<ast::Ident>().unwrap();
