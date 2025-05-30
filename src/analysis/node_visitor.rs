@@ -34,7 +34,6 @@ pub trait Visitor<'tcx>: Sized {
         match &arg.kind {
             GenericArgumentKind::Ty(expr) => self.visit_ty_expr(expr),
             GenericArgumentKind::Expr(expr) => self.visit_nested_const(expr),
-            GenericArgumentKind::Literal(cnst) => self.visit_literal(cnst),
         }
     }
 

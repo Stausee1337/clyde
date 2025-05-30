@@ -546,12 +546,13 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
     }
 
     fn visit_generic_param(&mut self, param: &'tcx ast::GenericParam<'tcx>) {
-        match param.kind {
+        let site = match param.kind {
             ast::GenericParamKind::Type(name) =>
                 self.define(DefinitionKind::ParamTy, name, param.node_id, ast::Scope::Export),
             ast::GenericParamKind::Const(name, _) => 
                 self.define(DefinitionKind::ParamConst, name, param.node_id, ast::Scope::Export),
         };
+        let _ = param.def_id.set(site);
     }
 
     fn visit_item(&mut self, item: &'tcx ast::Item<'tcx>) {

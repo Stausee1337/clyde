@@ -1,11 +1,111 @@
 use core::panic;
-use std::{any::TypeId, cell::Cell, fmt::Write, marker::Unsize, ops::Deref};
+use std::{any::TypeId, cell::Cell, fmt::Write, marker::{PhantomData, Unsize}, ops::Deref, ptr::NonNull};
 
 use bytemuck::Pod;
 use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
+use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, mapping, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
+
+impl DefId {
+    pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx [GenericArg<'tcx>] {
+        let node = tcx.node_by_def_id(*self);
+        let generics = node.generics();
+
+        let mut generic_args = vec![];
+        for param in generics {
+            let def_id = *param.def_id.get().unwrap();
+            let generic_arg = match param.kind {
+                ast::GenericParamKind::Type(..) =>
+                    GenericArg::from_ty(tcx.type_of(def_id)),
+                ast::GenericParamKind::Const(..) => 
+                    GenericArg::from_const(Const::from_definition(tcx, def_id)),
+            };
+            generic_args.push(generic_arg);
+        }
+        tcx.arena.alloc_slice_copy(&generic_args)
+    }
+}
+
+pub trait Instatiatable<'tcx> {
+    fn instantiate(self, generic_args: &'tcx [GenericArg<'tcx>], tcx: TyCtxt<'tcx>) -> Self;
+}
+
+pub trait AsType<'tcx> {
+    fn as_type(&self) -> Option<Ty<'tcx>>;
+}
+
+impl<'tcx, T: mapping::Recursible<'tcx> + AsType<'tcx>> Instatiatable<'tcx> for T {
+    fn instantiate(self, generic_args: &'tcx [GenericArg<'tcx>], tcx: TyCtxt<'tcx>) -> Self {
+        let mut handler = mapping::InstantiationMapper::new(tcx, self.as_type(), generic_args);
+        self.map_recurse(&mut handler)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GenericArg<'tcx> {
+    ptr: NonNull<()>,
+    phantom: PhantomData<&'tcx ()>
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericArgKind<'tcx> {
+    Ty(Ty<'tcx>),
+    Const(Const<'tcx>),
+}
+
+impl<'tcx> GenericArg<'tcx> {
+    const TY_ENCODED: usize = 0b01;
+    const CONST_ENCODED: usize = 0b10;
+    const ENCODING_MASK: usize = 0b11;
+
+    pub fn from_ty(ty: Ty<'tcx>) -> Self {
+        let ptr = unsafe { Self::pack(ty.0, Self::TY_ENCODED) };
+        Self {
+            ptr,
+            phantom: PhantomData
+        }
+    }
+
+    pub fn from_const(cnst: Const<'tcx>) -> Self {
+        let ptr = unsafe { Self::pack(cnst.0, Self::CONST_ENCODED) };
+        Self {
+            ptr,
+            phantom: PhantomData
+        }
+    }
+
+    pub fn kind(self) -> GenericArgKind<'tcx> {
+        let kind = self.ptr.addr().get() & Self::ENCODING_MASK;
+        match kind {
+            Self::TY_ENCODED => GenericArgKind::Ty(Ty(unsafe { self.unpack() })),
+            Self::CONST_ENCODED => GenericArgKind::Const(Const(unsafe { self.unpack() })),
+            _ => panic!("invalid generic argument encoding"),
+        }
+    }
+
+    #[inline]
+    unsafe fn unpack<T>(self) -> &'tcx T {
+        let addr = self.ptr.addr().get() & !Self::ENCODING_MASK;
+        std::mem::transmute(addr as *const T)
+    }
+
+    #[inline]
+    unsafe fn pack<T>(refrence: &T, encoded: usize) -> NonNull<()> {
+        assert!(std::mem::align_of::<T>() >= 4);
+        let addr = (refrence as *const T).addr();
+        NonNull::new_unchecked((addr | encoded) as *mut ())
+    }
+}
+
+impl<'tcx> std::fmt::Display for GenericArg<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind() {
+            GenericArgKind::Ty(ty) => write!(f, "{ty}"),
+            GenericArgKind::Const(cnst) => write!(f, "{cnst:?}"),
+        }
+    }
+}
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
@@ -256,6 +356,7 @@ const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Poin
 #[derive(Hash, PartialEq, Eq)]
 pub enum ConstKind<'tcx> {
     Value(Value<'tcx>),
+    Param(Symbol, usize),
     Infer,
     Err
 }
@@ -337,16 +438,36 @@ impl<'tcx> Const<'tcx> {
                     Some(tcx.intern_const(ConstKind::Err))
                 }
             };
-        } /*else if let ast::ExprKind::Name(name) = &expr.kind && let Some(ast::Resolution::Def(def_id, ast::DefinitionKind::Const)) = name.resolution() {
-            let found_ty = tcx.type_of(*def_id);
-            if found_ty != ty {
-                Message::error(format!("mismatched types: expected {ty}, found {found_ty}"))
-                    .at(expr.span)
-                    .push(tcx.diagnostics());
-                return Some(tcx.intern_const(ConstKind::Err));
+        } else if let ast::ExprKind::Path(name) = &expr.kind  {
+            match name.resolution() {
+                Some(ast::Resolution::Def(def_id, ast::DefinitionKind::Const)) => {
+                    let found_ty = tcx.type_of(*def_id);
+                    if found_ty != ty {
+                        Message::error(format!("mismatched types: expected {ty}, found {found_ty}"))
+                            .at(expr.span)
+                            .push(tcx.diagnostics());
+                        return Some(tcx.intern_const(ConstKind::Err));
+                    }
+                    return Some(Const::from_definition(tcx, *def_id));
+                }
+                Some(ast::Resolution::Def(def_id, ast::DefinitionKind::ParamConst)) => {
+                    let ast::Node::GenericParam(param @ ast::GenericParam { kind: ast::GenericParamKind::Const(name, _), .. }) = tcx.node_by_def_id(*def_id) else {
+                        unreachable!();
+                    };
+
+                    let owner_node = tcx.owner_node(param.node_id);
+
+                    let generics = owner_node.generics();
+                    let index = generics
+                        .iter()
+                        .position(|p| p.node_id == param.node_id)
+                        .expect("`param` should be a generic param on its owner");
+
+                    return Some(tcx.intern_const(ConstKind::Param(name.symbol, index)));
+                }
+                _ => ()
             }
-            return Some(Const::from_definition(tcx, *def_id));
-        }*/
+        }
         None
     }
 
@@ -393,6 +514,10 @@ impl<'tcx> Const<'tcx> {
             _ => None
         }
     }
+
+    pub fn new_error(tcx: TyCtxt<'tcx>) -> Self {
+        tcx.intern_const(ConstKind::Err)
+    }
 }
 
 impl<'tcx> std::fmt::Debug for Const<'tcx> {
@@ -400,6 +525,7 @@ impl<'tcx> std::fmt::Debug for Const<'tcx> {
         match self {
             Const(ConstKind::Value(value)) => write!(f, "{value:?}"),
             Const(ConstKind::Infer) => write!(f, "_"),
+            Const(ConstKind::Param(symbol, _)) => write!(f, "{symbol}"),
             Const(ConstKind::Err) => write!(f, "<error>")
         }
     }
@@ -569,15 +695,16 @@ pub enum TyKind<'tcx> {
     String,
     Int(Integer, bool),
     Float(Float),
-    Adt(AdtDef<'tcx>),
+    Adt(AdtDef<'tcx>, &'tcx [GenericArg<'tcx>]),
     Enum(Enum<'tcx>),
     Refrence(Ty<'tcx>),
     Range(Ty<'tcx>, bool),
     Slice(Ty<'tcx>),
     Array(Ty<'tcx>, Const<'tcx>),
     Tuple(&'tcx [Ty<'tcx>]),
+    UinstantiatedTuple,
     DynamicArray(Ty<'tcx>),
-    Function(DefId),
+    Function(DefId, &'tcx [GenericArg<'tcx>]),
     Param(ParamTy),
     Never,
     Err
@@ -614,14 +741,28 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
             TyKind::String => f.write_str("string"),
             TyKind::Float(Float::F32) => f.write_str("float"),
             TyKind::Float(Float::F64) => f.write_str("double"),
-            TyKind::Adt(adt) => f.write_str(adt.name().get()),
+            TyKind::Adt(adt, generics) => {
+                f.write_str(adt.name().get())?;
+                if generics.len() > 0 {
+                    f.write_str("<")?;
+                    for (idx, arg) in generics.iter().enumerate() {
+                        write!(f, "{arg}")?;
+                        if idx != generics.len() - 1 {        
+                            f.write_str(", ")?;
+                        }
+                    }
+                    f.write_str(">")?;
+
+                }
+                Ok(())
+            },
             TyKind::Enum(enm) => f.write_str(enm.name.get()),
             TyKind::Refrence(ty) => write!(f, "{ty}*"),
             TyKind::Slice(ty) => write!(f, "{ty}[]"),
             TyKind::Array(ty, cap) => write!(f, "{ty}[{cap:?}]"),
             TyKind::DynamicArray(ty) => write!(f, "{ty}[..]"),
             // TODO: query function name and display it here
-            TyKind::Function(_) => write!(f, "function"),
+            TyKind::Function(def_id, generics) => write!(f, "function"),
             TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
             TyKind::Param(param_ty) => write!(f, "{}", param_ty.symbol),
             TyKind::Tuple(tys) => {
@@ -635,6 +776,7 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
                 f.write_str(">")?;
                 Ok(())
             }
+            TyKind::UinstantiatedTuple => f.write_str("tuple"),
             TyKind::Err => write!(f, "Err"),
         }
     }
@@ -643,6 +785,12 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
 impl<'tcx> FromCycleError<'tcx> for Ty<'tcx> {
     fn from_cycle_error(tcx: TyCtxt<'tcx>) -> Self {
         Ty::new_error(tcx)
+    }
+}
+
+impl<'tcx> AsType<'tcx> for Ty<'tcx> {
+    fn as_type(&self) -> Option<Ty<'tcx>> {
+        Some(*self)
     }
 }
 
@@ -680,15 +828,19 @@ impl<'tcx> Ty<'tcx> {
     }
 
     pub fn new_adt(tcx: TyCtxt<'tcx>, adt: AdtDef<'tcx>) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Adt(adt))
+        tcx.intern_ty(TyKind::Adt(adt, adt.def().normalized_generics(tcx)))
     }
 
     pub fn new_function(tcx: TyCtxt<'tcx>, def: DefId) -> Ty<'tcx> {
-        tcx.intern_ty(TyKind::Function(def))
+        tcx.intern_ty(TyKind::Function(def, def.normalized_generics(tcx)))
     }
 
     pub fn new_range(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, inclusive: bool) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Range(ty, inclusive))
+    }
+
+    pub fn new_uninstantiated_tuple(tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
+        tcx.intern_ty(TyKind::UinstantiatedTuple)
     }
 
     pub fn new_tuple(tcx: TyCtxt<'tcx>, tys: &'tcx [Ty<'tcx>]) -> Ty<'tcx> {
@@ -739,6 +891,7 @@ impl<'tcx> Ty<'tcx> {
             _ => false
         }
     }
+
 }
 
 impl Symbol {
@@ -783,6 +936,7 @@ impl Symbol {
             sym::string => Some(tcx.basic_types.string),
             sym::float => Some(tcx.basic_types.float),
             sym::double => Some(tcx.basic_types.double),
+            sym::tuple => Some(Ty::new_uninstantiated_tuple(tcx)),
 
             _ => None
         }
@@ -1502,12 +1656,12 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 self.layout_for_float(*float),
             Ty(TyKind::Enum(enm)) => 
                 self.layout_for_enum(enm)?,
-            Ty(TyKind::Adt(adt)) => {
+            Ty(TyKind::Adt(adt, generics)) => {
                 match adt {
                     AdtDef(AdtKind::Struct(strct)) => {
                         let mut fields = IndexVec::new();
                         for field in strct.fields.iter() {
-                            let tuple = match self.tcx.layout_of(self.tcx.type_of(field.def)) {
+                            let tuple = match self.tcx.layout_of(self.tcx.type_of(field.def).instantiate(*generics, self.tcx)) {
                                 Ok(tuple) => tuple,
                                 err @ Err(LayoutError::Cyclic) => {
                                     let ast::Node::Item(item) = self.tcx.node_by_def_id(strct.def) else { unreachable!() };
@@ -1572,6 +1726,7 @@ impl<'tcx> LayoutCtxt<'tcx> {
                     BackendRepr::Memory
                 ),
             Ty(TyKind::Param(_)) => return Err(LayoutError::Inspecific),
+            Ty(TyKind::UinstantiatedTuple) => return Err(LayoutError::Inspecific),
             Ty(TyKind::Err) => return Err(LayoutError::Erroneous),
         };
         Ok(TyLayoutTuple { ty, layout })

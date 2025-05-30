@@ -435,15 +435,40 @@ macro_rules! define_intern_fns {
     };
 }
 
-for_every_internable! { define_interners! }
-for_every_internable! { define_intern_fns! }
-
-pub trait InternerExt<T: Borrow<V> + Hash + Copy, V: Hash + Eq> {
-    fn intern(&self, value: V, f: impl FnOnce(V) -> T) -> T;
+macro_rules! define_internable {
+    ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {$(
+        impl<'tcx> Internable for &'tcx $in {
+            fn to_pointer(self) -> *const () {
+                self as *const _ as *const ()
+            }
+        }
+    )*}
 }
 
-impl<T: Borrow<V> + Hash + Copy, V: Hash + Eq> InternerExt<T, V> for RefCell<HashTable<T>> {
-    fn intern(&self, value: V, f: impl FnOnce(V) -> T) -> T {
+for_every_internable! { define_interners! }
+for_every_internable! { define_intern_fns! }
+for_every_internable! { define_internable! }
+
+#[doc(hidden)]
+pub trait Internable {
+    fn to_pointer(self) -> *const ();
+}
+
+pub trait InternerExt<T: Hash + Copy> {
+    fn intern<V: Hash + Eq>(&self, value: V, f: impl FnOnce(V) -> T) -> T 
+    where
+        T: Borrow<V>;
+
+    fn contains<U: Hash + Internable>(&self, value: U) -> bool
+    where
+        T: Internable;
+}
+
+impl<T: Hash + Copy> InternerExt<T> for RefCell<HashTable<T>> {
+    fn intern<V: Hash + Eq>(&self, value: V, f: impl FnOnce(V) -> T) -> T 
+    where
+        T: Borrow<V>
+    {
         let hash = make_hash(&value);
         let mut table = self.borrow_mut();
 
@@ -455,6 +480,17 @@ impl<T: Borrow<V> + Hash + Copy, V: Hash + Eq> InternerExt<T, V> for RefCell<Has
                 v
             }
         }
+    }
+
+    fn contains<U: Hash + Internable>(&self, value: U) -> bool
+    where
+        T: Internable,
+    {
+        let hash = make_hash(&value);
+        let table = self.borrow();
+        let pointer = value.to_pointer();
+
+        table.find(hash, |item| item.to_pointer() == pointer).is_some()
     }
 }
 

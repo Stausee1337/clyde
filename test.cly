@@ -4,30 +4,93 @@ clyde :: #include "./clyde.cly";
 // FT_Uint      :: #type uint;
 // ClickHandler :: #type bool(ClickEvent)!Std::Error*;
 // 
-FACTOR ::= 80;
+int FACTOR ::= 80;
 // WIDTH  ::= FACTOR * 16;
 // HEIGHT ::= FACTOR * 9;
 
-void Wrapper<T>::main<T>(string[] args) {
+void main(string[] args) {
     // #include "Compiler";
+    // #import "Window";
 
     static byte[1024] minibuf;
 
-    struct Hello<U> {
+    // _clyH116Za1fPrqtBuF5basic_4test4main
+    struct Hello {
         byte a;
         byte b;
         short c;
     }
 
+    var x = FileMode::Write;
+    x = FileMode::Read;
+    x = FileMode::Create;
+
 
     string msg = "Hello, World";
-    clyde::print(msg);
+    build_test(TestStruct::Kind::Large);
+    // dispose<int>(msg);
+    // clyde::print(msg * 3);
     // const window  = Window::open("Window", WIDTH, HEIGHT);
     int WINDOW ::= 4;
 }
 
-string from_raw_parts(byte *data, nuint len) {
+struct TestStruct {
+    enum Kind {
+        Small;
+        Large;
+    }
+    int Knd ::= 12;
+
+    static int count;
+
+    nuint count;
+    Kind kind;
+}
+
+TestStruct build_test(TestStruct::Kind kind) {
+    TestStruct::count += TestStruct::Knd;
+    var test = TestStruct {
+        count = 0,
+        kind = kind
+    };
+    return test;
+}
+
+struct Wrapper<T> {
+    T inner;
+}
+
+Wrapper<int> wrap_int(int data) {
+    return Wrapper<int> {
+        inner = data,
+    };
+}
+
+/*struct Matrix<const nuint ROWS, const nuint COLS> {
+    float[ROWS / COLS] data;
+}*/
+
+
+Vec<T> :: #type T[..];
+
+enum FileMode {
+    Read   ::= -1;
+    Write;
+    Create;
+}
+
+nuint len<T>(T[] slice) {
+    var parts = slice_to_raw_parts<T>(slice);
+    return parts.1;
+}
+
+tuple<T*, nuint> slice_to_raw_parts<T>(T[] slice) #compiler_intrinsic;
+
+
+// Sized<const nuint SIZE> :: #type byte[SIZE];
+
+/*string from_raw_parts(byte *data, nuint len) {
     return string_from_raw_parts(data, len);
     string string_from_raw_parts(byte *data, nuint len) #compiler_intrinsic;
-}
+}*/
 

@@ -75,7 +75,7 @@ impl<'ast> Node<'ast> {
             ItemKind::Function(func) => func.sig.generics,
             ItemKind::Struct(strct) => strct.generics,
             ItemKind::Alias(alias) => alias.generics,
-            _ => unreachable!("item {item:?} does not have generics")
+            _ => &[]
         }
 
     }
@@ -189,6 +189,15 @@ pub enum Resolution {
     Local(NodeId),
     Primitive(Symbol),
     Err
+}
+
+impl Resolution {
+    pub fn def_id(&self) -> Option<DefId> {
+        if let Resolution::Def(def_id, _) = self {
+            return Some(*def_id);
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -800,14 +809,14 @@ pub struct GenericArgument<'ast> {
 pub enum GenericArgumentKind<'ast> {
     Ty(&'ast TypeExpr<'ast>),
     Expr(&'ast NestedConst<'ast>),
-    Literal(Literal),
 }
 
 #[derive(Debug)]
 pub struct GenericParam<'ast> {
     pub kind: GenericParamKind<'ast>,
     pub span: Span,
-    pub node_id: NodeId
+    pub node_id: NodeId,
+    pub def_id: OnceCell<DefId>
 }
 
 impl<'ast> IntoNode<'ast> for GenericParam<'ast>  {

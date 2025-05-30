@@ -711,7 +711,8 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         self.create_node_id(|this, node_id| this.alloc(ast::GenericParam {
             kind,
             span,
-            node_id
+            node_id,
+            def_id: OnceCell::new()
         }))
     }
 

@@ -17,7 +17,8 @@ mod target;
 mod type_ir;
 mod files;
 mod context;
-mod codegen;
+// mod codegen;
+mod mapping;
 mod string_internals;
 
 fn main() -> ExitCode {
@@ -33,7 +34,8 @@ fn main() -> ExitCode {
 
     let res = sess.global_ctxt(|tcx| {
         analysis::run_analylsis(tcx)?;
-        Ok(codegen::run_codegen(tcx))
+        // Ok(codegen::run_codegen(tcx))
+        Ok(())
     });
 
     sess.diagnostics().render();

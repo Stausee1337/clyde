@@ -70,7 +70,8 @@ Symbols! {
     stringdata,
     stringlen,
     slice_to_raw_parts,
-    string_from_raw_parts
+    string_from_raw_parts,
+    T
 }
 
 macro_rules! define_symbols {

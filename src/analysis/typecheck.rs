@@ -1,9 +1,9 @@
-use std::{cell::Cell, fmt::Write};
+use std::cell::Cell;
 
 use hashbrown::HashMap;
 use num_traits::ToPrimitive;
 
-use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, Integer, Ty, TyKind}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, Instatiatable, Integer, Ty, TyKind}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -690,7 +690,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         if let Ty(type_ir::TyKind::Never | type_ir::TyKind::Err) = ty {
             return ty;
         }
-        let Ty(type_ir::TyKind::Function(fn_def)) = ty else {
+        let Ty(type_ir::TyKind::Function(fn_def, generics)) = ty else {
             Message::error(format!("expected function, found {ty}"))
                 .at(call.callable.span)
                 .push(self.diagnostics());
@@ -705,7 +705,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ast::FunctionArgument::Direct(expr) => {
                     arg_count += 1;
                     if let Some(param) = signature.params.get(idx) {
-                        self.check_expr_with_expectation(expr, Expectation::Coerce(param.ty));
+                        self.check_expr_with_expectation(expr, Expectation::Coerce(param.ty.instantiate(generics, self.tcx)));
                     }
                 }
                 ast::FunctionArgument::Keyword(..) =>
@@ -722,7 +722,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             self.last_error.set(Some(()));
         }
 
-        signature.returns
+        signature.returns.instantiate(generics, self.tcx)
     }
 
     fn check_expr_subscript(&mut self, subscript: &'tcx ast::Subscript<'tcx>) -> Ty<'tcx> {
@@ -803,7 +803,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::FieldIdent::Tuple { value, span } =>
                 return self.check_expr_ftuple(ty, *value as usize, *span),
         };
-        let Ty(type_ir::TyKind::Adt(adt)) = self.autoderef(ty, -1).unwrap_or(ty) else {
+        let Ty(type_ir::TyKind::Adt(adt, generics)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             Message::error(format!("fields are only found on structs, not {ty}"))
                 .at(field.expr.span)
                 .push(self.diagnostics());
@@ -831,7 +831,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         };
 
         self.field_indices.insert(node_id, idx);
-        self.tcx.type_of(field.def)
+        self.tcx.type_of(field.def).instantiate(generics, self.tcx)
     }
  
     fn check_expr_init(
@@ -860,8 +860,8 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .push(self.diagnostics());
                 self.last_error.set(Some(()));
             }
-            Ty(TyKind::Tuple(..)) => {
-                Message::error(format!("expected struct, found tuple {ty}"))
+            Ty(TyKind::Tuple(..) | TyKind::UinstantiatedTuple) => {
+                Message::error(format!("expected struct, found {ty}"))
                     .at(span)
                     .note("initialize tuple using tuple expression (<0>, <1>, ...)")
                     .push(self.diagnostics());
@@ -912,7 +912,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .push(self.diagnostics());
                 self.last_error.set(Some(()));
             }
-            Ty(TyKind::Adt(adt)) => match adt {
+            Ty(TyKind::Adt(adt, generics)) => match adt {
                 AdtDef(type_ir::AdtKind::Struct(strct)) => {
                     // FIXME: Don't build reverse field lookup every time
                     // we need to lookup fields
@@ -930,7 +930,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                         .push(self.diagnostics());
                                     continue;
                                 };
-                                let fty = self.tcx.type_of(fdef.def);
+                                let fty = self.tcx.type_of(fdef.def).instantiate(generics, self.tcx);
                                 self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
                                 self.field_indices.insert(expr.node_id, *idx);
                             }
@@ -1022,7 +1022,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 }
             }
             ast::TypeConversion::Transmute => {
-                todo!("Idk how to do that righ now");
+                todo!("layout_of(a) == layout_of(b)");
             }
         }
 
@@ -1264,7 +1264,7 @@ enum LoweringMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResolutionKind {
-    Type, Value
+    Type, Value, Function
 }
 
 impl std::fmt::Display for ResolutionKind {
@@ -1272,6 +1272,7 @@ impl std::fmt::Display for ResolutionKind {
         match self {
             ResolutionKind::Type => f.write_str("type"),
             ResolutionKind::Value => f.write_str("value"),
+            ResolutionKind::Function => unreachable!()
         }
     }
 }
@@ -1321,6 +1322,108 @@ impl<'tcx> LoweringCtxt<'tcx> {
         }
     }
 
+    fn path_segment_generics_instantiate(&self, ty: &mut Ty<'tcx>, item_id: Option<DefId>, segment: &'tcx ast::PathSegment<'tcx>) {
+        let generics = generic_iterator(*ty, item_id, self.tcx);
+
+        let num_args = segment.generic_args.len();
+
+        let mut generics = match generics {
+            Some(generics) => generics,
+            None => {
+                if num_args > 0 {
+                    let start = segment.generic_args.first().unwrap().span;
+                    let end = segment.generic_args.last().unwrap().span;
+                    Message::error(format!("type `{}` expects 0 generic argument(s)", ty))
+                        .at(Span::interpolate(start, end))
+                        .push(self.diagnostics());
+                    self.last_error.set(Some(()));
+                }
+
+                return
+            }
+        };
+
+        let mut args = segment.generic_args.iter();
+        let mut ir_args: Vec<type_ir::GenericArg> = vec![];
+        let mut forgotten_args = 0;
+
+        let residual = loop {
+            let arg = args.next();
+            let arg_kind = arg.map(|arg| &arg.kind);
+
+            // TODO: once named generic arguments are available this will become
+            // `advance_positioninal` and `advance_named` for every named generic argument
+            generics.advance();
+
+            let Some(param) = generics.current() else {
+                break arg;
+            };
+
+            let ir_arg = match (arg_kind, param) {
+                (Some(ast::GenericArgumentKind::Ty(ty_expr)), GenericParamKind::Ty) => 
+                    type_ir::GenericArg::from_ty(self.lower_ty(ty_expr)),
+                (Some(ast::GenericArgumentKind::Expr(expr)), GenericParamKind::Ty) => {
+                    Message::error("found const, expected type generic argument")
+                        .at(expr.span)
+                        .push(self.diagnostics());
+                    type_ir::GenericArg::from_ty(Ty::new_error(self.tcx))
+                }
+                (Some(ast::GenericArgumentKind::Expr(expr)), GenericParamKind::Const) => {
+                    let def_id = *expr.def_id.get().unwrap();
+                    type_ir::GenericArg::from_const(type_ir::Const::from_definition(self.tcx, def_id))
+                }
+                (Some(ast::GenericArgumentKind::Ty(ty_expr)), GenericParamKind::Const) => {
+                    Message::error("found type, expected const generic argument")
+                        .at(ty_expr.span)
+                        .push(self.diagnostics());
+                    type_ir::GenericArg::from_const(type_ir::Const::new_error(self.tcx))
+                }
+                (None, param) => {
+                    if generics.is_optional() {
+                        break None;
+                    }
+
+                    forgotten_args += 1;
+                    match param {
+                        GenericParamKind::Ty =>
+                            type_ir::GenericArg::from_ty(Ty::new_error(self.tcx)), 
+                        GenericParamKind::Const =>
+                            type_ir::GenericArg::from_const(type_ir::Const::new_error(self.tcx))
+                    }
+                }
+            };
+            ir_args.push(ir_arg);
+        };
+
+        let argcount_errorspan = if forgotten_args > 0 {
+            if !segment.generic_args.is_empty() {
+                let start = segment.generic_args.first().unwrap().span;
+                let end = segment.generic_args.last().unwrap().span;
+                Some(Span::interpolate(start, end))
+            } else {
+                Some(segment.span)
+            }
+        } else if let Some(arg) = residual {
+            let start = arg.span;
+            let mut end = arg.span;
+            if let Some(arg) = args.last() {
+                end = arg.span;
+            }
+            Some(Span::interpolate(start, end))
+        } else {
+            None
+        };
+
+        if let Some(argcount_errorspan) = argcount_errorspan {
+            Message::error(format!("type `{}` expected {} generic arguments, but {} were provided", ty, generics.expected_count(), segment.generic_args.len()))
+                .at(argcount_errorspan)
+                .push(self.diagnostics());
+        }
+
+        let generic_args = self.tcx.arena.alloc_slice_copy(&ir_args);
+        *ty = ty.instantiate(generic_args, self.tcx);
+    }
+
     fn lower_path_in_context(&self, path: &'tcx ast::Path<'tcx>, resolution_kind: ResolutionKind) -> Ty<'tcx> {
         let mut last_resolved_segment = None;
         for (idx, segment) in path.segments.iter().enumerate().rev() {
@@ -1329,21 +1432,28 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 break;
             }
         }
+
+        let mut current_resolution;
         let (mut ty, idx) = match last_resolved_segment {
             Some(idx) => {
                 let segment = &path.segments[idx];
                 let resolution = segment.resolution().unwrap();
-                let /*mut*/ ty = self.ty_from_resolution(resolution, ResolutionKind::Type, path.segments[idx].span);
-                if segment.generic_args.len() > 0 {
-                    todo!("ty = ty.instantciate(generic_args)");
-                }
+
+                let res_kind = if idx == path.segments.len() - 1 {
+                    resolution_kind
+                } else {
+                    ResolutionKind::Type
+                };
+                let mut ty = self.ty_from_resolution(resolution, res_kind, path.segments[idx].span);
+                let def_id = resolution
+                    .def_id()
+                    .filter(|def_id| matches!(self.tcx.node_by_def_id(*def_id), ast::Node::Item(..)));
+                self.path_segment_generics_instantiate(&mut ty, def_id, segment);
+                current_resolution = res_kind;
                 (ty, idx)
             },
             None => {
                 if path.segments[0].ident.is_some() {
-                    for seg in path.segments {
-                        println!(" -- {} {}", seg.ident.unwrap().symbol, seg.resolution().is_some());
-                    }
                     panic!("invalid unresolved path in `lower_path_in_context`");
                 }
                 let garg = &path.segments[0].generic_args[0];
@@ -1351,6 +1461,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     ast::GenericArgumentKind::Ty(ty) => self.lower_ty(ty),
                     _ => unreachable!()
                 };
+                current_resolution = ResolutionKind::Type;
                 (ty, 0)
             }
         };
@@ -1359,15 +1470,13 @@ impl<'tcx> LoweringCtxt<'tcx> {
         }
 
         let mut unresolved_segments = path.segments[idx + 1..].iter();
-        let mut current_resolution = ResolutionKind::Type;
         let mut prev = ast::Ident { symbol: sym::int, span: Span::NULL };
 
         while let Some(segment) = unresolved_segments.next() {
             let ident = segment.ident.unwrap();
-            if segment.generic_args.len() > 0 {
-                todo!("ty.instanciate(generic_args)");
-            }
             prev = ident;
+            let mut item_id = None;
+
             match ty {
                 Ty(TyKind::Enum(enm)) => {    
                     let mut variant = None;
@@ -1392,7 +1501,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 },
                 // FIXME: associated items will be able to appear on any items with some sort of
                 // path due to assocaited functions and not be limited to structures
-                Ty(TyKind::Adt(adt_def)) => {
+                Ty(TyKind::Adt(adt_def, _)) => {
                     let AdtDef(AdtKind::Struct(strct)) = adt_def else {
                         unreachable!()
                     };
@@ -1405,14 +1514,15 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         };
                         if item.ident().symbol == ident.symbol {
                             let ty = self.tcx.type_of(*def_id);
-                            // FIXME: maybe DefinitionKind::Function should be type
                             let res_kind = match def_kind {
                                 DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::TypeAlias |
                                 DefinitionKind::ParamTy => ResolutionKind::Type,
                                 DefinitionKind::Const | DefinitionKind::Static | DefinitionKind::NestedConst |
-                                DefinitionKind::ParamConst | DefinitionKind::Variant | DefinitionKind::Function
+                                DefinitionKind::ParamConst | DefinitionKind::Variant 
                                 => ResolutionKind::Value,
+                                DefinitionKind::Function => ResolutionKind::Function,
                                 DefinitionKind::Field => unreachable!()
+                                // technically not just DefinitionKind::Field is unreachable
                             };
                             resoltion = Some((*def_id, *def_kind, ty, res_kind));
                         }
@@ -1422,6 +1532,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         segment.resolve(ast::Resolution::Def(def_id, def_kind));
                         ty = new_ty;
                         current_resolution = res_kind;
+                        item_id = Some(def_id);
                     } else {
                         Message::error(format!("can't find item `{}` on `{ty}`", ident.symbol))
                             .at(ident.span)
@@ -1443,7 +1554,19 @@ impl<'tcx> LoweringCtxt<'tcx> {
             }
 
             if current_resolution == ResolutionKind::Value {
+                if segment.generic_args.len() > 0 {
+                    let start = segment.generic_args.first().unwrap().span;
+                    let end = segment.generic_args.last().unwrap().span;
+                    Message::error(format!("value `{}` cannot expect any generic arguments", ident.symbol))
+                        .at(Span::interpolate(start, end))
+                        .push(self.diagnostics());
+                }
                 break;
+            }
+
+            self.path_segment_generics_instantiate(&mut ty, item_id, segment);
+            if current_resolution == ResolutionKind::Function {
+                current_resolution = ResolutionKind::Value;
             }
         }
 
@@ -1478,11 +1601,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
             ast::Resolution::Def(def_id, DefinitionKind::Struct | DefinitionKind::Enum | DefinitionKind::ParamTy | DefinitionKind::TypeAlias) =>
                 (self.tcx.type_of(*def_id), ResolutionKind::Type),
             ast::Resolution::Primitive(sym) => {
-                if *sym == sym::tuple {
-                    (Ty::new_tuple(self.tcx, &[]), ResolutionKind::Type)
-                } else {
-                    (sym.get_primitive_ty(self.tcx).unwrap(), ResolutionKind::Type)
-                }
+                (sym.get_primitive_ty(self.tcx).unwrap(), ResolutionKind::Type)
             }
             ast::Resolution::Err =>
                 return Ty::new_error(self.tcx),
@@ -1503,21 +1622,13 @@ impl<'tcx> LoweringCtxt<'tcx> {
         &self,
         path: &'tcx ast::Path<'tcx>,
         resolution_kind: ResolutionKind
-    ) -> Ty<'tcx> {
-        // TODO: this is comparable to a path resolution at typecheck stage now
-        
-        let ty = if let Some(resolution) = path.resolution() {
-            self.ty_from_resolution(resolution, resolution_kind, path.segments.last().unwrap().span)
-        } else {
-            self.lower_path_in_context(path, resolution_kind)
-        };
-
-        ty
+    ) -> Ty<'tcx> { 
+        self.lower_path_in_context(path, resolution_kind)
     }
 
     fn lower_ty(&self, ty: &'tcx ast::TypeExpr<'tcx>) -> Ty<'tcx> {
         match &ty.kind {
-            ast::TypeExprKind::Path(path) =>  self.lower_path(path, ResolutionKind::Type),
+            ast::TypeExprKind::Path(path) => self.lower_path(path, ResolutionKind::Type),
             ast::TypeExprKind::Ref(ty) => {
                 let ty = self.lower_ty(ty);
                 Ty::new_refrence(self.tcx, ty)
@@ -1558,6 +1669,105 @@ impl<'tcx> LoweringCtxt<'tcx> {
             ast::TypeExprKind::Err => Ty::new_error(self.tcx)
         }
     }
+}
+
+struct GenericParamsIterator<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    def_id: Option<DefId>,
+    ast_params: &'tcx [&'tcx ast::GenericParam<'tcx>],
+    varidaic: bool,
+    current_param: CurrentParam<'tcx>
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CurrentParam<'tcx> {
+    NotStarted,
+    Param(&'tcx ast::GenericParam<'tcx>, usize),
+    Variadic,
+    Ended,
+}
+
+#[derive(Clone, Copy)]
+enum GenericParamKind {
+    Ty, Const
+}
+
+impl<'tcx> GenericParamsIterator<'tcx> {
+    fn advance(&mut self) {
+        let new = match self.current_param {
+            CurrentParam::NotStarted => {
+                if 0 >= self.ast_params.len() {
+                    if self.varidaic {
+                        CurrentParam::Variadic
+                    } else {
+                        CurrentParam::Ended
+                    }
+                } else {
+                    CurrentParam::Param(self.ast_params[0], 1)
+                }
+            }
+            CurrentParam::Param(_, idx) => {
+                if idx >= self.ast_params.len() {
+                    if self.varidaic {
+                        CurrentParam::Variadic
+                    } else {
+                        CurrentParam::Ended
+                    }
+                } else {
+                    CurrentParam::Param(self.ast_params[idx], idx + 1)
+                }
+            }
+            p @ (CurrentParam::Variadic | CurrentParam::Ended) => p,
+        };
+        self.current_param = new;
+    }
+
+    fn current(&self) -> Option<GenericParamKind> {
+        match self.current_param {
+            CurrentParam::Param(param, _) => match param.kind {
+                ast::GenericParamKind::Type(..) => Some(GenericParamKind::Ty),
+                ast::GenericParamKind::Const(..) => Some(GenericParamKind::Const),
+            }
+            CurrentParam::Variadic => Some(GenericParamKind::Ty),
+            _ => None
+        }
+    }
+
+    fn is_optional(&self) -> bool {
+        if let CurrentParam::Variadic = self.current_param {
+            return true;
+        }
+        false
+    }
+
+    fn expected_count(&self) -> usize {
+        self.ast_params.len()
+    }
+}
+
+fn generic_iterator<'tcx>(ty: Ty<'tcx>, def_id: Option<DefId>, tcx: TyCtxt<'tcx>) -> Option<GenericParamsIterator<'tcx>> {
+    let ast_params;
+    if let Some(def_id) = def_id {
+        let node = tcx.node_by_def_id(def_id);
+        ast_params = node.generics();
+        if ast_params.is_empty() {
+            return None;
+        }
+    } else if let Ty(TyKind::UinstantiatedTuple) = ty {
+        ast_params = &[];
+    } else {
+        return None;
+    }
+
+    let iter = GenericParamsIterator {
+        tcx,
+        def_id,
+        ast_params,
+        varidaic: matches!(ty, Ty(TyKind::UinstantiatedTuple)),
+        current_param: CurrentParam::NotStarted
+    };
+
+    return Some(iter);
 }
 
 pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
@@ -1626,12 +1836,15 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
 
                     Ty::new_param(tcx, ty.symbol, index)
                 }
-                ast::GenericParamKind::Const(..) => todo!()
+                ast::GenericParamKind::Const(_, ty) => {
+                    let ctx = LoweringCtxt::new(tcx, LoweringMode::Unbound);
+                    ctx.lower_ty(ty)
+                }
             }
         }
         ast::Node::FieldDef(field) => {
             let ctx = LoweringCtxt::new(tcx, LoweringMode::Unbound);
-            ctx.lower_ty(&field.ty)
+            ctx.lower_ty(field.ty)
         }
         ast::Node::Variant(..) => tcx.enum_variant(def_id).0,
         ast::Node::NestedConst(nested) => {
