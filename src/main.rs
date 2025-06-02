@@ -20,6 +20,7 @@ mod context;
 // mod codegen;
 mod mapping;
 mod string_internals;
+mod pretty_print;
 
 fn main() -> ExitCode {
     let options = match session::parse_argv_options(env::args()) {

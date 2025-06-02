@@ -5,7 +5,7 @@ use bytemuck::Pod;
 use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, mapping, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
+use crate::{context::{self, FromCycleError, InternerExt, Interners, TyCtxt}, diagnostics::Message, mapping, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
 
 impl DefId {
     pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx [GenericArg<'tcx>] {
@@ -729,56 +729,12 @@ impl<'tcx> Eq for Ty<'tcx> {}
 
 impl<'tcx> std::fmt::Display for Ty<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            TyKind::Never => write!(f, "never"),
-            TyKind::Int(integer, signed) => {
-                let sym = integer.to_symbol(*signed);
-                f.write_str(sym.get())
-            },
-            TyKind::Bool => f.write_str("bool"),
-            TyKind::Void => f.write_str("void"),
-            TyKind::Char => f.write_str("char"),
-            TyKind::String => f.write_str("string"),
-            TyKind::Float(Float::F32) => f.write_str("float"),
-            TyKind::Float(Float::F64) => f.write_str("double"),
-            TyKind::Adt(adt, generics) => {
-                f.write_str(adt.name().get())?;
-                if generics.len() > 0 {
-                    f.write_str("<")?;
-                    for (idx, arg) in generics.iter().enumerate() {
-                        write!(f, "{arg}")?;
-                        if idx != generics.len() - 1 {        
-                            f.write_str(", ")?;
-                        }
-                    }
-                    f.write_str(">")?;
-
-                }
-                Ok(())
-            },
-            TyKind::Enum(enm) => f.write_str(enm.name.get()),
-            TyKind::Refrence(ty) => write!(f, "{ty}*"),
-            TyKind::Slice(ty) => write!(f, "{ty}[]"),
-            TyKind::Array(ty, cap) => write!(f, "{ty}[{cap:?}]"),
-            TyKind::DynamicArray(ty) => write!(f, "{ty}[..]"),
-            // TODO: query function name and display it here
-            TyKind::Function(def_id, generics) => write!(f, "function"),
-            TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
-            TyKind::Param(param_ty) => write!(f, "{}", param_ty.symbol),
-            TyKind::Tuple(tys) => {
-                f.write_str("tuple<")?;
-                for (idx, ty) in tys.iter().enumerate() {
-                    write!(f, "{ty}")?;
-                    if idx != tys.len() - 1 {        
-                        f.write_str(", ")?;
-                    }
-                }
-                f.write_str(">")?;
-                Ok(())
-            }
-            TyKind::UinstantiatedTuple => f.write_str("tuple"),
-            TyKind::Err => write!(f, "Err"),
-        }
+        context::with_tcx(|tcx| {
+            let tcx = *tcx.unwrap();
+            let ty = self.lift(tcx).unwrap();
+            let string = ty.print(tcx);
+            write!(f, "{string}")
+        })
     }
 }
 
@@ -892,6 +848,61 @@ impl<'tcx> Ty<'tcx> {
         }
     }
 
+    pub fn print(self, tcx: TyCtxt<'tcx>) -> String {
+        /*
+        match self.0 {
+            TyKind::Never => write!(f, "never"),
+            TyKind::Int(integer, signed) => {
+                let sym = integer.to_symbol(*signed);
+                f.write_str(sym.get())
+            },
+            TyKind::Bool => f.write_str("bool"),
+            TyKind::Void => f.write_str("void"),
+            TyKind::Char => f.write_str("char"),
+            TyKind::String => f.write_str("string"),
+            TyKind::Float(Float::F32) => f.write_str("float"),
+            TyKind::Float(Float::F64) => f.write_str("double"),
+            TyKind::Adt(adt, generics) => {
+                f.write_str(adt.name().get())?;
+                if generics.len() > 0 {
+                    f.write_str("<")?;
+                    for (idx, arg) in generics.iter().enumerate() {
+                        write!(f, "{arg}")?;
+                        if idx != generics.len() - 1 {        
+                            f.write_str(", ")?;
+                        }
+                    }
+                    f.write_str(">")?;
+
+                }
+                Ok(())
+            },
+            TyKind::Enum(enm) => f.write_str(enm.name.get()),
+            TyKind::Refrence(ty) => write!(f, "{ty}*"),
+            TyKind::Slice(ty) => write!(f, "{ty}[]"),
+            TyKind::Array(ty, cap) => write!(f, "{ty}[{cap:?}]"),
+            TyKind::DynamicArray(ty) => write!(f, "{ty}[..]"),
+            // TODO: query function name and display it here
+            TyKind::Function(def_id, generics) => write!(f, "function"),
+            TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
+            TyKind::Param(param_ty) => write!(f, "{}", param_ty.symbol),
+            TyKind::Tuple(tys) => {
+                f.write_str("tuple<")?;
+                for (idx, ty) in tys.iter().enumerate() {
+                    write!(f, "{ty}")?;
+                    if idx != tys.len() - 1 {        
+                        f.write_str(", ")?;
+                    }
+                }
+                f.write_str(">")?;
+                Ok(())
+            }
+            TyKind::UinstantiatedTuple => f.write_str("tuple"),
+            TyKind::Err => write!(f, "Err"),
+        }
+        */
+        todo!()
+    }
 }
 
 impl Symbol {

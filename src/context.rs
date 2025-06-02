@@ -445,9 +445,23 @@ macro_rules! define_internable {
     )*}
 }
 
+macro_rules! define_lift {
+    ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {$(
+        impl<'a> $($out)::+ <'a> {
+            #[allow(dead_code)]
+            pub fn lift<'tcx>(self, tcx: TyCtxt<'tcx>) -> Option<$($out)::+ <'tcx>> {
+                tcx.interners.$pool
+                    .contains(self.0)
+                    .then(|| unsafe { std::mem::transmute(self) })
+            }
+        }
+    )*}
+}
+
 for_every_internable! { define_interners! }
 for_every_internable! { define_intern_fns! }
 for_every_internable! { define_internable! }
+for_every_internable! { define_lift! }
 
 #[doc(hidden)]
 pub trait Internable {
