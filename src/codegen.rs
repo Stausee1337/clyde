@@ -379,8 +379,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 }
 
             }
-            Const(ConstKind::Err | ConstKind::Infer) =>
-                panic!("ConstKind::Err, ConstKind::Infer are invalid at Codegen phase")
+            Const(ConstKind::Err | ConstKind::Infer | ConstKind::Param(..)) =>
+                panic!("ConstKind::Err, ConstKind::Param and ConstKind::Infer are invalid at Codegen phase")
         }
     }
 
@@ -576,13 +576,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                 }
 
-                let result_ty = match layout.ty {
-                    Ty(TyKind::Function(def)) => {
-                        let sig = self.tcx.fn_sig(*def);
-                        sig.returns
-                    },
-                    _ => panic!("{:?} is not callable", layout.ty)
-                };
+                let result_ty = sig.returns;
                 let result_layout = self.tcx.layout_of(result_ty).unwrap();
 
                 let mut ll_result = None;

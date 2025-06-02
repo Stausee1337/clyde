@@ -1,3 +1,5 @@
+use std::cell::OnceCell;
+
 use crate::{context::TyCtxt, type_ir::{Const, ConstKind, GenericArg, GenericArgKind, Ty, TyKind}};
 
 
@@ -77,17 +79,69 @@ impl<'tcx> Recursible<'tcx> for Const<'tcx> {
     }
 }
 
+impl<'tcx, T: Recursible<'tcx> + Clone> Recursible<'tcx> for &'tcx [T] {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        let result = self
+            .iter()
+            .map(|x| Recursible::map_recurse(x.clone(), handler))
+            .collect::<Vec<_>>();
+        handler.tcx().arena.alloc_slice_clone(&result)
+    }
+}
+
+impl<'tcx, T: Recursible<'tcx>> Recursible<'tcx> for Option<T> {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        self.map(|x| Recursible::map_recurse(x, handler))
+    }
+}
+
+impl<'tcx, T: Recursible<'tcx>> Recursible<'tcx> for OnceCell<T> {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        match self.into_inner() {
+            Some(x) => {
+                let cell = OnceCell::new();
+                let _ = cell.set(Recursible::map_recurse(x, handler));
+                cell
+            }
+            None => OnceCell::new()
+        }
+    }
+}
+
+impl<'tcx, T: Recursible<'tcx>> Recursible<'tcx> for Vec<T> {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        self
+            .into_iter()
+            .map(|x| Recursible::map_recurse(x, handler))
+            .collect::<Vec<_>>()
+    }
+}
+
+impl<'tcx, T: Recursible<'tcx>> Recursible<'tcx> for Box<[T]> {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        Recursible::map_recurse(self.into_vec(), handler)
+            .into_boxed_slice()
+    }
+}
+
+impl<'tcx, I: index_vec::Idx, T: Recursible<'tcx>> Recursible<'tcx> for index_vec::IndexVec<I, T> {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        self
+            .into_iter()
+            .map(|x| Recursible::map_recurse(x, handler))
+            .collect::<index_vec::IndexVec<I, _>>()
+    }
+}
+
 pub struct InstantiationMapper<'tcx> {
     tcx: TyCtxt<'tcx>,
-    ty: Option<Ty<'tcx>>,
     generics: &'tcx [GenericArg<'tcx>]
 }
 
 impl<'tcx> InstantiationMapper<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, ty: Option<Ty<'tcx>>, generics: &'tcx [GenericArg<'tcx>]) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, generics: &'tcx [GenericArg<'tcx>]) -> Self {
         Self {
             tcx,
-            ty,
             generics
         }
     }
@@ -106,7 +160,7 @@ impl<'tcx> Mapper<'tcx> for InstantiationMapper<'tcx> {
                 };
                 ty
             }
-            Ty(TyKind::UinstantiatedTuple) if Some(ty) == self.ty => {
+            Ty(TyKind::UinstantiatedTuple) => {
                 let mut tys = vec![];
                 for arg in self.generics {
                     let GenericArgKind::Ty(ty) = arg.kind() else {

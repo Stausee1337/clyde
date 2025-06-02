@@ -8,6 +8,8 @@
 
 use std::{env, process::ExitCode};
 
+extern crate self as clyde;
+
 mod syntax;
 mod analysis;
 

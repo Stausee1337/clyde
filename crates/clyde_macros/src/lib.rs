@@ -22,3 +22,6 @@ pub fn base_case_handler(item: TokenStream) -> TokenStream {
         .unwrap_or_else(|err| syn::Error::to_compile_error(&err))
         .into()
 }
+
+synstructure::decl_derive!([Recursible, attributes(non_recursible)] => codegen::generate_recursible);
+

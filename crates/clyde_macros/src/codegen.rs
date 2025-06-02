@@ -281,3 +281,40 @@ pub fn generate_base_case_handler(token_stream: TokenStream) -> Result<TokenStre
         }
     })
 }
+
+pub fn generate_recursible(mut structure: synstructure::Structure) -> TokenStream {
+    structure.bind_with(|_| synstructure::BindStyle::Move);
+
+    let match_inner = structure.each_variant(|variant| {
+        let bindings = variant.bindings();
+        variant.construct(|_, idx| {
+            let binding = &bindings[idx];
+            if !has_attr(&binding.ast().attrs, "non_recursible") {
+                quote! { clyde::mapping::Recursible::map_recurse(#binding, handler) }
+            } else {
+                quote! { #binding }
+            }
+        })
+    });
+
+    structure.gen_impl(quote! {
+        gen impl clyde::mapping::Recursible<'tcx> for @Self {
+            fn map_recurse(self, handler: &mut impl clyde::mapping::Mapper<'tcx>) -> Self {
+                match self {
+                    #match_inner
+                }
+            }
+        }
+    })
+}
+
+
+fn has_attr(attrs: &[syn::Attribute], name: &'static str) -> bool {
+    for attr in attrs.iter() {
+        if attr.path().is_ident(name) {
+            return true;
+        }
+    }
+    false
+}
+

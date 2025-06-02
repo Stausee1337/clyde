@@ -31,13 +31,9 @@ pub trait Instatiatable<'tcx> {
     fn instantiate(self, generic_args: &'tcx [GenericArg<'tcx>], tcx: TyCtxt<'tcx>) -> Self;
 }
 
-pub trait AsType<'tcx> {
-    fn as_type(&self) -> Option<Ty<'tcx>>;
-}
-
-impl<'tcx, T: mapping::Recursible<'tcx> + AsType<'tcx>> Instatiatable<'tcx> for T {
+impl<'tcx, T: mapping::Recursible<'tcx>> Instatiatable<'tcx> for T {
     fn instantiate(self, generic_args: &'tcx [GenericArg<'tcx>], tcx: TyCtxt<'tcx>) -> Self {
-        let mut handler = mapping::InstantiationMapper::new(tcx, self.as_type(), generic_args);
+        let mut handler = mapping::InstantiationMapper::new(tcx, generic_args);
         self.map_recurse(&mut handler)
     }
 }
@@ -103,6 +99,17 @@ impl<'tcx> std::fmt::Display for GenericArg<'tcx> {
         match self.kind() {
             GenericArgKind::Ty(ty) => write!(f, "{ty}"),
             GenericArgKind::Const(cnst) => write!(f, "{cnst}"),
+        }
+    }
+}
+
+impl<'tcx> mapping::Recursible<'tcx> for GenericArg<'tcx> {
+    fn map_recurse(self, handler: &mut impl mapping::Mapper<'tcx>) -> Self {
+        match self.kind() {
+            GenericArgKind::Ty(ty) =>
+                GenericArg::from_ty(mapping::Recursible::map_recurse(ty, handler)),
+            GenericArgKind::Const(cnst) =>
+                GenericArg::from_const(mapping::Recursible::map_recurse(cnst, handler)),
         }
     }
 }
@@ -192,32 +199,29 @@ index_vec::define_index_type! {
     IMPL_RAW_CONVERSIONS = true;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, clyde_macros::Recursible)]
 pub struct Signature<'tcx> {
     pub returns: Ty<'tcx>,
     pub params: &'tcx [Param<'tcx>],
+    #[non_recursible]
     pub name: Symbol,
+    #[non_recursible]
     pub has_errors: bool,
+    #[non_recursible]
     pub intrinsic: bool
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, clyde_macros::Recursible)]
 pub struct Param<'tcx> {
+    #[non_recursible]
     pub name: Symbol,
     pub ty: Ty<'tcx>,
+    #[non_recursible]
     pub node_id: NodeId
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct Erased<'a>(&'a [u8]);
-
-impl<'a> Erased<'a> {
-    fn from_ref<T: Pod>(r: &'a T) -> Self {
-        let slice = std::slice::from_ref(r);
-        let data: &[u8] = bytemuck::cast_slice(slice);
-        Erased(data)
-    }
-}
 
 #[derive(Clone, Copy)]
 struct Eraser<'tcx> {
@@ -537,23 +541,28 @@ impl<'tcx> std::fmt::Display for Const<'tcx> {
     }
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Hash, Clone, PartialEq, Eq, clyde_macros::Recursible)]
 pub enum GlobalKind<'tcx> {
     Function {
+        #[non_recursible]
         def: DefId,
         generics: &'tcx [GenericArg<'tcx>]
     },
     EnumVariant {
+        #[non_recursible]
         def: DefId
     },
     Static {
+        #[non_recursible]
         def: DefId,
         initializer: Const<'tcx>
     },
     /// Similar to `GlobalKind::Static`, but it doesn't have a `DefId` associated with it and is
     /// used e.g. for interning the data of string literals.
     Indirect {
+        #[non_recursible]
         allocation: Box<[u8]>,
+        #[non_recursible]
         align: Align,
         ty: Ty<'tcx>,
     }
@@ -612,6 +621,13 @@ impl<'tcx> std::fmt::Display for Global<'tcx> {
                 self.lift(tcx).unwrap().print(p)
             })
         }) 
+    }
+}
+
+impl<'tcx> mapping::Recursible<'tcx> for Global<'tcx> {
+    fn map_recurse(self, handler: &mut impl mapping::Mapper<'tcx>) -> Self {
+        let kind = self.0.clone();
+        handler.tcx().intern_global(mapping::Recursible::map_recurse(kind, handler))
     }
 }
 
@@ -733,12 +749,6 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
 impl<'tcx> FromCycleError<'tcx> for Ty<'tcx> {
     fn from_cycle_error(tcx: TyCtxt<'tcx>) -> Self {
         Ty::new_error(tcx)
-    }
-}
-
-impl<'tcx> AsType<'tcx> for Ty<'tcx> {
-    fn as_type(&self) -> Option<Ty<'tcx>> {
-        Some(*self)
     }
 }
 

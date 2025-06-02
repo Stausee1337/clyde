@@ -4,13 +4,17 @@ use std::{cell::OnceCell, fmt::Write};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{context::TyCtxt, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Const, FieldIdx, Global, Ty, TyKind}};
+use crate::{context::TyCtxt, mapping, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Const, FieldIdx, Global, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
+#[derive(clyde_macros::Recursible)]
 pub struct Body<'tcx> {
+    #[non_recursible]
     pub entry: BlockId,
+    #[non_recursible]
     pub origin: DefId,
     pub result_ty: Ty<'tcx>,
+    #[non_recursible]
     pub num_params: usize,
     pub basic_blocks: IndexVec<BlockId, BasicBlock<'tcx>>,
     pub local_registers: IndexVec<RegisterId, Register<'tcx>>,
@@ -23,8 +27,11 @@ pub enum RegKind {
     Temp
 }
 
+#[derive(clyde_macros::Recursible)]
 pub struct Register<'tcx> {
+    #[non_recursible]
     pub kind: RegKind,
+    #[non_recursible]
     pub mutability: Mutability,
     pub ty: Ty<'tcx>
 }
@@ -49,7 +56,7 @@ index_vec::define_index_type! {
     DISPLAY_FORMAT = "%{}";
 }
 
-#[derive(Default)]
+#[derive(Default, clyde_macros::Recursible)]
 pub struct BasicBlock<'tcx> {
     pub statements: Vec<Statement<'tcx>>,
     pub terminator: OnceCell<Terminator<'tcx>>
@@ -62,9 +69,11 @@ index_vec::define_index_type! {
     DISPLAY_FORMAT = "bb{}";
 }
 
+#[derive(clyde_macros::Recursible)]
 pub struct Statement<'tcx> {
     pub place: Option<Place<'tcx>>,
     pub rhs: RValue<'tcx>,
+    #[non_recursible]
     pub span: Span
 }
 
@@ -77,8 +86,10 @@ impl<'tcx> std::fmt::Display for Statement<'tcx> {
     }
 }
 
+#[derive(clyde_macros::Recursible)]
 pub struct Terminator<'tcx> {
     pub kind: TerminatorKind<'tcx>,
+    #[non_recursible]
     pub span: Span
 }
 
@@ -99,11 +110,14 @@ impl<'tcx> std::fmt::Display for Terminator<'tcx> {
     }
 }
 
+#[derive(clyde_macros::Recursible)]
 pub enum TerminatorKind<'tcx> {
-    Goto(BlockId),
+    Goto(#[non_recursible] BlockId),
     Diverge {
         condition: Operand<'tcx>,
+        #[non_recursible]
         true_target: BlockId,
+        #[non_recursible]
         false_target: BlockId
     },
     Return {
@@ -111,8 +125,9 @@ pub enum TerminatorKind<'tcx> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, clyde_macros::Recursible)]
 pub struct Place<'tcx> {
+    #[non_recursible]
     pub origin: RegisterId,
     pub translation_chain: &'tcx [PtrTranslation<'tcx>]
 }
@@ -133,10 +148,11 @@ impl<'tcx> Place<'tcx> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, clyde_macros::Recursible)]
 pub enum PtrTranslation<'tcx> {
     Deref,
     Field {
+        #[non_recursible]
         field: FieldIdx,
         ty: Ty<'tcx>
     },
@@ -165,9 +181,9 @@ impl<'tcx> std::fmt::Display for Place<'tcx> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, clyde_macros::Recursible)]
 pub enum Operand<'tcx> {
-    Copy(RegisterId),
+    Copy(#[non_recursible] RegisterId),
     Const(Const<'tcx>),
     Global(Global<'tcx>),
 }
@@ -182,9 +198,10 @@ impl<'tcx> std::fmt::Display for Operand<'tcx> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, clyde_macros::Recursible)]
 pub struct SpanOperand<'tcx> {
     pub operand: Operand<'tcx>,
+    #[non_recursible]
     pub span: Span
 }
 
@@ -197,6 +214,7 @@ impl<'tcx> Operand<'tcx> {
     }
 }
 
+#[derive(clyde_macros::Recursible)]
 pub enum RValue<'tcx> {
     Const(Const<'tcx>),
     Read(Place<'tcx>),
@@ -207,6 +225,7 @@ pub enum RValue<'tcx> {
     BinaryOp {
         lhs: Operand<'tcx>,
         rhs: Operand<'tcx>,
+        #[non_recursible]
         op: BinaryOp
     },
     Cast {
@@ -262,6 +281,12 @@ impl<'tcx> std::fmt::Display for RValue<'tcx> {
                 write!(f, "{ty} {{ {args} }}")
             }
         }
+    }
+}
+
+impl<'tcx> mapping::Recursible<'tcx> for (FieldIdx, SpanOperand<'tcx>) {
+    fn map_recurse(self, handler: &mut impl mapping::Mapper<'tcx>) -> Self {
+        (self.0, mapping::Recursible::map_recurse(self.1, handler))
     }
 }
 
