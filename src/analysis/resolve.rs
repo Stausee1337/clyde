@@ -53,9 +53,21 @@ struct Local {
     span: Span,
 }
 
+enum DefParentOrInfer {
+    DefParent(DefParent),
+    Infer(NodeId)
+}
+
+#[derive(Clone, Copy)]
+pub enum DefParent {
+    Definition(DefId),
+    SourceFile(NodeId),
+}
+
 pub struct Definition {
     pub node: NodeId,
-    pub kind: DefinitionKind
+    pub kind: DefinitionKind,
+    pub parent: DefParent
 }
 
 struct ResolutionState<'tcx> {
@@ -130,8 +142,8 @@ impl ModuleImport {
 }
 
 /// Types, Functions, Globals Rib
-#[derive(Default)]
 struct TFGRib {
+    parent: DefParent,
     types: HashMap<Symbol, Declaration>,
     functions: HashMap<Symbol, Declaration>,
     globals: HashMap<Symbol, Declaration>,
@@ -140,6 +152,17 @@ struct TFGRib {
 }
 
 impl TFGRib {
+    fn new(parent: DefParent) -> Self {
+        Self {
+            parent,
+            types: Default::default(),
+            functions: Default::default(),
+            globals: Default::default(),
+            modules: Default::default(),
+            pending_imports: Default::default()
+        }
+    }
+
     fn get_exports(&self) -> (Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>, Vec<(Symbol, Declaration)>) {
         macro_rules! for_scope {
             ($scope:ident) => {        
@@ -189,7 +212,8 @@ impl TFGRib {
             scope,
             site: resolution.declarations.push(Definition {
                 node: site,
-                kind
+                kind,
+                parent: self.parent
             }), 
             kind,
             span: name.span
@@ -432,7 +456,6 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
                 }
             };
 
-
             self.visit(module);
 
             self.file_collection_state.insert(file, CollectionState::Resolved(module));
@@ -511,13 +534,31 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
     }
 
     fn declare(&mut self, node: NodeId, kind: DefinitionKind) -> ast::DefId {
-        self.resolution.declarations.push(Definition { node, kind })
+        let rib = self.ribs.last().expect(".declare neeeds to be called in valid TFGRib");
+        self.resolution.declarations.push(Definition {
+            node,
+            kind,
+            parent: rib.parent
+        })
     }
 
-    fn with_rib<F: FnOnce(&mut Self)>(&mut self, node: NodeId, do_work: F) {
-        self.ribs.push(TFGRib::default());
+    fn with_rib<F: FnOnce(&mut Self)>(&mut self, parent: DefParentOrInfer, do_work: F) {
+        let (parent, node) = match parent {
+            DefParentOrInfer::DefParent(parent) => (parent, None),
+            DefParentOrInfer::Infer(node_id) => {
+                let rib = self.ribs.last()
+                    .expect("DefParent can only be inferred in cases where there already is a parent");
+                (rib.parent, Some(node_id))
+            }
+        };
+        self.ribs.push(TFGRib::new(parent));
         do_work(self);
         let rib = self.ribs.pop().unwrap();
+        let node = node.unwrap_or_else(|| match parent {
+            DefParent::Definition(def_id) =>
+                self.resolution.declarations[def_id].node,
+            DefParent::SourceFile(node_id) => node_id
+        });
         if let Some(_) = self.resolution.rib_map.insert(node, rib) {
             panic!("tried to collect same rib twice {node:?}");
         }
@@ -528,7 +569,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
     fn visit(&mut self, tree: &'tcx ast::SourceFile<'tcx>) {
         self.current_file.replace(tree);
         self.mangle_module_name(tree);
-        self.with_rib(tree.node_id, |this| {
+        self.with_rib(DefParentOrInfer::DefParent(DefParent::SourceFile(tree.node_id)), |this| {
             node_visitor::visit_slice(tree.items, |item| this.visit_item(item));
         });
         self.current_file.take();
@@ -537,7 +578,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx ast::Expr<'tcx>) {
         match &expr.kind {
             ast::ExprKind::Block(block) => {
-                self.with_rib(expr.node_id, |this| {
+                self.with_rib(DefParentOrInfer::Infer(expr.node_id), |this| {
                     this.visit_block(block);
                 });
             }
@@ -560,7 +601,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             ast::ItemKind::Struct(stc) => {
                 let site = self.define(DefinitionKind::Struct, stc.ident, item.node_id, item.scope);
                 let _ = item.def_id.set(site);
-                self.with_rib(item.node_id, |this| {
+                self.with_rib(DefParentOrInfer::DefParent(DefParent::Definition(site)), |this| {
                     node_visitor::visit_slice(&stc.generics, |generic| this.visit_generic_param(generic));
                     node_visitor::visit_slice(stc.fields, |field_def| this.visit_field_def(field_def));
                     node_visitor::visit_slice(&stc.items, |item| this.visit_item(item));
@@ -574,7 +615,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             ast::ItemKind::Function(function) => {
                 let site = self.define(DefinitionKind::Function, function.ident, item.node_id, item.scope);
                 let _ = item.def_id.set(site);
-                self.with_rib(item.node_id, |this| {
+                self.with_rib(DefParentOrInfer::DefParent(DefParent::Definition(site)), |this| {
                     node_visitor::visit_fn(function, this);
                 });
             },
@@ -599,8 +640,8 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                         return; // don't mangle the names of Import aliases
                     }
                     ast::AliasKind::Type(ty) => {
-                        let _site = self.define(DefinitionKind::TypeAlias, alias.ident, item.node_id, item.scope);
-                        self.with_rib(item.node_id, |this| {
+                        let site = self.define(DefinitionKind::TypeAlias, alias.ident, item.node_id, item.scope);
+                        self.with_rib(DefParentOrInfer::DefParent(DefParent::Definition(site)), |this| {
                             node_visitor::visit_slice(&alias.generics, |generic| this.visit_generic_param(generic));
                             this.visit_ty_expr(ty);
                         });
