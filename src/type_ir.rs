@@ -1,11 +1,11 @@
 use core::panic;
-use std::{any::TypeId, cell::Cell, fmt::Write, marker::{PhantomData, Unsize}, ops::Deref, ptr::NonNull};
+use std::{any::TypeId, cell::Cell, marker::{PhantomData, Unsize}, ops::Deref, ptr::NonNull};
 
 use bytemuck::Pod;
 use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{context::{self, FromCycleError, InternerExt, Interners, TyCtxt}, diagnostics::Message, mapping, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
+use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, mapping, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
 
 impl DefId {
     pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx [GenericArg<'tcx>] {
@@ -102,7 +102,7 @@ impl<'tcx> std::fmt::Display for GenericArg<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind() {
             GenericArgKind::Ty(ty) => write!(f, "{ty}"),
-            GenericArgKind::Const(cnst) => write!(f, "{cnst:?}"),
+            GenericArgKind::Const(cnst) => write!(f, "{cnst}"),
         }
     }
 }
@@ -336,12 +336,18 @@ impl<'tcx> Value<'tcx> {
     }
 }
 
-impl<'tcx> std::fmt::Debug for Value<'tcx> {
+impl<'tcx> std::fmt::Display for Value<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(d) = self.downcast_unsized::<dyn std::fmt::Debug>() else {
+        let Some(d) = self.downcast_unsized::<dyn std::fmt::Display>() else {
             return write!(f, "<value> of {}", self.ty);
         };
-        write!(f, "{d:?}_{}", self.ty)
+        write!(f, "{d}_{}", self.ty)
+    }
+}
+
+impl<'tcx> std::fmt::Debug for Value<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
     }
 }
 
@@ -353,7 +359,7 @@ const fn get_vtable<T: ?Sized + 'static, S: Unsize<T>>() -> <T as std::ptr::Poin
     b
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub enum ConstKind<'tcx> {
     Value(Value<'tcx>),
     Param(Symbol, usize),
@@ -361,7 +367,7 @@ pub enum ConstKind<'tcx> {
     Err
 }
 
-#[derive(Hash, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct Const<'tcx>(pub &'tcx ConstKind<'tcx>);
 
 impl<'tcx> Const<'tcx> {
@@ -520,21 +526,22 @@ impl<'tcx> Const<'tcx> {
     }
 }
 
-impl<'tcx> std::fmt::Debug for Const<'tcx> {
+impl<'tcx> std::fmt::Display for Const<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Const(ConstKind::Value(value)) => write!(f, "{value:?}"),
-            Const(ConstKind::Infer) => write!(f, "_"),
-            Const(ConstKind::Param(symbol, _)) => write!(f, "{symbol}"),
-            Const(ConstKind::Err) => write!(f, "<error>")
-        }
+        context::with_tcx(|tcx| {
+            let tcx = *tcx.unwrap();
+            PrettyPrinter::print_to_formatter(tcx, f, |p| {
+                self.lift(tcx).unwrap().print(p)
+            })
+        })
     }
 }
 
 #[derive(Hash, PartialEq, Eq)]
 pub enum GlobalKind<'tcx> {
     Function {
-        def: DefId
+        def: DefId,
+        generics: &'tcx [GenericArg<'tcx>]
     },
     EnumVariant {
         def: DefId
@@ -559,8 +566,6 @@ impl<'tcx> Global<'tcx> {
     pub fn from_definition(tcx: TyCtxt<'tcx>, def: DefId) -> Self {
         let node = tcx.node_by_def_id(def);
         match node {
-            ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(..), .. }) =>
-                tcx.intern_global(GlobalKind::Function { def }),
             ast::Node::Item(ast::Item { kind: ast::ItemKind::GlobalVar(glob), .. })
                 if !glob.constant => {
                 let ty = tcx.type_of(def);
@@ -573,6 +578,13 @@ impl<'tcx> Global<'tcx> {
             ast::Node::Variant(..) => tcx.intern_global(GlobalKind::EnumVariant { def }),
             _ => panic!("unexpected Node {node:?} in Global::from_definition"),
         }
+    }
+
+    pub fn from_fn_with_generics(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Self {
+        let Ty(TyKind::Function(def, generics)) = ty else {
+            unreachable!("Global::from_fn_with_generics expects TyKind::Function, found {ty:?}")
+        };
+        tcx.intern_global(GlobalKind::Function { def: *def, generics })
     }
 
     pub fn from_array_with_ty(
@@ -592,34 +604,14 @@ impl<'tcx> Global<'tcx> {
     }
 }
 
-impl<'tcx> std::fmt::Debug for Global<'tcx> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { 
-        match self {
-            Global(GlobalKind::Function { def } | GlobalKind::Static { def, .. }) => {
-                let ident = context::with_tcx(|tcx| {
-                    let node = tcx.expect("pretty-print IR Operand in valid TCX context").node_by_def_id(*def);
-                    if let ast::Node::Item(item) = node {
-                        return item.ident();
-                    } else {
-                        panic!("non-item in definition");
-                    };
-                });
-
-                write!(f, "{}", ident.symbol.get())
-            }
-            Global(GlobalKind::EnumVariant { def }) => {
-                let xxx = context::with_tcx(|tcx| {
-                    let (ty, _) = tcx
-                        .expect("pretty-print IR Operand in valid TCX context")
-                        .enum_variant(*def);
-                    format!("<value> as {ty}")
-                });
-                f.write_str(&xxx)
-            },
-            Global(GlobalKind::Indirect { allocation, .. }) =>
-                // TODO: maybe represent it's layout too
-                write!(f, "{:?}", allocation.escape_ascii())
-        }
+impl<'tcx> std::fmt::Display for Global<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        context::with_tcx(|tcx| {
+            let tcx = *tcx.unwrap();
+            PrettyPrinter::print_to_formatter(tcx, f, |p| {
+                self.lift(tcx).unwrap().print(p)
+            })
+        }) 
     }
 }
 
@@ -731,9 +723,9 @@ impl<'tcx> std::fmt::Display for Ty<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         context::with_tcx(|tcx| {
             let tcx = *tcx.unwrap();
-            let ty = self.lift(tcx).unwrap();
-            let string = ty.print(tcx);
-            write!(f, "{string}")
+            PrettyPrinter::print_to_formatter(tcx, f, |p| {
+                self.lift(tcx).unwrap().print(p)
+            })
         })
     }
 }
@@ -848,61 +840,6 @@ impl<'tcx> Ty<'tcx> {
         }
     }
 
-    pub fn print(self, tcx: TyCtxt<'tcx>) -> String {
-        /*
-        match self.0 {
-            TyKind::Never => write!(f, "never"),
-            TyKind::Int(integer, signed) => {
-                let sym = integer.to_symbol(*signed);
-                f.write_str(sym.get())
-            },
-            TyKind::Bool => f.write_str("bool"),
-            TyKind::Void => f.write_str("void"),
-            TyKind::Char => f.write_str("char"),
-            TyKind::String => f.write_str("string"),
-            TyKind::Float(Float::F32) => f.write_str("float"),
-            TyKind::Float(Float::F64) => f.write_str("double"),
-            TyKind::Adt(adt, generics) => {
-                f.write_str(adt.name().get())?;
-                if generics.len() > 0 {
-                    f.write_str("<")?;
-                    for (idx, arg) in generics.iter().enumerate() {
-                        write!(f, "{arg}")?;
-                        if idx != generics.len() - 1 {        
-                            f.write_str(", ")?;
-                        }
-                    }
-                    f.write_str(">")?;
-
-                }
-                Ok(())
-            },
-            TyKind::Enum(enm) => f.write_str(enm.name.get()),
-            TyKind::Refrence(ty) => write!(f, "{ty}*"),
-            TyKind::Slice(ty) => write!(f, "{ty}[]"),
-            TyKind::Array(ty, cap) => write!(f, "{ty}[{cap:?}]"),
-            TyKind::DynamicArray(ty) => write!(f, "{ty}[..]"),
-            // TODO: query function name and display it here
-            TyKind::Function(def_id, generics) => write!(f, "function"),
-            TyKind::Range(ty, _) => write!(f, "Range<{ty}>"),
-            TyKind::Param(param_ty) => write!(f, "{}", param_ty.symbol),
-            TyKind::Tuple(tys) => {
-                f.write_str("tuple<")?;
-                for (idx, ty) in tys.iter().enumerate() {
-                    write!(f, "{ty}")?;
-                    if idx != tys.len() - 1 {        
-                        f.write_str(", ")?;
-                    }
-                }
-                f.write_str(">")?;
-                Ok(())
-            }
-            TyKind::UinstantiatedTuple => f.write_str("tuple"),
-            TyKind::Err => write!(f, "Err"),
-        }
-        */
-        todo!()
-    }
 }
 
 impl Symbol {
@@ -1103,8 +1040,8 @@ impl Integer {
         let id = TypeId::of::<T>();
         if id == TypeId::of::<dyn ToPrimitive>() {
             return downcast_for_every_int!(dyn ToPrimitive);
-        } else if id == TypeId::of::<dyn std::fmt::Debug>() {
-            return downcast_for_every_int!(dyn std::fmt::Debug);
+        } else if id == TypeId::of::<dyn std::fmt::Display>() {
+            return downcast_for_every_int!(dyn std::fmt::Display);
         }
         None
     }
@@ -1164,8 +1101,8 @@ impl Float {
         let id = TypeId::of::<T>();
         if id == TypeId::of::<dyn ToPrimitive>() {
             return downcast_for_every_float!(dyn ToPrimitive);
-        } else if id == TypeId::of::<dyn std::fmt::Debug>() {
-            return downcast_for_every_float!(dyn std::fmt::Debug);
+        } else if id == TypeId::of::<dyn std::fmt::Display>() {
+            return downcast_for_every_float!(dyn std::fmt::Display);
         }
         None
     }

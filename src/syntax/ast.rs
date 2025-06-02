@@ -80,6 +80,16 @@ impl<'ast> Node<'ast> {
 
     }
 
+    pub fn ident(self) -> Option<Ident> {
+        Some(match self {
+            Node::Item(item) => item.ident(),
+            Node::FieldDef(field) => field.name,
+            Node::Variant(variant) => variant.name,
+            Node::Param(param) => param.ident,
+            _ => return None
+        })
+    }
+
     /*pub fn span(self) -> Span {
         match self {
             Node::Expr(expr) => expr.span,

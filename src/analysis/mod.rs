@@ -1,4 +1,4 @@
-use crate::{context::TyCtxt, diagnostics::Message, syntax::{ast::{Item, ItemKind, Node}, lexer}};
+use crate::{context::TyCtxt, diagnostics::Message, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{Item, ItemKind, Node}, lexer}};
 
 pub mod resolve;
 pub mod node_visitor;
@@ -14,9 +14,8 @@ pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
             _ if node.body().is_some() => {
                 let body = tcx.build_ir(*def);
                 if let Ok(body) = body && tcx.session.config.print_ir {
-                    let mut buffer = String::new();
-                    intermediate::display_ir_body(tcx, body, &mut buffer).unwrap();
-                    eprintln!("{buffer}");
+                    let string = PrettyPrinter::print_into_string(tcx, |p| body.print(p)).unwrap();
+                    eprintln!("{string}");
                 }
                 has_errors |= body.is_err();
             }

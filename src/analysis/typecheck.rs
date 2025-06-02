@@ -1951,17 +1951,10 @@ fn check_valid_intrinsic(
             sym::slice_to_raw_parts => {
                 early!(matches!(param!(), Some(Ty(TyKind::Slice(Ty(TyKind::Param(type_ir::ParamTy { index: 0, .. })))))));
                 early!(matches!(param!(), None));
-                let Ty(TyKind::Tuple(tuple)) = result_ty else {
-                    return Ok(false);
-                };
-                println!("return ty is a tuple");
-                let mut tuple = tuple.iter();
-                early!(matches!(tuple.next(), Some(Ty(TyKind::Refrence(Ty(TyKind::Param(type_ir::ParamTy { index: 0, .. })))))));
-                println!("tuple.0 is T*");
-                early!(matches!(tuple.next(), Some(Ty(TyKind::Int(type_ir::Integer::ISize, false)))));
-                println!("tuple.1 is nuint");
-                early!(matches!(tuple.next(), None));
-                println!("tuple len == 2");
+                early!(matches!(result_ty, Ty(TyKind::Tuple([
+                    Ty(TyKind::Refrence(Ty(TyKind::Param(type_ir::ParamTy { index: 0, .. })))),
+                    Ty(TyKind::Int(type_ir::Integer::ISize, false))
+                ]))));
             }
             sym::string_from_raw_parts => {
                 early!(matches!(param!(), Some(Ty(TyKind::Refrence(Ty(TyKind::Int(type_ir::Integer::I8, false)))))));

@@ -543,6 +543,7 @@ impl<'r, 'tcx> EarlyCollectionPass<'r, 'tcx> {
     }
 
     fn with_rib<F: FnOnce(&mut Self)>(&mut self, parent: DefParentOrInfer, do_work: F) {
+        // test::instantiation_test<T>(int)::InnerStruct
         let (parent, node) = match parent {
             DefParentOrInfer::DefParent(parent) => (parent, None),
             DefParentOrInfer::Infer(node_id) => {
@@ -610,7 +611,9 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
             ast::ItemKind::Enum(en) => {
                 let site = self.define(DefinitionKind::Enum, en.ident, item.node_id, item.scope);
                 let _ = item.def_id.set(site);
-                node_visitor::visit_slice(en.variants, |variant_def| self.visit_variant_def(variant_def));
+                self.with_rib(DefParentOrInfer::DefParent(DefParent::Definition(site)), |this| {
+                    node_visitor::visit_slice(en.variants, |variant_def| this.visit_variant_def(variant_def));
+                });
             },
             ast::ItemKind::Function(function) => {
                 let site = self.define(DefinitionKind::Function, function.ident, item.node_id, item.scope);

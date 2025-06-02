@@ -4,7 +4,7 @@ use std::{cell::OnceCell, fmt::Write};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{context::TyCtxt, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Global, Const, FieldIdx, Ty, TyKind}};
+use crate::{context::TyCtxt, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Const, FieldIdx, Global, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
 pub struct Body<'tcx> {
@@ -34,7 +34,7 @@ pub enum Mutability {
     Const, Mut
 }
 
-impl std::fmt::Debug for Mutability {
+impl std::fmt::Display for Mutability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Mutability::Mut => f.write_str("mut"),
@@ -46,7 +46,7 @@ impl std::fmt::Debug for Mutability {
 index_vec::define_index_type! {
     pub struct RegisterId = u32;
     IMPL_RAW_CONVERSIONS = true;
-    DEBUG_FORMAT = "%{}";
+    DISPLAY_FORMAT = "%{}";
 }
 
 #[derive(Default)]
@@ -59,7 +59,7 @@ index_vec::define_index_type! {
     #[must_use]
     pub struct BlockId = u32;
     IMPL_RAW_CONVERSIONS = true;
-    DEBUG_FORMAT = "bb{}";
+    DISPLAY_FORMAT = "bb{}";
 }
 
 pub struct Statement<'tcx> {
@@ -68,12 +68,12 @@ pub struct Statement<'tcx> {
     pub span: Span
 }
 
-impl<'tcx> std::fmt::Debug for Statement<'tcx> {
+impl<'tcx> std::fmt::Display for Statement<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(place) = self.place else {
-            return write!(f, "{:?}", self.rhs);
+            return write!(f, "{}", self.rhs);
         };
-        write!(f, "{:?} = {:?}", place, self.rhs)
+        write!(f, "{} = {}", place, self.rhs)
     }
 }
 
@@ -82,13 +82,19 @@ pub struct Terminator<'tcx> {
     pub span: Span
 }
 
-impl<'tcx> std::fmt::Debug for Terminator<'tcx> {
+impl<'tcx> std::fmt::Display for Terminator<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind {
             TerminatorKind::Goto(block) => write!(f, "goto {block:?}"),
             TerminatorKind::Diverge { condition, true_target, false_target } =>
-                write!(f, "diverge {condition:?} ? true -> {true_target:?} : false -> {false_target:?}"),
-            TerminatorKind::Return { value } => write!(f, "return {value:?}"),
+                write!(f, "diverge {condition} ? true -> {true_target} : false -> {false_target}"),
+            TerminatorKind::Return { value } => {
+                f.write_str("return")?;
+                if let Some(value) = value {
+                    write!(f, " {value}")?;
+                }
+                Ok(())
+            },
         }
     }
 }
@@ -140,7 +146,7 @@ pub enum PtrTranslation<'tcx> {
 }
 
 
-impl<'tcx> std::fmt::Debug for Place<'tcx> {
+impl<'tcx> std::fmt::Display for Place<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = String::new();
         write!(out, "{:?}", self.origin)?;
@@ -150,7 +156,7 @@ impl<'tcx> std::fmt::Debug for Place<'tcx> {
                 PtrTranslation::Deref =>
                     out = format!("(*{out})"),
                 PtrTranslation::Index { idx } =>
-                    write!(out, "[{idx:?}]")?,
+                    write!(out, "[{idx}]")?,
                 PtrTranslation::Field { field, .. } =>
                     write!(out, ".{}", field.raw())?,
             }
@@ -166,12 +172,12 @@ pub enum Operand<'tcx> {
     Global(Global<'tcx>),
 }
 
-impl<'tcx> std::fmt::Debug for Operand<'tcx> {
+impl<'tcx> std::fmt::Display for Operand<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Operand::Copy(reg) => write!(f, "copy {reg:?}"),
-            Operand::Const(cnst) => write!(f, "const {cnst:?}"),
-            Operand::Global(global) => write!(f, "{global:?}"),
+            Operand::Const(cnst) => write!(f, "const {cnst}"),
+            Operand::Global(global) => write!(f, "{global}"),
        }
     }
 }
@@ -227,30 +233,30 @@ impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
     }
 }
 
-impl<'tcx> std::fmt::Debug for RValue<'tcx> {
+impl<'tcx> std::fmt::Display for RValue<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             // RValue::Use(operand) => write!(f, "{operand:?}"),
-            RValue::Read(place) => write!(f, "{place:?}"),
-            RValue::Ref(place) => write!(f, "&{place:?}"),
-            RValue::Invert(operand) => write!(f, "Inv({operand:?})"),
-            RValue::Negate(operand) => write!(f, "Neg({operand:?})"),
-            RValue::Global(global) => write!(f, "{global:?}"),
-            RValue::BinaryOp { op, lhs, rhs } => write!(f, "{op:?}({lhs:?}, {rhs:?})"),
-            RValue::Cast { value, ty } => write!(f, "{value:?} as {ty}"),
+            RValue::Read(place) => write!(f, "{place}"),
+            RValue::Ref(place) => write!(f, "&{place}"),
+            RValue::Invert(operand) => write!(f, "Inv({operand})"),
+            RValue::Negate(operand) => write!(f, "Neg({operand})"),
+            RValue::Global(global) => write!(f, "{global}"),
+            RValue::BinaryOp { op, lhs, rhs } => write!(f, "{op:?}({lhs}, {rhs})"),
+            RValue::Cast { value, ty } => write!(f, "{value} as {ty}"),
             RValue::Call { callee, args: args1 } => {
                 let mut args = vec![];
                 for arg in args1 {
-                    args.push(format!("{:?}", arg.operand));
+                    args.push(format!("{}", arg.operand));
                 }
                 let args = args.join(", ");
-                write!(f, "{callee:?}({args})")
+                write!(f, "{callee}({args})")
             },
-            RValue::Const(cnst) => write!(f, "const {cnst:?}"),
+            RValue::Const(cnst) => write!(f, "const {cnst}"),
             RValue::ExplicitInit { ty, initializers } => {
                 let mut args = vec![];
                 for (idx, operand) in initializers {
-                    args.push(format!(".{} = {:?}", idx.raw(), operand.operand));
+                    args.push(format!(".{} = {}", idx.raw(), operand.operand));
                 }
                 let args = args.join(", ");
                 write!(f, "{ty} {{ {args} }}")
@@ -354,7 +360,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
     fn emit_into(&mut self, block: BlockId, stmt: Statement<'tcx>) {
         let bb = &mut self.blocks[block];
         if let Some(terminator) = bb.terminator.get() {
-            panic!("can't emit into terminated block {block:?}\n{terminator:?}");
+            panic!("can't emit into terminated block {block}\n{terminator}");
         }
         if stmt.place.is_none() {
             let RValue::Call { .. } = stmt.rhs else {
@@ -1169,8 +1175,12 @@ impl<'tcx> TranslationCtxt<'tcx> {
             ast::ExprKind::Path(path) => match path.resolution() {
                 Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
                     (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Function | DefinitionKind::Variant)) =>
+                Some(ast::Resolution::Def(def_id, DefinitionKind::Variant)) =>
                     (block, Operand::Global(Global::from_definition(self.tcx, *def_id))),
+                Some(ast::Resolution::Def(_, DefinitionKind::Function)) => {
+                    let func = self.typecheck.associations[&expr.node_id];
+                    (block, Operand::Global(Global::from_fn_with_generics(self.tcx, func)))
+                },
                 Some(ast::Resolution::Def(_, DefinitionKind::Static)) => {
                     // FIXME: remove duplicaiton
                     let register;
@@ -1291,50 +1301,53 @@ pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {
 
 const INDENT: &'static str = "    ";
 
-pub fn display_ir_body<'tcx>(tcx: TyCtxt<'tcx>, body: &'tcx Body<'tcx>, out: &mut dyn Write) -> Result<(), std::fmt::Error> {
-    let node = tcx.node_by_def_id(body.origin);
-    let ident = match node {
-        ast::Node::Item(item) => item.ident(),
-        _ => unreachable!()
-    };
-    let mut args = vec![];
-    for i in 0..body.num_params {
-        let reg = RegisterId::from_usize(i);
-        let reg_info = &body.local_registers[reg];
-        args.push(format!("{:?} {reg:?}: {}", reg_info.mutability, reg_info.ty));
+impl<'tcx> Print<'tcx> for Body<'tcx> {
+    fn print(&self, p: &mut crate::pretty_print::PrettyPrinter<'tcx>) -> std::fmt::Result {
+        let node = p.tcx.node_by_def_id(self.origin);
+        let ident = match node {
+            ast::Node::Item(item) => item.ident(),
+            _ => unreachable!()
+        };
+        let mut args = vec![];
+        for i in 0..self.num_params {
+            let reg = RegisterId::from_usize(i);
+            let reg_info = &self.local_registers[reg];
+            args.push(format!("{} {reg}: {}", reg_info.mutability, reg_info.ty));
+        }
+        let args = args.join(", ");
+        let result_ty = self.result_ty;
+        write!(p, "fn {}({args}) -> {result_ty} {{\n", ident.symbol.get())?;
+
+        for i in self.num_params..self.local_registers.len() {
+            let reg = RegisterId::from_usize(i);
+            let reg_info = &self.local_registers[reg];
+            write!(p, "{INDENT}{} {reg}: {};\n", reg_info.mutability, reg_info.ty)?;
+        }
+
+        for (block, bb) in self.basic_blocks.iter_enumerated() {
+            write!(p, "{INDENT}{block} ")?;
+            bb.print(p)?;
+        }
+
+        write!(p, "}}\n")?;
+
+        Ok(())
     }
-    let args = args.join(", ");
-    let result_ty = body.result_ty;
-    write!(out, "fn {}({args}) -> {result_ty} {{\n", ident.symbol.get())?;
-
-    for i in body.num_params..body.local_registers.len() {
-        let reg = RegisterId::from_usize(i);
-        let reg_info = &body.local_registers[reg];
-        write!(out, "{INDENT}{:?} {reg:?}: {};\n", reg_info.mutability, reg_info.ty)?;
-    }
-
-    for (block, bb) in body.basic_blocks.iter_enumerated() {
-        display_bb(block, bb, out)?;
-    }
-
-    write!(out, "}}\n")?;
-
-    Ok(())
 }
 
-fn display_bb(block: BlockId, bb: &BasicBlock, out: &mut dyn Write) -> Result<(), std::fmt::Error> {
-    write!(out, "{INDENT}{block:?} {{\n")?;
+impl<'tcx> Print<'tcx> for BasicBlock<'tcx> {
+    fn print(&self, p: &mut crate::pretty_print::PrettyPrinter<'tcx>) -> std::fmt::Result {     
+        write!(p, "{{\n")?;
 
-    for stmt in &bb.statements {
-        write!(out, "{INDENT}{INDENT}{stmt:?};\n")?;
+        for stmt in &self.statements {
+            write!(p, "{INDENT}{INDENT}{stmt};\n")?;
+        }
+
+        if let Some(terminator) = self.terminator.get() {
+            write!(p, "{INDENT}{INDENT}{terminator};\n")?;
+        }
+
+        write!(p, "{INDENT}}}\n")
     }
-
-    if let Some(terminator) = bb.terminator.get() {
-        write!(out, "{INDENT}{INDENT}{terminator:?};\n")?;
-    }
-
-    write!(out, "{INDENT}}}\n")?;
-
-    Ok(())
 }
 
