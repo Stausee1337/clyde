@@ -1,5 +1,5 @@
 use core::panic;
-use std::{any::TypeId, cell::Cell, marker::{PhantomData, Unsize}, ops::Deref, ptr::NonNull};
+use std::{any::TypeId, cell::Cell, hash::Hash, marker::{PhantomData, Unsize}, ops::Deref, ptr::NonNull};
 
 use bytemuck::Pod;
 use index_vec::IndexVec;

@@ -137,7 +137,7 @@ impl<'tcx> TyCtxt<'tcx> {
         let file_name = path.file_name().unwrap();
         let source_file_name = std::str::from_utf8(file_name.as_encoded_bytes()).unwrap();
 
-        let mangled_name = self.resolutions.mangled_names[&module.node_id];
+        let mangled_name = todo!();
 
         ModuleInfo { 
             mangled_name,
@@ -177,6 +177,7 @@ define_queries! {
     fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
     #[handle_cycle_error]
     fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TyLayoutTuple<'tcx>, type_ir::LayoutError>;
+    fn instantiate_body(key: (&'tcx intermediate::Body<'tcx>, &'tcx [type_ir::GenericArg<'tcx>])) -> &'tcx intermediate::Body<'tcx>;
 }
 
 macro_rules! define_query_caches {

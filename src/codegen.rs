@@ -4,7 +4,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, Scalar, Ty, TyKind, TyLayoutTuple}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, monomorphization, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, GenericArg, Instatiatable, Scalar, Ty, TyKind, TyLayoutTuple}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -271,11 +271,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
     fn alloca_place(&mut self, layout: TyLayoutTuple<'tcx>) -> Place<'ll> {
         let align = layout.align;
-
-        let array_ty = self.cctxt.context.i8_type()
-            .array_type(layout.size.in_bytes as u32);
-
-        let pointer = ensure!(self.builder.build_alloca(array_ty, ""));
+        let ty: ll::BasicTypeEnum<'ll> = layout.llvm_type(self.cctxt).force_into();
+        let pointer = ensure!(self.builder.build_alloca(ty, ""));
         pointer
             .as_instruction()
             .unwrap()
@@ -536,7 +533,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     panic!("function pointers aren't supported at the moment");
                 };
 
-                let sig = self.tcx.fn_sig(global.definition().unwrap());
+                let sig = self.tcx
+                    .fn_sig(global.definition().unwrap())
+                    .instantiate(global.args().unwrap(), self.tcx);
 
                 if sig.intrinsic {
                     let value = self.build_intrinsic_call(sig.name, args); 
@@ -1013,7 +1012,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                             self.initialize_with_initializers(dest, element_layout, initializers, false);
                         }
                     }
-                    Ty(TyKind::Adt(AdtDef(AdtKind::Struct(..)))) => {
+                    Ty(TyKind::Adt(AdtDef(AdtKind::Struct(..)), _)) => {
                         self.initialize_with_initializers(dest, layout, initializers, true);
                     }
                     _ => panic!("can't explicit init {ty:?}"),
@@ -1092,7 +1091,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             let value = self.lower_operand(init.1.operand);
             let (element_pointer, element_layout) = if is_struct {
                 let ptr = ensure!(self.builder.build_struct_gep(llvm_ty, dest.value, init.0.raw(), ""));
-                let Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)))) = layout.ty else {
+                let Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)), _)) = layout.ty else {
                     unreachable!("ty is not struct")
                 };
                 let field = strct.get_field(init.0);
@@ -1623,8 +1622,10 @@ impl<'tcx> TyLayoutTuple<'tcx> {
             // TODO: is never == void ok here?
             Ty(TyKind::Void | TyKind::Never) => 
                 return ll::AnyTypeEnum::VoidType(ctxt.context.void_type()),
-            Ty(TyKind::Function(def)) => {
-                let signature = ctxt.tcx.fn_sig(*def);
+            Ty(TyKind::Function(def, generics)) => {
+                let signature = ctxt.tcx
+                    .fn_sig(*def)
+                    .instantiate(generics, ctxt.tcx);
 
                 let result_layout = ctxt.tcx.layout_of(signature.returns).unwrap();
 
@@ -1714,17 +1715,17 @@ impl<'tcx> TyLayoutTuple<'tcx> {
                 fields.push(nuint);                                                                          // nuint capacity;
                 fields
             }
-            Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)))) => {
+            Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)), generics)) => {
                 def = Some(strct.def);
                 strct.fields()
                     .map(|(_, data)| {
-                        let ty = ctxt.tcx.type_of(data.def);
+                        let ty = ctxt.tcx.type_of(data.def).instantiate(generics, ctxt.tcx);
                         let layout = ctxt.tcx.layout_of(ty).unwrap();
                         layout.llvm_type(ctxt).force_into()
                     })
                     .collect::<Vec<_>>()
             }
-            Ty(TyKind::Adt(AdtDef(AdtKind::Union))) => todo!(),
+            Ty(TyKind::Adt(AdtDef(AdtKind::Union), _)) => todo!(),
             Ty(TyKind::Range(..)) => todo!(),
             else_ => panic!("{else_:?} is invalid here")
         };
@@ -1778,7 +1779,7 @@ impl Scalar {
 impl<'tcx> type_ir::Global<'tcx> {
     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
         match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) => {
+            type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::Static { def, .. }) => {
                 let ast::Node::Item(item) = tcx.node_by_def_id(*def) else { unreachable!() };
                 item.get_name(tcx)
             }
@@ -1801,8 +1802,15 @@ impl<'tcx> type_ir::Global<'tcx> {
     }
 
     fn definition(&self) -> Option<ast::DefId> {
-        if let type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::Static { def, .. }) = self {
+        if let type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::Static { def, .. }) = self {
             return Some(*def);
+        }
+        None
+    }
+
+    fn args(&self) -> Option<&'tcx [GenericArg<'tcx>]> {
+        if let type_ir::Global(type_ir::GlobalKind::Function { generics, .. }) = self {
+            return Some(generics);
         }
         None
     }
@@ -1816,7 +1824,7 @@ impl<'tcx> type_ir::Global<'tcx> {
 
     fn ty(&self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
         match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def } | type_ir::GlobalKind::EnumVariant { def, .. } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
+            type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::EnumVariant { def, .. } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
             type_ir::Global(type_ir::GlobalKind::Indirect { ty, .. }) => *ty
         }
     }
@@ -1824,7 +1832,7 @@ impl<'tcx> type_ir::Global<'tcx> {
 
 impl<'tcx> ast::Item<'tcx> {
     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
-        if let ast::ItemKind::Function(func) = self.kind {
+        /*if let ast::ItemKind::Function(func) = self.kind {
             let header = &func.sig.header;
             if let Some(c_call) = header.c_call {
                 if let Some((_, name)) = c_call.link_name {
@@ -1840,7 +1848,8 @@ impl<'tcx> ast::Item<'tcx> {
             }
         }
 
-        tcx.resolutions.mangled_names[&self.node_id]
+        tcx.resolutions.mangled_names[&self.node_id]*/
+        todo!()
     }
 }
 
@@ -1866,6 +1875,10 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
     let entry = tcx.resolutions.entry.expect("program should have an entrypoint");
 
     let mut ctxt = CodegenCtxt::new(tcx, &arena);
+
+    monomorphization::monomorph_items(tcx);
+
+
     ctxt.push_dependency(entry, None, None);
 
     for def in &tcx.resolutions.items {

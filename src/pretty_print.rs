@@ -38,7 +38,7 @@ impl<'tcx> PrettyPrinter<'tcx> {
         let ident = node.ident().unwrap();
 
         if let resolve::DefParent::Definition(parent) = self.tcx.resolutions.declarations[def_id].parent {
-            self.print_def_path(parent)?;
+            self.print_parent_path_recursively(parent, false)?;
             self.write_str("::")?;
         }
 
@@ -68,7 +68,7 @@ impl<'tcx> PrettyPrinter<'tcx> {
                 self.write_char('(')?; //)
                 for (idx, param) in sig.params.iter().enumerate() {
                     param.ty.print(self)?;
-                    if idx != generics.len() - 1 {        
+                    if idx != sig.params.len() - 1 {        
                         self.write_str(", ")?;
                     }
                 }

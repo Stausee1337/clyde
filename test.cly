@@ -25,9 +25,13 @@ void main(string[] args) {
     x = FileMode::Read;
     x = FileMode::Create;
 
-
     string msg = "Hello, World";
     build_test(TestStruct::Kind::Large);
+
+    var argc = len<string>(args);
+
+    int2str(42);
+
     // dispose<int>(msg);
     // clyde::print(msg * 3);
     // const window  = Window::open("Window", WIDTH, HEIGHT);
@@ -85,7 +89,15 @@ nuint len<T>(T[] slice) {
 }
 
 tuple<T*, nuint> slice_to_raw_parts<T>(T[] slice) #compiler_intrinsic;
+string string_from_raw_parts(byte *data, nuint len) #compiler_intrinsic;
 
+string int2str(int value) {
+    nuint len = 0;
+
+    static byte[1024] buffer;
+
+    return string_from_raw_parts(cast(byte*)buffer, len);
+}
 
 // Sized<const nuint SIZE> :: #type byte[SIZE];
 

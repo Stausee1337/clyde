@@ -2,7 +2,7 @@
 use std::{cell::{Cell, OnceCell, RefCell}, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
 
 use index_vec::IndexVec;
-use crate::{syntax::{ast::AstInfo, parser}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, analysis::{intermediate, resolve, typecheck}, type_ir, files, target::Target};
+use crate::{analysis::{intermediate, resolve, typecheck}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, files, monomorphization, syntax::{ast::AstInfo, parser}, target::Target, type_ir};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -82,7 +82,8 @@ impl Session {
             enum_variant: typecheck::enum_variant,
             build_ir: intermediate::build_ir,
             layout_of: type_ir::layout_of,
-            parent_map: resolve::parent_map
+            parent_map: resolve::parent_map,
+            instantiate_body: monomorphization::instantiate_body
         };
         let arena = bumpalo::Bump::new();
 

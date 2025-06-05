@@ -24,12 +24,12 @@ Ordered (by priority):
     √ Namespaces
     √ Enums
 - Generic Functions and Adts
-    - Simple non-inferred instatiation
+    √ Simple non-inferred instatiation
+    - Monomorphization
     - Extended Name mangling
     - Methods
     - Overloaded Functions
     - deeply type dependent path resolval
-    - Monomorphization
 - Behavioural tests (and testing suite) to have some foundational test cases
 - Operator Overloading
 

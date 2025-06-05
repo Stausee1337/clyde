@@ -1,5 +1,5 @@
 
-use std::{cell::OnceCell, fmt::Write};
+use std::{cell::OnceCell, fmt::Write, hash::Hash};
 
 use hashbrown::HashMap;
 use index_vec::IndexVec;
@@ -7,7 +7,7 @@ use index_vec::IndexVec;
 use crate::{context::TyCtxt, mapping, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Const, FieldIdx, Global, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
-#[derive(clyde_macros::Recursible)]
+#[derive(Clone, clyde_macros::Recursible)]
 pub struct Body<'tcx> {
     #[non_recursible]
     pub entry: BlockId,
@@ -20,6 +20,21 @@ pub struct Body<'tcx> {
     pub local_registers: IndexVec<RegisterId, Register<'tcx>>,
 }
 
+impl<'tcx> Hash for &'tcx Body<'tcx> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let address = (*self as *const Body<'tcx>).addr();
+        state.write_usize(address);
+    }
+}
+
+impl<'tcx> PartialEq for &'tcx Body<'tcx> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(*self, *other)
+    }
+}
+
+impl<'tcx> Eq for &'tcx Body<'tcx> {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegKind {
     Param,
@@ -27,7 +42,7 @@ pub enum RegKind {
     Temp
 }
 
-#[derive(clyde_macros::Recursible)]
+#[derive(Clone, clyde_macros::Recursible)]
 pub struct Register<'tcx> {
     #[non_recursible]
     pub kind: RegKind,
@@ -56,7 +71,7 @@ index_vec::define_index_type! {
     DISPLAY_FORMAT = "%{}";
 }
 
-#[derive(Default, clyde_macros::Recursible)]
+#[derive(Default, Clone, clyde_macros::Recursible)]
 pub struct BasicBlock<'tcx> {
     pub statements: Vec<Statement<'tcx>>,
     pub terminator: OnceCell<Terminator<'tcx>>
@@ -69,7 +84,7 @@ index_vec::define_index_type! {
     DISPLAY_FORMAT = "bb{}";
 }
 
-#[derive(clyde_macros::Recursible)]
+#[derive(Clone, clyde_macros::Recursible)]
 pub struct Statement<'tcx> {
     pub place: Option<Place<'tcx>>,
     pub rhs: RValue<'tcx>,
@@ -86,7 +101,7 @@ impl<'tcx> std::fmt::Display for Statement<'tcx> {
     }
 }
 
-#[derive(clyde_macros::Recursible)]
+#[derive(Clone, clyde_macros::Recursible)]
 pub struct Terminator<'tcx> {
     pub kind: TerminatorKind<'tcx>,
     #[non_recursible]
@@ -110,7 +125,7 @@ impl<'tcx> std::fmt::Display for Terminator<'tcx> {
     }
 }
 
-#[derive(clyde_macros::Recursible)]
+#[derive(Clone, clyde_macros::Recursible)]
 pub enum TerminatorKind<'tcx> {
     Goto(#[non_recursible] BlockId),
     Diverge {
@@ -214,7 +229,7 @@ impl<'tcx> Operand<'tcx> {
     }
 }
 
-#[derive(clyde_macros::Recursible)]
+#[derive(Clone, clyde_macros::Recursible)]
 pub enum RValue<'tcx> {
     Const(Const<'tcx>),
     Read(Place<'tcx>),

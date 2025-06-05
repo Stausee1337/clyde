@@ -88,7 +88,7 @@ pub struct ResolutionResults<'tcx> {
     pub entry: Option<ast::DefId>,
     pub declarations: index_vec::IndexVec<ast::DefId, Definition>,
     pub node_to_path_map: HashMap<NodeId, PathBuf>,
-    pub mangled_names: HashMap<NodeId, Symbol>,
+    // pub mangled_names: HashMap<NodeId, Symbol>,
     pub inner_items: HashMap<DefId, Vec<(DefId, DefinitionKind)>>
 }
 
@@ -117,7 +117,7 @@ impl<'tcx> ResolutionState<'tcx> {
             items: self.items, entry,
             declarations: self.declarations,
             node_to_path_map: self.node_to_path_map,
-            mangled_names: self.mangled_names,
+            // mangled_names: self.mangled_names,
             inner_items: self.inner_items
         }
     }
