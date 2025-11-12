@@ -10,6 +10,7 @@
 
 #![deny(missing_debug_implementations)]
 #![allow(clippy::missing_safety_doc, clippy::too_many_arguments, clippy::result_unit_err)]
+#![allow(mismatched_lifetime_syntaxes)]
 #![cfg_attr(feature = "nightly", feature(doc_cfg))]
 
 #[macro_use]

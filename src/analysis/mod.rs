@@ -23,6 +23,10 @@ pub fn run_analylsis(tcx: TyCtxt) -> Result<(), ()> {
                 // check if signature is well-formed for bodyless (external) fns
                 has_errors |= tcx.fn_sig(*def).has_errors,
             Node::Item(..) =>
+                // BUG: this is currently a literal bug preventing the compiler from codegenning if
+                // there is a single generic sturct in the codebase. The call to `layout_of` needs
+                // to be replaced with a call to a `well_formed` check
+
                 // FIXME: this should be replaced with an actual and percice well fromed check,
                 // also including a check for recusrive type aliases, which currently will just
                 // cause a silent Err without any explanation
