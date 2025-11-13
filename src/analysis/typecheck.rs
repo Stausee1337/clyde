@@ -1420,7 +1420,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 .push(self.diagnostics());
         }
 
-        let generic_args = self.tcx.arena.alloc_slice_copy(&ir_args);
+        let generic_args = self.tcx.make_args(&ir_args);
         *ty = ty.instantiate(generic_args, self.tcx);
     }
 

@@ -177,7 +177,7 @@ define_queries! {
     fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
     #[handle_cycle_error]
     fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TyLayoutTuple<'tcx>, type_ir::LayoutError>;
-    fn instantiate_body(key: (&'tcx intermediate::Body<'tcx>, &'tcx [type_ir::GenericArg<'tcx>])) -> &'tcx intermediate::Body<'tcx>;
+    fn instantiate_body(key: (&'tcx intermediate::Body<'tcx>, &'tcx type_ir::GenericArgs<'tcx>)) -> &'tcx intermediate::Body<'tcx>;
 }
 
 macro_rules! define_query_caches {
@@ -409,6 +409,7 @@ macro_rules! define_interners {
     ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {
         pub struct Interners<'tcx> {
             pub arena: &'tcx bumpalo::Bump,
+            pub args: RefCell<HashTable<&'tcx type_ir::GenericArgs<'tcx>>>,
             $(pub $pool: RefCell<HashTable<&'tcx $in>>,)*
         }
 
@@ -416,6 +417,7 @@ macro_rules! define_interners {
             fn new(arena: &'tcx bumpalo::Bump) -> Self {
                 Self {
                     arena,
+                    args: Default::default(),
                     $($pool: Default::default(),)*
                 }
             }
@@ -464,6 +466,24 @@ for_every_internable! { define_intern_fns! }
 for_every_internable! { define_internable! }
 for_every_internable! { define_lift! }
 
+impl<'tcx> TyCtxt<'tcx> {
+    pub fn make_args(&self, input: &[type_ir::GenericArg<'tcx>]) -> &'tcx type_ir::GenericArgs<'tcx> {
+        if input.len() == 0 {
+            return type_ir::GenericArgs::empty();
+        }
+        let interner = &self.interners.args;
+        interner.intern_ref(input, |kind| {
+            type_ir::GenericArgs::alloc_in_arena(&self.arena, kind)
+        })
+    }
+}
+
+impl<'tcx> Internable for &'tcx [type_ir::GenericArg<'tcx>] {
+    fn to_pointer(self) -> *const () {
+        self.as_ptr() as *const ()
+    }
+}
+
 #[doc(hidden)]
 pub trait Internable {
     fn to_pointer(self) -> *const ();
@@ -474,13 +494,17 @@ pub trait InternerExt<T: Hash + Copy> {
     where
         T: Borrow<V>;
 
+    fn intern_ref<V: Hash + Eq + ?Sized>(&self, value: &V, f: impl FnOnce(&V) -> T) -> T 
+    where
+        T: Borrow<V>;
+
     fn contains<U: Hash + Internable>(&self, value: U) -> bool
     where
         T: Internable;
 }
 
 impl<T: Hash + Copy> InternerExt<T> for RefCell<HashTable<T>> {
-    fn intern<V: Hash + Eq>(&self, value: V, f: impl FnOnce(V) -> T) -> T 
+    fn intern<V: Hash + Eq>(&self, value: V, f: impl FnOnce(V) -> T) -> T
     where
         T: Borrow<V>
     {
@@ -488,6 +512,23 @@ impl<T: Hash + Copy> InternerExt<T> for RefCell<HashTable<T>> {
         let mut table = self.borrow_mut();
 
         match table.entry(hash, |item| item.borrow() == &value, |item| make_hash(item)) {
+            TableEntry::Occupied(entry) => *entry.get(),
+            TableEntry::Vacant(entry) => {
+                let v = f(value);
+                entry.insert(v);
+                v
+            }
+        }
+    }
+
+    fn intern_ref<V: Hash + Eq + ?Sized>(&self, value: &V, f: impl FnOnce(&V) -> T) -> T 
+    where
+        T: Borrow<V>
+    {
+        let hash = make_hash(&value);
+        let mut table = self.borrow_mut();
+
+        match table.entry(hash, |item| item.borrow() == value, |item| make_hash(item)) {
             TableEntry::Occupied(entry) => *entry.get(),
             TableEntry::Vacant(entry) => {
                 let v = f(value);

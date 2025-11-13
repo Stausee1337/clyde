@@ -42,7 +42,7 @@ fn ty_map_recurse_impl<'tcx>(ty: Ty<'tcx>, handler: &mut impl Mapper<'tcx>) -> T
                 })
                 .collect::<Vec<_>>();
             let tcx = handler.tcx();
-            let generics = tcx.arena.alloc_slice_copy(&new_args);
+            let generics = tcx.make_args(&new_args);
             tcx.intern_ty(TyKind::Adt(*adt_def, generics))
         },
         Ty(TyKind::Function(def_id, generics)) => {
@@ -56,7 +56,7 @@ fn ty_map_recurse_impl<'tcx>(ty: Ty<'tcx>, handler: &mut impl Mapper<'tcx>) -> T
                 })
                 .collect::<Vec<_>>();
             let tcx = handler.tcx();
-            let generics = tcx.arena.alloc_slice_copy(&new_args);
+            let generics = tcx.make_args(&new_args);
             tcx.intern_ty(TyKind::Function(*def_id, generics))
         },
         _ => ty

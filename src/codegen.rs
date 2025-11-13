@@ -4,7 +4,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, monomorphization, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, GenericArg, Instatiatable, Scalar, Ty, TyKind, TyLayoutTuple}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, monomorphization, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, GenericArg, GenericArgs, Instatiatable, Scalar, Ty, TyKind, TyLayoutTuple}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -1808,7 +1808,7 @@ impl<'tcx> type_ir::Global<'tcx> {
         None
     }
 
-    fn args(&self) -> Option<&'tcx [GenericArg<'tcx>]> {
+    fn args(&self) -> Option<&'tcx GenericArgs<'tcx>> {
         if let type_ir::Global(type_ir::GlobalKind::Function { generics, .. }) = self {
             return Some(generics);
         }

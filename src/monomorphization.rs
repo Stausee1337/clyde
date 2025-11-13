@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Body}, context::TyCtxt, syntax::{ast, symbol::Symbol}, type_ir::{self, Const, GenericArg, Global, Instatiatable}};
+use crate::{analysis::intermediate::{self, Body}, context::TyCtxt, syntax::{ast, symbol::Symbol}, type_ir::{self, Const, GenericArg, GenericArgs, Global, Instatiatable}};
 
 pub struct CodegenUnit<'tcx> {
     pub items: Vec<Item<'tcx>>,
@@ -43,7 +43,7 @@ impl<'tcx> Mangler<'tcx> {
     fn mangle_item_name(
         &mut self,
         item: &'tcx ast::Item<'tcx>,
-        generic_args: &'tcx [GenericArg<'tcx>]
+        generic_args: &'tcx GenericArgs<'tcx>
     ) -> Symbol {
         todo!()
     }
@@ -65,7 +65,7 @@ pub struct Collector<'tcx> {
 
 #[derive(Clone, Copy)]
 enum DependencyKind<'tcx> {
-    Function(ast::DefId, &'tcx [GenericArg<'tcx>]),
+    Function(ast::DefId, &'tcx GenericArgs<'tcx>),
     Global(ast::DefId, Const<'tcx>),
 }
 
@@ -176,7 +176,7 @@ impl<'tcx> Collector<'tcx> {
 
             let module = get_module_for_def(self.tcx, element);
 
-            let mut generic_args: &'tcx [GenericArg<'tcx>] = &[];
+            let mut generic_args: &'tcx GenericArgs<'tcx> = GenericArgs::empty();
             let kind = match dependency {
                 DependencyKind::Function(_, generics) => {
                     let body = self.tcx.build_ir(element)
@@ -236,19 +236,19 @@ pub fn monomorph_items<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<CodegenUnit<'tcx>> {
 
     // FIXME: for both entry and any `#c_call` fns, no generic params need to be ensured
     let entry = tcx.resolutions.entry.expect("program should have an entrypoint");
-    collector.depedency_queue.push_back(DependencyKind::Function(entry, &[]));
+    collector.depedency_queue.push_back(DependencyKind::Function(entry, GenericArgs::empty()));
 
     for &def in &tcx.resolutions.items {
         let node = tcx.node_by_def_id(def);
         if let ast::Node::Item(ast::Item { kind: ast::ItemKind::Function(func), .. }) = node && func.sig.header.c_call.is_some() {
-            collector.depedency_queue.push_back(DependencyKind::Function(def, &[]));
+            collector.depedency_queue.push_back(DependencyKind::Function(def, GenericArgs::empty()));
         }
     }
 
     collector.collect()
 }
 
-pub fn instantiate_body<'tcx>(tcx: TyCtxt<'tcx>, key: (&'tcx Body<'tcx>, &'tcx [GenericArg<'tcx>])) -> &'tcx Body<'tcx> {
+pub fn instantiate_body<'tcx>(tcx: TyCtxt<'tcx>, key: (&'tcx Body<'tcx>, &'tcx GenericArgs<'tcx>)) -> &'tcx Body<'tcx> {
     let (body, generics) = key; 
     let body = body
         .clone()

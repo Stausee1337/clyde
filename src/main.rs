@@ -5,6 +5,7 @@
 #![feature(unsize)]
 #![feature(never_type)]
 #![feature(iter_chain)]
+#![feature(extern_types)]
 
 use std::{env, process::ExitCode};
 
@@ -24,6 +25,7 @@ mod mapping;
 mod string_internals;
 mod monomorphization;
 mod pretty_print;
+mod inline_slice;
 
 fn main() -> ExitCode {
     let options = match session::parse_argv_options(env::args()) {

@@ -5,10 +5,10 @@ use bytemuck::Pod;
 use index_vec::IndexVec;
 use num_traits::{Num, ToPrimitive};
 
-use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, mapping, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
+use crate::{context::{self, FromCycleError, Interners, TyCtxt}, diagnostics::Message, inline_slice::InlineSlice, mapping, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId, NodeId}, lexer::Span, symbol::{sym, Symbol}}, target::{DataLayoutExt, TargetDataLayout}};
 
 impl DefId {
-    pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx [GenericArg<'tcx>] {
+    pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx GenericArgs<'tcx> {
         let node = tcx.node_by_def_id(*self);
         let generics = node.generics();
 
@@ -23,16 +23,17 @@ impl DefId {
             };
             generic_args.push(generic_arg);
         }
-        tcx.arena.alloc_slice_copy(&generic_args)
+        // tcx.arena.alloc_slice_copy(&generic_args)
+        todo!("intern generic args")
     }
 }
 
 pub trait Instatiatable<'tcx> {
-    fn instantiate(self, generic_args: &'tcx [GenericArg<'tcx>], tcx: TyCtxt<'tcx>) -> Self;
+    fn instantiate(self, generic_args: &'tcx GenericArgs<'tcx>, tcx: TyCtxt<'tcx>) -> Self;
 }
 
 impl<'tcx, T: mapping::Recursible<'tcx>> Instatiatable<'tcx> for T {
-    fn instantiate(self, generic_args: &'tcx [GenericArg<'tcx>], tcx: TyCtxt<'tcx>) -> Self {
+    fn instantiate(self, generic_args: &'tcx GenericArgs<'tcx>, tcx: TyCtxt<'tcx>) -> Self {
         let mut handler = mapping::InstantiationMapper::new(tcx, generic_args);
         self.map_recurse(&mut handler)
     }
@@ -113,6 +114,8 @@ impl<'tcx> mapping::Recursible<'tcx> for GenericArg<'tcx> {
         }
     }
 }
+
+pub type GenericArgs<'tcx> = InlineSlice<GenericArg<'tcx>>;
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 pub struct AdtDef<'tcx>(pub &'tcx AdtKind);
@@ -546,7 +549,7 @@ pub enum GlobalKind<'tcx> {
     Function {
         #[non_recursible]
         def: DefId,
-        generics: &'tcx [GenericArg<'tcx>]
+        generics: &'tcx GenericArgs<'tcx>
     },
     EnumVariant {
         #[non_recursible]
@@ -703,7 +706,7 @@ pub enum TyKind<'tcx> {
     String,
     Int(Integer, bool),
     Float(Float),
-    Adt(AdtDef<'tcx>, &'tcx [GenericArg<'tcx>]),
+    Adt(AdtDef<'tcx>, &'tcx GenericArgs<'tcx>),
     Enum(Enum<'tcx>),
     Refrence(Ty<'tcx>),
     Range(Ty<'tcx>, bool),
@@ -712,7 +715,7 @@ pub enum TyKind<'tcx> {
     Tuple(&'tcx [Ty<'tcx>]),
     UinstantiatedTuple,
     DynamicArray(Ty<'tcx>),
-    Function(DefId, &'tcx [GenericArg<'tcx>]),
+    Function(DefId, &'tcx GenericArgs<'tcx>),
     Param(ParamTy),
     Never,
     Err
