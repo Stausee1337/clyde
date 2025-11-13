@@ -161,7 +161,6 @@ impl<'tcx> Print<'tcx> for Ty<'tcx> {
                 p.write_str(">")?;
                 Ok(())
             }
-            TyKind::UinstantiatedTuple => p.write_str("tuple"),
             TyKind::Err => write!(p, "Err"),
         }
     }

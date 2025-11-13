@@ -800,6 +800,7 @@ pub enum TypeExprKind<'ast> {
     Path(Path<'ast>),
     Array(Array<'ast>),
     Slice(&'ast TypeExpr<'ast>),
+    Tuple(&'ast [&'ast TypeExpr<'ast>]),
     Err,
 }
 

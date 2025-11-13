@@ -860,7 +860,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .push(self.diagnostics());
                 self.last_error.set(Some(()));
             }
-            Ty(TyKind::Tuple(..) | TyKind::UinstantiatedTuple) => {
+            Ty(TyKind::Tuple(..)) => {
                 Message::error(format!("expected struct, found {ty}"))
                     .at(span)
                     .note("initialize tuple using tuple expression (<0>, <1>, ...)")
@@ -1323,7 +1323,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
     }
 
     fn path_segment_generics_instantiate(&self, ty: &mut Ty<'tcx>, item_id: Option<DefId>, segment: &'tcx ast::PathSegment<'tcx>) {
-        let generics = generic_iterator(*ty, item_id, self.tcx);
+        let generics = item_id.map(|item_id| generic_iterator(item_id, self.tcx)).flatten();
 
         let num_args = segment.generic_args.len();
 
@@ -1379,10 +1379,6 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     type_ir::GenericArg::from_const(type_ir::Const::new_error(self.tcx))
                 }
                 (None, param) => {
-                    if generics.is_optional() {
-                        break None;
-                    }
-
                     forgotten_args += 1;
                     match param {
                         GenericParamKind::Ty =>
@@ -1659,6 +1655,12 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     }
                 }
             }
+            ast::TypeExprKind::Tuple(tys) => {
+                let tys = tys.iter()
+                    .map(|ty| self.lower_ty(ty))
+                    .collect::<Vec<_>>();
+                Ty::new_tuple(self.tcx, self.tcx.arena.alloc_slice_copy(&tys))
+            }
             ast::TypeExprKind::Slice(ty) => {
                 let ty = self.lower_ty(ty);
                 if let Ty(type_ir::TyKind::Err) = ty {
@@ -1672,10 +1674,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
 }
 
 struct GenericParamsIterator<'tcx> {
-    tcx: TyCtxt<'tcx>,
-    def_id: Option<DefId>,
     ast_params: &'tcx [&'tcx ast::GenericParam<'tcx>],
-    varidaic: bool,
     current_param: CurrentParam<'tcx>
 }
 
@@ -1683,7 +1682,6 @@ struct GenericParamsIterator<'tcx> {
 enum CurrentParam<'tcx> {
     NotStarted,
     Param(&'tcx ast::GenericParam<'tcx>, usize),
-    Variadic,
     Ended,
 }
 
@@ -1696,28 +1694,20 @@ impl<'tcx> GenericParamsIterator<'tcx> {
     fn advance(&mut self) {
         let new = match self.current_param {
             CurrentParam::NotStarted => {
-                if 0 >= self.ast_params.len() {
-                    if self.varidaic {
-                        CurrentParam::Variadic
-                    } else {
-                        CurrentParam::Ended
-                    }
+                if self.ast_params.is_empty() {
+                    CurrentParam::Ended
                 } else {
                     CurrentParam::Param(self.ast_params[0], 1)
                 }
             }
             CurrentParam::Param(_, idx) => {
                 if idx >= self.ast_params.len() {
-                    if self.varidaic {
-                        CurrentParam::Variadic
-                    } else {
-                        CurrentParam::Ended
-                    }
+                    CurrentParam::Ended
                 } else {
                     CurrentParam::Param(self.ast_params[idx], idx + 1)
                 }
             }
-            p @ (CurrentParam::Variadic | CurrentParam::Ended) => p,
+            p @ CurrentParam::Ended => p,
         };
         self.current_param = new;
     }
@@ -1728,16 +1718,8 @@ impl<'tcx> GenericParamsIterator<'tcx> {
                 ast::GenericParamKind::Type(..) => Some(GenericParamKind::Ty),
                 ast::GenericParamKind::Const(..) => Some(GenericParamKind::Const),
             }
-            CurrentParam::Variadic => Some(GenericParamKind::Ty),
             _ => None
         }
-    }
-
-    fn is_optional(&self) -> bool {
-        if let CurrentParam::Variadic = self.current_param {
-            return true;
-        }
-        false
     }
 
     fn expected_count(&self) -> usize {
@@ -1745,25 +1727,16 @@ impl<'tcx> GenericParamsIterator<'tcx> {
     }
 }
 
-fn generic_iterator<'tcx>(ty: Ty<'tcx>, def_id: Option<DefId>, tcx: TyCtxt<'tcx>) -> Option<GenericParamsIterator<'tcx>> {
+fn generic_iterator<'tcx>(def_id: DefId, tcx: TyCtxt<'tcx>) -> Option<GenericParamsIterator<'tcx>> {
     let ast_params;
-    if let Some(def_id) = def_id {
-        let node = tcx.node_by_def_id(def_id);
-        ast_params = node.generics();
-        if ast_params.is_empty() {
-            return None;
-        }
-    } else if let Ty(TyKind::UinstantiatedTuple) = ty {
-        ast_params = &[];
-    } else {
+    let node = tcx.node_by_def_id(def_id);
+    ast_params = node.generics();
+    if ast_params.is_empty() {
         return None;
     }
 
     let iter = GenericParamsIterator {
-        tcx,
-        def_id,
         ast_params,
-        varidaic: matches!(ty, Ty(TyKind::UinstantiatedTuple)),
         current_param: CurrentParam::NotStarted
     };
 

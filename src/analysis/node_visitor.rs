@@ -239,6 +239,8 @@ pub fn noop_visit_ty_expr_kind<'tcx, T: Visitor<'tcx>>(ty_kind: &'tcx TypeExprKi
         }
         TypeExprKind::Slice(base) =>
             vis.visit_ty_expr(base),
+        TypeExprKind::Tuple(tys) =>
+            visit_slice(tys, |ty| vis.visit_ty_expr(ty)),
         TypeExprKind::Err => ()
     }
 }

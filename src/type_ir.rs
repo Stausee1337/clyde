@@ -23,8 +23,8 @@ impl DefId {
             };
             generic_args.push(generic_arg);
         }
-        // tcx.arena.alloc_slice_copy(&generic_args)
-        todo!("intern generic args")
+        
+        tcx.make_args(&generic_args)
     }
 }
 

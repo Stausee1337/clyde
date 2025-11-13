@@ -160,17 +160,6 @@ impl<'tcx> Mapper<'tcx> for InstantiationMapper<'tcx> {
                 };
                 ty
             }
-            Ty(TyKind::UinstantiatedTuple) => {
-                let mut tys = vec![];
-                for arg in self.generics {
-                    let GenericArgKind::Ty(ty) = arg.kind() else {
-                        unreachable!("insufficient generic arg validataion before instantiation")
-                    };
-                    tys.push(ty);
-                }
-                let tys = self.tcx.arena.alloc_slice_copy(&tys);
-                Ty::new_tuple(self.tcx, tys)
-            }
             _ => ty_map_recurse_impl(ty, self)
         }
     }

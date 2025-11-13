@@ -536,6 +536,7 @@ impl<'ast> ast::TypeExpr<'ast> {
             ast::TypeExprKind::Slice(inner) => Some(inner),
             ast::TypeExprKind::Array(inner) => Some(inner.ty),
             ast::TypeExprKind::Path(..) => None,
+            ast::TypeExprKind::Tuple(..) => None,
             ast::TypeExprKind::Err => None,
         }
     }
@@ -1213,8 +1214,35 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         }
     }
 
+    fn parse_tuple_ty(&mut self) -> &'ast ast::TypeExpr<'ast> {
+        let start = self.cursor.span();
+        self.cursor.advance();
+        
+        let mut tys = vec![];
+        let _res = self.fail_parse_tree(Delimiter::Paren, |this| {
+            while !this.matches(Punctuator::RParen) {
+                let ty = this.parse_ty_expr()
+                    .unwrap_or_else(|span| this.make_ty_expr(ast::TypeExprKind::Err, span));
+                tys.push(ty);
+
+                this.expect_either(&[Token![,], Punctuator::RParen])?;
+                this.bump_if(Token![,]);
+            }
+            Ok(())
+        });
+        let end = self.cursor.span();
+        self.cursor.advance();
+
+        self.make_ty_expr(
+            ast::TypeExprKind::Tuple(self.arena.alloc_slice_copy(&tys)),
+            Span::interpolate(start, end))
+    }
+
     fn maybe_parse_ty_expr(&mut self) -> ParseTry<'src, &'ast ast::TypeExpr<'ast>> {
         let sure_cursor = self.cursor.fork();
+        if self.matches(Punctuator::LParen) {
+            return ParseTry::Sure(self.parse_tuple_ty());
+        }
         match self.maybe_parse_path(PathMode::Normal) {
             ParseTry::Sure(path) => {
                 if path.is_invisible() {
@@ -2590,10 +2618,10 @@ impl<'src, 'ast> Parser<'src, 'ast> {
             Alias,
         }
         let mut detected_kind = Kind::None;
-        {
+        if !self.matches(Punctuator::LParen) {
             let cursor = self.cursor.fork();
             let actual_cursor = std::mem::replace(&mut self.cursor, cursor);
-            if self.bump_on::<ast::Ident>().is_none() {
+            if let None = self.bump_on::<ast::Ident>() {
                 return ItemHeader::None;
             }
 

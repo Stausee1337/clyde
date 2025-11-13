@@ -53,7 +53,7 @@ impl<T> InlineSlice<T> {
 
 impl<T: std::fmt::Debug> std::fmt::Debug for InlineSlice<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <[T] as std::fmt::Debug>::fmt(self, f)
+        <[T] as std::fmt::Debug>::fmt(self.as_slice(), f)
     }
 }
 

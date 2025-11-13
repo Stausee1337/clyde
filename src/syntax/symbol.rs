@@ -62,7 +62,6 @@ Symbols! {
     double,
     char,
     string,
-    tuple,
     export,
     module,
     main,

@@ -1202,6 +1202,11 @@ impl<'r, 'tcx> Visitor<'tcx> for NameResolutionPass<'r, 'tcx> {
                         self.visit_ty_expr(ty),
                     ast::TypeExprKind::Ref(..) =>
                         panic!("invalid state after parsing type init"),
+                    ast::TypeExprKind::Tuple(tys) => {
+                        for ty in tys.iter() {
+                            self.visit_ty_expr(ty);
+                        }
+                    }
                     ast::TypeExprKind::Err => ()
                 }
             }
