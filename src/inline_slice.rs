@@ -1,6 +1,5 @@
 use std::{borrow::Borrow, hash::Hash, ops::Deref};
 
-use crate::{mapping::{Mapper, Recursible}, type_ir};
 
 #[repr(C)]
 struct SliceData<T> {
@@ -85,12 +84,3 @@ impl<'tcx, T> Borrow<[T]> for &'tcx InlineSlice<T> {
     }
 }
 
-impl<'tcx> Recursible<'tcx> for &'tcx type_ir::GenericArgs<'tcx> {
-    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
-        let result = self
-            .iter()
-            .map(|x| Recursible::map_recurse(*x, handler))
-            .collect::<Vec<_>>();
-        handler.tcx().make_args(&result)
-    }
-}

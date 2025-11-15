@@ -1,6 +1,6 @@
 use std::fmt::{Write, Formatter, Result as PrintResult, Error as PrintError};
 
-use crate::{analysis::resolve, context::TyCtxt, syntax::ast, type_ir::{self, Const, Float, GenericArg, GenericArgKind, Ty, TyKind}};
+use crate::{analysis::resolve, context::TyCtxt, syntax::ast, type_ir::{self, Const, Float, GenericArg, GenericArgKind, Instance, Ty, TyKind}};
 
 
 pub struct PrettyPrinter<'tcx> {
@@ -78,7 +78,7 @@ impl<'tcx> PrettyPrinter<'tcx> {
         Ok(())
     }
 
-    fn print_def_path(&mut self, def_id: ast::DefId) -> PrintResult {
+    pub fn print_def_path(&mut self, def_id: ast::DefId) -> PrintResult {
         self.print_parent_path_recursively(def_id, true)
     }
 
@@ -136,7 +136,7 @@ impl<'tcx> Print<'tcx> for Ty<'tcx> {
             TyKind::Enum(enm) => p.print_def_path(enm.def),
             TyKind::Refrence(ty) => write!(p, "{ty}*"),
             TyKind::Slice(ty) => write!(p, "{ty}[]"),
-            TyKind::Array(ty, cap) => write!(p, "{ty}[{cap:?}]"),
+            TyKind::Array(ty, cap) => write!(p, "{ty}[{cap}]"),
             TyKind::DynamicArray(ty) => write!(p, "{ty}[..]"),
             // TODO: query function name and display it here
             TyKind::Function(def_id, generics) => {
@@ -178,11 +178,22 @@ impl<'tcx> Print<'tcx> for GenericArg<'tcx> {
 impl<'tcx> Print<'tcx> for Const<'tcx> {
     fn print(&self, p: &mut PrettyPrinter<'tcx>) -> PrintResult {
         match self {
-            Const(type_ir::ConstKind::Value(value)) => write!(p, "{value:?}"),
+            Const(&type_ir::ConstKind::Value(value)) => match value.kind {
+                type_ir::ScalarKind::Signed => write!(p, "{}", value.as_signed()),
+                type_ir::ScalarKind::Unsigned => write!(p, "{}", value.as_unsigned()),
+                type_ir::ScalarKind::Float => write!(p, "{}", value.as_float())
+            }
             Const(type_ir::ConstKind::Infer(..)) => write!(p, "_"),
             Const(type_ir::ConstKind::Param(symbol, _)) => write!(p, "{symbol}"),
             Const(type_ir::ConstKind::Err) => write!(p, "<error>")
         }
+    }
+}
+
+impl<'tcx> Print<'tcx> for Instance<'tcx> {
+    fn print(&self, p: &mut PrettyPrinter<'tcx>) -> PrintResult {
+        p.print_def_path(self.def)?;
+        p.print_generics(self.args)
     }
 }
 

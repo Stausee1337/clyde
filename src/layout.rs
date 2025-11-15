@@ -1,6 +1,6 @@
 use index_vec::IndexVec;
 
-use crate::{context::{FromCycleError, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId}, lexer::Span}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{AdtDef, AdtKind, Discriminant, Enum, FieldIdx, Float, GenericArgs, Instatiatable, Integer, Ty, TyKind}};
+use crate::{context::{self, FromCycleError, TyCtxt}, diagnostics::Message, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId}, lexer::Span}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{AdtDef, AdtKind, Discriminant, Enum, FieldIdx, Float, GenericArgs, Instance, Instatiatable, Integer, Ty, TyKind}};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(packed)]
@@ -77,6 +77,53 @@ impl<'tcx> Const<'tcx> {
     pub fn from_boolean(tcx: TyCtxt<'tcx>, b: bool) -> Self {
         let value = ConstValue::Scalar(ScalarValue::from_boolean(b));
         Const::Value { value, ty: tcx.basic_types.bool }
+    }
+}
+
+impl<'tcx> std::fmt::Display for Const<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            &Const::Value { value, ty } => {
+                context::with_tcx(|tcx| {
+                    let tcx = *tcx.unwrap();
+                    let ty = tcx.lift(ty).unwrap();
+                    print_const_value(tcx, ty, value, f)
+                })
+            }
+            &Const::Unevaluated { def, args, .. } => {
+                context::with_tcx(|tcx| {
+                    let tcx = *tcx.unwrap();
+                    let args = tcx.lift(args).unwrap();
+                    write!(f, "{}", Instance { def, args })
+                })
+            }
+        }
+    }
+}
+
+fn print_const_value<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: Ty<'tcx>,
+    value: ConstValue,
+    f: &mut std::fmt::Formatter
+) -> std::fmt::Result {
+    match value {
+        ConstValue::Scalar(value) => {
+            let (size, signed) = match ty {
+                Ty(&TyKind::Int(int, signed)) => (int.size(&tcx), signed),
+                _ => return write!(f, "<const> of {ty}")
+            };
+
+            let value = if signed {
+                value.to_signed(size).unwrap() as i128
+            } else {
+                value.to_unsigned(size).unwrap() as i128
+            };
+
+            write!(f, "{value}_{ty}")
+        }
+        ConstValue::Memory { .. } => write!(f, "const of {ty}"),
+        ConstValue::ZeroSized => write!(f, "{ty}")
     }
 }
 

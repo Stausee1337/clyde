@@ -455,9 +455,11 @@ macro_rules! define_internable {
 
 macro_rules! define_lift {
     ($($in:ty, $($out:ident)::+, $fn:ident, $pool:ident)*) => {$(
-        impl<'a> $($out)::+ <'a> {
+        impl<'a> Lift for $($out)::+ <'a> {
+            type Lifted<'tcx> = $($out)::+ <'tcx>;
+
             #[allow(dead_code)]
-            pub fn lift<'tcx>(self, tcx: TyCtxt<'tcx>) -> Option<$($out)::+ <'tcx>> {
+            fn lift<'tcx>(self, tcx: TyCtxt<'tcx>) -> Option<$($out)::+ <'tcx>> {
                 tcx.interners.$pool
                     .contains(self.0)
                     .then(|| unsafe { std::mem::transmute(self) })
@@ -481,6 +483,16 @@ impl<'tcx> TyCtxt<'tcx> {
             type_ir::GenericArgs::alloc_in_arena(&self.arena, kind)
         })
     }
+
+    pub fn lift<L: Lift>(self, l: L) -> Option<L::Lifted<'tcx>> {
+        l.lift(self)
+    }
+}
+
+pub trait Lift {
+    type Lifted<'tcx>;
+
+    fn lift<'tcx>(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted<'tcx>>;
 }
 
 impl<'tcx> Internable for &'tcx [type_ir::GenericArg<'tcx>] {

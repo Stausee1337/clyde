@@ -180,7 +180,7 @@ pub enum PtrTranslation<'tcx> {
 impl<'tcx> std::fmt::Display for Place<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = String::new();
-        write!(out, "{:?}", self.origin)?;
+        write!(out, "{}", self.origin)?;
 
         for translation in self.translation_chain {
             match translation {
@@ -205,8 +205,8 @@ pub enum Operand<'tcx> {
 impl<'tcx> std::fmt::Display for Operand<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Operand::Copy(reg) => write!(f, "copy {reg:?}"),
-            Operand::Const(cnst) => write!(f, "const {cnst:?}"),
+            Operand::Copy(reg) => write!(f, "copy {reg}"),
+            Operand::Const(cnst) => write!(f, "{cnst}"),
        }
     }
 }
@@ -252,7 +252,6 @@ pub enum RValue<'tcx> {
         initializers: Box<[(FieldIdx, SpanOperand<'tcx>)]>,
     }
 }
-
 
 impl<'tcx> std::fmt::Display for RValue<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

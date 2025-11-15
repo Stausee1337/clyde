@@ -1,9 +1,9 @@
 use core::panic;
-use std::{cell::Cell, hash::Hash, marker::PhantomData, ops::Deref, ptr::NonNull};
+use std::{hash::Hash, marker::PhantomData, ops::Deref, ptr::NonNull};
 
 use index_vec::IndexVec;
 
-use crate::{context::{self, FromCycleError, Interners, TyCtxt}, inline_slice::InlineSlice, layout::Size, mapping, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId, NodeId}, symbol::{sym, Symbol}}, target::DataLayoutExt};
+use crate::{context::{self, FromCycleError, Internable, InternerExt, Interners, Lift, TyCtxt}, inline_slice::InlineSlice, layout::Size, mapping::{self, Mapper, Recursible}, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId, NodeId}, symbol::{sym, Symbol}}, target::DataLayoutExt};
 
 impl DefId {
     pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx GenericArgs<'tcx> {
@@ -115,10 +115,53 @@ impl<'tcx> mapping::Recursible<'tcx> for GenericArg<'tcx> {
 
 pub type GenericArgs<'tcx> = InlineSlice<GenericArg<'tcx>>;
 
+impl<'tcx> Recursible<'tcx> for &'tcx GenericArgs<'tcx> {
+    fn map_recurse(self, handler: &mut impl Mapper<'tcx>) -> Self {
+        let result = self
+            .iter()
+            .map(|x| Recursible::map_recurse(*x, handler))
+            .collect::<Vec<_>>();
+        handler.tcx().make_args(&result)
+    }
+}
+
+impl<'a> Lift for &'a GenericArgs<'a> {
+    type Lifted<'tcx> = &'tcx GenericArgs<'tcx>;
+
+    fn lift<'tcx>(self, tcx: TyCtxt<'tcx>) -> Option<&'tcx GenericArgs<'tcx>> {
+        if self == GenericArgs::empty() {
+            return Some(GenericArgs::empty());
+        }
+        tcx.interners.args
+            .contains(self.as_slice())
+            .then(|| unsafe { std::mem::transmute(self) })
+
+    }
+}
+
+impl<'tcx> Internable for &'tcx GenericArgs<'tcx> {
+    fn to_pointer(self) -> *const () {
+        self as *const _ as *const ()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Instance<'tcx> {
     pub def: DefId,
     pub args: &'tcx GenericArgs<'tcx>
+}
+
+impl<'tcx> std::fmt::Display for Instance<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        context::with_tcx(|tcx| {
+            let tcx = *tcx.unwrap();
+
+            PrettyPrinter::print_to_formatter(tcx, f, |p| {
+                let args = tcx.lift(self.args).unwrap();
+                Instance { def: self.def, args }.print(p)
+            })
+        })
+    }
 }
 
 #[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
@@ -227,11 +270,22 @@ pub struct Param<'tcx> {
     pub node_id: NodeId
 }
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ScalarKind {
+    Signed,
+    Unsigned,
+    // FIXME: ScalarInt should not store floats at all
+    Float
+}
+
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
 #[repr(packed)]
 pub struct ScalarInt {
-    pub size: u8,
     pub data: u64,
+    pub size: u8,
+    pub kind: ScalarKind,
 }
 
 impl ScalarInt {
@@ -244,7 +298,7 @@ impl ScalarInt {
             Integer::ISize => unreachable!()
         };
 
-        ScalarInt { size, data }
+        ScalarInt { size, data, kind: ScalarKind::Signed }
     }
 
     pub fn from_unsigned_integer(data: u64, kind: Integer) -> Self {
@@ -256,16 +310,16 @@ impl ScalarInt {
             Integer::ISize => unreachable!()
         };
 
-        ScalarInt { size, data }
+        ScalarInt { size, data, kind: ScalarKind::Unsigned }
     }
 
     pub fn from_float(data: f64, kind: Float) -> Self {
         let (data, size) = match kind {
-            Float::F32 => (data as f32 as u64, 4),
-            Float::F64 => (data as u64, 8),
+            Float::F32 => (unsafe { std::mem::transmute(data as f64) }, 4),
+            Float::F64 => (unsafe { std::mem::transmute(data) }, 8),
         };
 
-        ScalarInt { size, data }
+        ScalarInt { size, data, kind: ScalarKind::Float }
     }
 
     pub fn from_size(provider: &impl DataLayoutExt, data: u64) -> Self {
@@ -273,14 +327,27 @@ impl ScalarInt {
     }
 
     pub fn try_to_target_usize<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Option<u64> {
-        self.to_unsigned(tcx.data_layout().ptr_size)
+        self.to_bits(tcx.data_layout().ptr_size)
     }
 
-    pub fn to_unsigned(&self, size: Size) -> Option<u64> {
+    pub fn to_bits(&self, size: Size) -> Option<u64> {
         if size.in_bytes != self.size as u64 {
             return None
         }
         return Some(self.data)
+    }
+
+    pub fn as_unsigned(&self) -> u64 {
+        self.data
+    }
+
+    pub fn as_signed(&self) -> i64 {
+        let size = Size::from_bytes(self.size as u8);
+        size.sign_extend(self.data)
+    }
+
+    pub fn as_float(&self) -> f64 {
+        unsafe { std::mem::transmute(self.data) }
     }
 }
 
