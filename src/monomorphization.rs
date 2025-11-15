@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Body}, context::TyCtxt, syntax::{ast, symbol::Symbol}, type_ir::{self, Const, GenericArg, GenericArgs, Global, Instatiatable}};
+use crate::{analysis::intermediate::{self, Body}, context::TyCtxt, layout, syntax::{ast, symbol::Symbol}, type_ir::{ Const, GenericArgs, Instatiatable}};
 
 pub struct CodegenUnit<'tcx> {
     pub items: Vec<Item<'tcx>>,
@@ -88,16 +88,6 @@ impl<'tcx> Collector<'tcx> {
         }
     }
 
-    fn handle_global(&mut self, global: Global<'tcx>) {
-        match global {
-            Global(&type_ir::GlobalKind::Function { def, generics }) => 
-                self.depedency_queue.push_back(DependencyKind::Function(def, generics)),
-            Global(&type_ir::GlobalKind::Static { def, initializer }) =>
-                self.depedency_queue.push_back(DependencyKind::Global(def, initializer)),
-            _ => ()
-        }
-    }
-
     fn collect_place(&mut self, place: &'tcx intermediate::Place<'tcx>) {
         for translation in place.translation_chain {
             if let intermediate::PtrTranslation::Index { idx } = translation {
@@ -106,9 +96,13 @@ impl<'tcx> Collector<'tcx> {
         }
     }
 
+    fn handle_const(&mut self, _cnst: layout::Const<'tcx>) {
+        todo!()
+    }
+
     fn collect_operand(&mut self, operand: &'tcx intermediate::Operand<'tcx>) {
-        if let intermediate::Operand::Global(global) = operand {
-            self.handle_global(*global);
+        if let intermediate::Operand::Const(cnst) = operand {
+            self.handle_const(*cnst);
         }
     }
 
@@ -122,8 +116,8 @@ impl<'tcx> Collector<'tcx> {
             intermediate::RValue::Invert(operand) | intermediate::RValue::Negate(operand) |
             intermediate::RValue::Cast { value: operand, .. }=>
                 self.collect_operand(operand),
-            intermediate::RValue::Global(global) =>
-                self.handle_global(*global),
+            intermediate::RValue::Const(cnst) =>
+                self.handle_const(*cnst),
             intermediate::RValue::BinaryOp { lhs, rhs, .. } => {
                 self.collect_operand(lhs);
                 self.collect_operand(rhs);
@@ -139,8 +133,6 @@ impl<'tcx> Collector<'tcx> {
                     self.collect_operand(&init.operand);
                 }
             }
-            intermediate::RValue::Const(_) => (),
-            
         }
     }
 

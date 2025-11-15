@@ -3,7 +3,7 @@ use std::{borrow::Borrow, cell::{Cell, RefCell}, hash::{Hash, Hasher, BuildHashe
 use foldhash::quality::FixedState;
 use hashbrown::hash_table::{HashTable, Entry as TableEntry, VacantEntry, OccupiedEntry};
 
-use crate::{analysis::{intermediate, resolve::{self, ResolutionResults}, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::{ast::{self, DefId, NodeId}, symbol::Symbol}, target, type_ir};
+use crate::{analysis::{intermediate, resolve::{self, ResolutionResults}, typecheck}, diagnostics::DiagnosticsCtxt, session::Session, syntax::{ast::{self, DefId, NodeId}, symbol::Symbol}, target, type_ir, layout};
 
 pub struct GlobalCtxt<'tcx> {
     pub resolutions: ResolutionResults<'tcx>,
@@ -109,6 +109,11 @@ impl<'tcx> TyCtxt<'tcx> {
         self.get_node_by_id(def.node)
     }
 
+    pub fn definition_kind(self, id: DefId) -> ast::DefinitionKind {
+        let def = &self.resolutions.declarations[id];
+        def.kind
+    }
+
     pub fn def_kind(self, id: DefId) -> ast::DefinitionKind {
         let def = &self.resolutions.declarations[id];
         def.kind
@@ -170,14 +175,15 @@ macro_rules! define_queries {
 define_queries! {
     #[handle_cycle_error]
     fn type_of(id: ast::DefId) -> type_ir::Ty<'tcx>;
+    fn constant_of(id: ast::DefId) -> type_ir::Const<'tcx>;
     fn typecheck(id: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
     fn fn_sig(id: ast::DefId) -> type_ir::Signature<'tcx>;
     fn build_ir(id: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
-    fn enum_variant(id: ast::DefId) -> (type_ir::Ty<'tcx>, &'tcx type_ir::VariantDef<'tcx>);
     fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
     #[handle_cycle_error]
-    fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<type_ir::TyLayoutTuple<'tcx>, type_ir::LayoutError>;
+    fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<layout::TyLayoutTuple<'tcx>, layout::LayoutError>;
     fn instantiate_body(key: (&'tcx intermediate::Body<'tcx>, &'tcx type_ir::GenericArgs<'tcx>)) -> &'tcx intermediate::Body<'tcx>;
+    fn evaluate_ty_const(cnst: type_ir::Const<'tcx>) -> Result<layout::ConstValue<'tcx>, ()>;
 }
 
 macro_rules! define_query_caches {
@@ -401,8 +407,7 @@ define_internables! {
     into adt_defs intern intern_adt(type_ir::AdtKind) -> type_ir::AdtDef<'tcx>;
     into tys      intern intern_ty(type_ir::TyKind<'tcx>) -> type_ir::Ty<'tcx>;
     into consts   intern intern_const(type_ir::ConstKind<'tcx>) -> type_ir::Const<'tcx>;
-    into layouts  intern intern_layout(type_ir::LayoutData) -> type_ir::Layout<'tcx>;
-    into globals  intern intern_global(type_ir::GlobalKind<'tcx>) -> type_ir::Global<'tcx>;
+    into layouts  intern intern_layout(layout::LayoutData) -> layout::Layout<'tcx>;
 }
 
 macro_rules! define_interners {

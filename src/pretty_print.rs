@@ -1,6 +1,6 @@
 use std::fmt::{Write, Formatter, Result as PrintResult, Error as PrintError};
 
-use crate::{analysis::resolve, context::TyCtxt, syntax::ast, type_ir::{self, Const, Float, GenericArg, GenericArgKind, Global, Ty, TyKind}};
+use crate::{analysis::resolve, context::TyCtxt, syntax::ast, type_ir::{self, Const, Float, GenericArg, GenericArgKind, Ty, TyKind}};
 
 
 pub struct PrettyPrinter<'tcx> {
@@ -178,30 +178,11 @@ impl<'tcx> Print<'tcx> for GenericArg<'tcx> {
 impl<'tcx> Print<'tcx> for Const<'tcx> {
     fn print(&self, p: &mut PrettyPrinter<'tcx>) -> PrintResult {
         match self {
-            Const(type_ir::ConstKind::Value(value)) => write!(p, "{value}"),
-            Const(type_ir::ConstKind::Infer) => write!(p, "_"),
+            Const(type_ir::ConstKind::Value(value)) => write!(p, "{value:?}"),
+            Const(type_ir::ConstKind::Infer(..)) => write!(p, "_"),
             Const(type_ir::ConstKind::Param(symbol, _)) => write!(p, "{symbol}"),
             Const(type_ir::ConstKind::Err) => write!(p, "<error>")
         }
     }
 }
 
-impl<'tcx> Print<'tcx> for Global<'tcx> {
-    fn print(&self, p: &mut PrettyPrinter<'tcx>) -> PrintResult {
-        match self {
-            Global(type_ir::GlobalKind::Function { def, generics }) => {
-                p.print_def_path(*def)?;
-                p.print_generics(generics)
-            },
-            Global(type_ir::GlobalKind::EnumVariant { def }) =>
-                p.print_def_path(*def),
-            Global(type_ir::GlobalKind::Static { def, .. }) =>
-                p.print_def_path(*def),
-            Global(type_ir::GlobalKind::Indirect { allocation, ty, .. }) => {
-                let len = allocation.len();
-                write!(p, "[{len}xu8] \"{}\" as ", allocation.escape_ascii())?;
-                ty.print(p)
-            }
-        }
-    }
-}

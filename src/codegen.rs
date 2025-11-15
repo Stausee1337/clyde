@@ -4,7 +4,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, monomorphization, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Const, ConstKind, GenericArg, GenericArgs, Instatiatable, Scalar, Ty, TyKind, TyLayoutTuple}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, layout::{self, Scalar, TyLayoutTuple}, monomorphization, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Instatiatable, Ty, TyKind}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -21,7 +21,7 @@ macro_rules! ensure {
 #[derive(Debug, Clone, Copy)]
 struct Place<'ll> {
      value: ll::PointerValue<'ll>,
-     align: type_ir::Align,
+     align: layout::Align,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +95,7 @@ impl<'ll, 'tcx> Value<'ll, 'tcx> {
 
                 let mut ptr = dest.value;
 
-                let type_ir::BackendRepr::ScalarPair(scalar1, scalar2) = self.layout.repr else {
+                let layout::BackendRepr::ScalarPair(scalar1, scalar2) = self.layout.repr else {
                     panic!("ValueKind should match BackendRepr");
                 };
 
@@ -211,7 +211,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
     fn load_value(&mut self, place: Place<'ll>, layout: TyLayoutTuple<'tcx>) -> Value<'ll, 'tcx> {
         match layout.repr {
-            type_ir::BackendRepr::Scalar(_) => {
+            layout::BackendRepr::Scalar(_) => {
                 let llvm_ty: ll::BasicTypeEnum<'ll> = layout.llvm_type(self.cctxt).force_into();
                 let value = ensure!(self.builder.build_load(llvm_ty, place.value, ""));
                 value.as_instruction_value()
@@ -223,7 +223,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     layout
                 }
             }
-            type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {
+            layout::BackendRepr::ScalarPair(scalar1, scalar2) => {
                 let llvm_ty: ll::BasicTypeEnum<'ll> = scalar1.llvm_type(self.cctxt).force_into();
 
                 let mut ptr = place.value;
@@ -260,7 +260,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     layout
                 }
             }
-            type_ir::BackendRepr::Memory => {
+            layout::BackendRepr::Memory => {
                 Value {
                     kind: ValueKind::Ref(place),
                     layout
@@ -335,13 +335,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
         (cg_place, ty)
     }
 
-    fn lower_const_value(&mut self, cnst: Const<'tcx>) -> Value<'ll, 'tcx> {
-        // FIXME: this should be extensively handled by an even better const downcast_unsized
-        // system instead of this match here (downcast to `LLVMConstValueConversion` or a better name
-        // for this trait)
-        match cnst {
-            Const(ConstKind::Value(value)) => {
-                let layout = self.tcx.layout_of(value.ty).unwrap();
+    fn lower_const_value(&mut self, cnst: layout::Const<'tcx>) -> Value<'ll, 'tcx> {
+        let layout::Const::Value { value, ty } = cnst else {
+            unreachable!("unevaluated Const's should not be appearning during code gen")
+        };
+        match value {
+            layout::ConstValue::Scalar(value) => {
+                let layout = self.tcx.layout_of(ty).unwrap();
                 let ll_ty = layout.llvm_type(self.cctxt);
                 match ll_ty {
                     ll::AnyTypeEnum::IntType(int_ty) => {
@@ -351,21 +351,15 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         } else {
                             false
                         };
-                        let value = value.downcast_unsized::<dyn num_traits::ToPrimitive>()
-                            .unwrap()
-                            .to_i128()
-                            .unwrap();
-                        let value = int_ty.const_int(value as u64, sign_extend).as_basic_value_enum();
+
+                        let value = int_ty.const_int(value.data, sign_extend).as_basic_value_enum();
                         return Value {
                             kind: ValueKind::Immediate(value),
                             layout
                         };
                     }
                     ll::AnyTypeEnum::FloatType(float_ty) => {
-                        let value = value.downcast_unsized::<dyn num_traits::ToPrimitive>()
-                            .unwrap()
-                            .to_f64()
-                            .unwrap();
+                        let value: f64 = unsafe { std::mem::transmute(value.data) };
                         let value = float_ty.const_float(value).as_basic_value_enum();
                         return Value {
                             kind: ValueKind::Immediate(value),
@@ -374,106 +368,120 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     }
                     _ => panic!("these types are more like aggregates and should be handled via global_alloc"),
                 }
-
             }
-            Const(ConstKind::Err | ConstKind::Infer | ConstKind::Param(..)) =>
-                panic!("ConstKind::Err, ConstKind::Param and ConstKind::Infer are invalid at Codegen phase")
+            layout::ConstValue::Memory { data, align } => {
+                todo!("handle global data: maybe there should be some simple way to ensure its unique")
+            }
+            layout::ConstValue::ZeroSized => unreachable!("ZeroSized values aren't real values")
         }
     }
 
-    fn handle_dependency(&mut self, global: type_ir::Global<'tcx>) -> DependencyKind<'ll> {
-        let name = global.get_name(self.tcx);
-        let global_value = if global.is_function() {
-            self.module.get_function(name.get()).map(DependencyKind::Function)
-        } else {
-            self.module.get_global(name.get()).map(DependencyKind::Global)
-        };
+    // fn handle_dependency(&mut self, global: type_ir::Global<'tcx>) -> DependencyKind<'ll> {
+    //     let name = global.get_name(self.tcx);
+    //     let global_value = if global.is_function() {
+    //         self.module.get_function(name.get()).map(DependencyKind::Function)
+    //     } else {
+    //         self.module.get_global(name.get()).map(DependencyKind::Global)
+    //     };
 
-        if let Some(global_value) = global_value {
-            return global_value;
-        }
+    //     if let Some(global_value) = global_value {
+    //         return global_value;
+    //     }
 
-        if let Some(def) = global.definition() {
-            return self.cctxt.push_dependency(def, global.initializer(), Some(self.module));
-        }
+    //     if let Some(def) = global.definition() {
+    //         return self.cctxt.push_dependency(def, global.initializer(), Some(self.module));
+    //     }
 
-        match global {
-            type_ir::Global(type_ir::GlobalKind::Indirect { allocation, align, .. }) => {
-                let llvm_ty = self.cctxt.context.i8_type().array_type(allocation.len() as u32);
+    //     match global {
+    //         type_ir::Global(type_ir::GlobalKind::Indirect { allocation, align, .. }) => {
+    //             let llvm_ty = self.cctxt.context.i8_type().array_type(allocation.len() as u32);
 
-                let global = self.module.add_global(llvm_ty, None, name.get());
-                global.set_initializer(&self.cctxt.create_array_value(&allocation));
-                global.set_alignment(align.in_bytes() as u32);
-                global.set_linkage(ll::Linkage::Private);
-                DependencyKind::Global(global)
-            }
-            type_ir::Global(type_ir::GlobalKind::EnumVariant { def }) => {
-                let (ty, variant) = self.tcx.enum_variant(*def);
-                let layout = self.tcx.layout_of(ty).unwrap();
-                let llvm_ty = layout.llvm_type(self.cctxt).into_int_type();
+    //             let global = self.module.add_global(llvm_ty, None, name.get());
+    //             global.set_initializer(&self.cctxt.create_array_value(&allocation));
+    //             global.set_alignment(align.in_bytes() as u32);
+    //             global.set_linkage(ll::Linkage::Private);
+    //             DependencyKind::Global(global)
+    //         }
+    //         type_ir::Global(type_ir::GlobalKind::EnumVariant { def }) => {
+    //             let (ty, variant) = self.tcx.enum_variant(*def);
+    //             let layout = self.tcx.layout_of(ty).unwrap();
+    //             let llvm_ty = layout.llvm_type(self.cctxt).into_int_type();
 
-                let discriminant = variant.discriminant();
-                let type_ir::BackendRepr::Scalar(Scalar::Int(_, signed)) = layout.repr else { unreachable!() };
-                let llvm_discriminant = llvm_ty.const_int(discriminant as u64, signed);
+    //             let discriminant = variant.discriminant();
+    //             let type_ir::BackendRepr::Scalar(Scalar::Int(_, signed)) = layout.repr else { unreachable!() };
+    //             let llvm_discriminant = llvm_ty.const_int(discriminant as u64, signed);
 
-                DependencyKind::Const(llvm_discriminant.as_basic_value_enum())
-            }
-            _ => unreachable!()
-        }
+    //             DependencyKind::Const(llvm_discriminant.as_basic_value_enum())
+    //         }
+    //         _ => unreachable!()
+    //     }
+    // }
+
+    // /// Loads any global except for functions
+    // fn lower_global(&mut self, global: type_ir::Global<'tcx>) -> Value<'ll, 'tcx> { 
+    //     let value = match self.handle_dependency(global) {
+    //         DependencyKind::Global(value) => value,
+    //         DependencyKind::Const(value) => {
+    //             let ty = global.ty(self.tcx);
+    //             let layout = self.tcx.layout_of(ty).unwrap();
+    //             return Value {
+    //                 kind: ValueKind::Immediate(value),
+    //                 layout
+    //             };
+    //         }
+    //         DependencyKind::Function(..) => panic!("lower_global won't lower functions")
+    //     };
+    //     let ty = global.ty(self.tcx);
+    //     let value = value.as_pointer_value();
+
+    //     match ty {
+    //         Ty(TyKind::String) => {
+    //             let layout = self.tcx.layout_of(ty).unwrap();
+    //             let type_ir::Global(type_ir::GlobalKind::Indirect { allocation, ..}) = global else {
+    //                 unreachable!()
+    //             };
+    //             let nuint_layout = self.tcx.layout_of(self.tcx.basic_types.nuint).unwrap();
+    //             let nuint_type = nuint_layout.llvm_type(self.cctxt).into_int_type();
+
+    //             let size = nuint_type.const_int(allocation.len() as u64, false);
+
+    //             let value = Value {
+    //                 kind: ValueKind::Pair(value.as_basic_value_enum(), size.as_basic_value_enum()),
+    //                 layout,
+    //             };
+    //             value
+    //         }
+    //         _ => {
+    //             let layout = self.tcx.layout_of(Ty::new_refrence(self.tcx, ty)).unwrap();
+    //             let value = Value {
+    //                 kind: ValueKind::Immediate(value.as_basic_value_enum()),
+    //                 layout,
+    //             };
+    //             value
+    //         }
+    //     }
+    // }
+
+    fn get_function(&mut self, _instance: type_ir::Instance<'tcx>) -> (ll::FunctionValue<'ll>, TyLayoutTuple<'tcx>) {
+        todo!("get function from instance")
+        // let DependencyKind::Function(function) = self.handle_dependency(global) else {
+        //     panic!("get_function won't lower non-functions");
+        // };
+        // let ty = ;
+        // let layout = self.tcx.layout_of(ty).unwrap();
+        // return (function, layout);
     }
 
-    /// Loads any global except for functions
-    fn lower_global(&mut self, global: type_ir::Global<'tcx>) -> Value<'ll, 'tcx> { 
-        let value = match self.handle_dependency(global) {
-            DependencyKind::Global(value) => value,
-            DependencyKind::Const(value) => {
-                let ty = global.ty(self.tcx);
-                let layout = self.tcx.layout_of(ty).unwrap();
-                return Value {
-                    kind: ValueKind::Immediate(value),
-                    layout
-                };
+    fn extract_function(&self, callee: intermediate::Operand<'tcx>) -> type_ir::Instance<'tcx> {
+        let intermediate::Operand::Const(
+            layout::Const::Value {
+                value: layout::ConstValue::ZeroSized,
+                ty: Ty(type_ir::TyKind::Function(def, args))
             }
-            DependencyKind::Function(..) => panic!("lower_global won't lower functions")
+        ) = callee else {
+            unreachable!("function pointers aren't supported at the moment");
         };
-        let ty = global.ty(self.tcx);
-        let value = value.as_pointer_value();
-
-        match ty {
-            Ty(TyKind::String) => {
-                let layout = self.tcx.layout_of(ty).unwrap();
-                let type_ir::Global(type_ir::GlobalKind::Indirect { allocation, ..}) = global else {
-                    unreachable!()
-                };
-                let nuint_layout = self.tcx.layout_of(self.tcx.basic_types.nuint).unwrap();
-                let nuint_type = nuint_layout.llvm_type(self.cctxt).into_int_type();
-
-                let size = nuint_type.const_int(allocation.len() as u64, false);
-
-                let value = Value {
-                    kind: ValueKind::Pair(value.as_basic_value_enum(), size.as_basic_value_enum()),
-                    layout,
-                };
-                value
-            }
-            _ => {
-                let layout = self.tcx.layout_of(Ty::new_refrence(self.tcx, ty)).unwrap();
-                let value = Value {
-                    kind: ValueKind::Immediate(value.as_basic_value_enum()),
-                    layout,
-                };
-                value
-            }
-        }
-    }
-
-    fn get_function(&mut self, global: type_ir::Global<'tcx>) -> (ll::FunctionValue<'ll>, TyLayoutTuple<'tcx>) {
-        let DependencyKind::Function(function) = self.handle_dependency(global) else {
-            panic!("get_function won't lower non-functions");
-        };
-        let ty = global.ty(self.tcx);
-        let layout = self.tcx.layout_of(ty).unwrap();
-        return (function, layout);
+        type_ir::Instance { def: *def, args: *args }
     }
 
     fn lower_operand(&mut self, operand: intermediate::Operand<'tcx>) -> Value<'ll, 'tcx> {
@@ -486,7 +494,6 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 }
             },
             intermediate::Operand::Const(cnst) => self.lower_const_value(cnst),
-            intermediate::Operand::Global(alloc) => self.lower_global(alloc),
         }
     }
 
@@ -520,22 +527,12 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let value = self.lower_const_value(cnst);
                 deferred.store_or_init(value, self);
             }
-            intermediate::RValue::Global(global) => {
-
-                let value = self.lower_global(global);
-                deferred.store_or_init(value, self);
-            }
             intermediate::RValue::Call { callee, ref args } => {
                 // FIXME: accept that this is optional and handle cases like fnptrs and intrinsic
                 // calls
-                
-                let intermediate::Operand::Global(global) = callee else {
-                    panic!("function pointers aren't supported at the moment");
-                };
 
-                let sig = self.tcx
-                    .fn_sig(global.definition().unwrap())
-                    .instantiate(global.args().unwrap(), self.tcx);
+                let instance = self.extract_function(callee);
+                let sig = self.tcx.fn_sig(instance.def).instantiate(instance.args, self.tcx);
 
                 if sig.intrinsic {
                     let value = self.build_intrinsic_call(sig.name, args); 
@@ -546,7 +543,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     return;
                 }
 
-                let (llfunc, layout) = self.get_function(global);
+                let (llfunc, _layout) = self.get_function(instance);
 
                 let mut arguments = vec![];
                 for (idx, param) in sig.params.iter().enumerate() {
@@ -555,13 +552,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                     let layout = self.tcx.layout_of(param.ty).unwrap();
                     match (value.kind, layout.repr) {
-                        (ValueKind::Immediate(value), type_ir::BackendRepr::Scalar(..)) =>
+                        (ValueKind::Immediate(value), layout::BackendRepr::Scalar(..)) =>
                             arguments.push(value.force_into()),
-                        (ValueKind::Pair(value1, value2), type_ir::BackendRepr::ScalarPair(..)) => {    
+                        (ValueKind::Pair(value1, value2), layout::BackendRepr::ScalarPair(..)) => {    
                             arguments.push(value1.force_into());
                             arguments.push(value2.force_into());
                         }
-                        (ValueKind::Ref(place), type_ir::BackendRepr::Memory) => {
+                        (ValueKind::Ref(place), layout::BackendRepr::Memory) => {
                             // copy the place to a temporary location, so that mutations done in
                             // to it in the callee don't affect us, the caller
                             
@@ -581,9 +578,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let mut ll_result = None;
                 let mut mem_argload = None;
                 match result_layout.repr {
-                    type_ir::BackendRepr::Scalar(..) =>
+                    layout::BackendRepr::Scalar(..) =>
                         ll_result = Some(()),
-                    type_ir::BackendRepr::ScalarPair(_, scalar2) => {
+                    layout::BackendRepr::ScalarPair(_, scalar2) => {
                         ll_result = Some(());
 
                         let arg_layout = self.tcx.layout_of(scalar2.get_type(self.tcx)).unwrap();
@@ -592,7 +589,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
                         mem_argload = Some((tmp, arg_layout));
                     }
-                    type_ir::BackendRepr::Memory => {
+                    layout::BackendRepr::Memory => {
                         // FIXME: For now this is fine, but since we might store into a place at
                         // the end anyway, there are cases where we could skip allocating the
                         // temporary and go straight to the provided place
@@ -997,12 +994,11 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 let (dest, deferred) = deferred.dissolve();
                 let dest = dest.map_or_else(|| self.alloca_place(layout), |(place, _)| place);
                 match ty {
-                    Ty(TyKind::Array(element, count)) => {
+                    Ty(TyKind::Array(element, _count)) => {
                         let element_layout = self.tcx.layout_of(*element).unwrap();
-                        let count = count.downcast_unsized::<dyn num_traits::ToPrimitive>()
-                            .unwrap()
-                            .to_u64()
-                            .unwrap();
+                        let layout::Fields::Array { count, .. } = element_layout.layout.fields else {
+                            unreachable!()
+                        };
                         if initializers.len() == 1 {
                             let default = self.lower_operand(initializers[0].1.operand);
                             let id = (statement as *const intermediate::Statement<'tcx>).addr() as u16;
@@ -1178,7 +1174,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             intermediate::TerminatorKind::Return { value } => {
                 let layout = self.tcx.layout_of(signature.returns).unwrap();
                 match layout.repr {
-                    type_ir::BackendRepr::Scalar(_) => {
+                    layout::BackendRepr::Scalar(_) => {
                         let value = self.lower_operand(value.unwrap());
                         let Value { kind: ValueKind::Immediate(value), .. } = value else {
                             panic!("ValueKind should match BackendRepr");
@@ -1186,7 +1182,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let value: ll::BasicValueEnum<'ll> = value.force_into();
                         ensure!(self.builder.build_return(Some(&value)));
                     }
-                    type_ir::BackendRepr::ScalarPair(_scalar1, scalar2) => {
+                    layout::BackendRepr::ScalarPair(_scalar1, scalar2) => {
 
                         let value = self.lower_operand(value.unwrap());
                         let Value { kind: ValueKind::Pair(value1, value2), .. } = value else {
@@ -1208,7 +1204,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         let value1: ll::BasicValueEnum<'ll> = value1.force_into();
                         ensure!(self.builder.build_return(Some(&value1)));
                     }
-                    type_ir::BackendRepr::Memory => {
+                    layout::BackendRepr::Memory => {
                         if layout.size.in_bytes > 0 {
                             let value = self.lower_operand(value.unwrap());
                             let Value { kind: ValueKind::Ref(value), .. } = value else {
@@ -1281,7 +1277,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
             let reg = &body.local_registers[idx];
             debug_assert_eq!(reg.kind, intermediate::RegKind::Param);
             match param_layout.repr {
-                type_ir::BackendRepr::Scalar(..) => {
+                layout::BackendRepr::Scalar(..) => {
                     let argument = self.function.get_nth_param(arg_idx)
                         .unwrap();
                     let kind = ValueKind::Immediate(argument.into());
@@ -1295,7 +1291,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         self.reg_translations[idx] = LocalKind::Place { place, layout: param_layout };
                     }
                 }
-                type_ir::BackendRepr::ScalarPair(..) => {
+                layout::BackendRepr::ScalarPair(..) => {
                     let argument1 = self.function.get_nth_param(arg_idx)
                         .unwrap();
                     let argument2 = self.function.get_nth_param(arg_idx + 1)
@@ -1314,7 +1310,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                     arg_idx += 2;
                     continue;
                 }
-                type_ir::BackendRepr::Memory => {
+                layout::BackendRepr::Memory => {
                     let argument: ll::PointerValue<'ll> = self.function.get_nth_param(arg_idx)
                         .unwrap()
                         .force_into();
@@ -1455,7 +1451,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
         }
     }
 
-    fn push_dependency(&mut self, def: ast::DefId, init: Option<Const<'tcx>>, relative_module: Option<&'ll ll::Module<'ll>>) -> DependencyKind<'ll> {
+    fn push_dependency(&mut self, def: ast::DefId, init: Option<layout::Const<'tcx>>, relative_module: Option<&'ll ll::Module<'ll>>) -> DependencyKind<'ll> {
         if let Some(DependencyData { value, module, mangled_name, .. }) = self.dependency_map.get(&def) {
             if let Some(relative_module) = relative_module && relative_module != *module {
                 return self.ensure_delcartion(*value, *mangled_name, relative_module);
@@ -1492,7 +1488,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
             }
             ast::Item { kind: ast::ItemKind::GlobalVar(..), .. } => {
                 let array_ty = self.context.i8_type().array_type(layout.size.in_bytes as u32);
-                let Some(Const(ConstKind::Value(value))) = init else {
+                let Some(layout::Const::Value { .. }) = init else {
                     unreachable!()
                 };
                 let global = module
@@ -1501,7 +1497,7 @@ impl<'ll, 'tcx> CodegenCtxt<'ll, 'tcx> {
                         None,
                         mangled_name.get(),
                     );
-                global.set_initializer(&self.create_array_value(value.as_bytes()));
+                global.set_initializer(&self.create_array_value(todo!()));
                 global.set_linkage(ll::Linkage::External);
                 global.set_alignment(layout.align.in_bytes() as u32);
                 DependencyKind::Global(global)
@@ -1606,13 +1602,13 @@ impl<'tcx> TyLayoutTuple<'tcx> {
 
     fn is_llvm_immediate(&self) -> bool {
         match self.repr {
-            type_ir::BackendRepr::Scalar(..) => true,
-            type_ir::BackendRepr::ScalarPair(..) | type_ir::BackendRepr::Memory => false,
+            layout::BackendRepr::Scalar(..) => true,
+            layout::BackendRepr::ScalarPair(..) | layout::BackendRepr::Memory => false,
         }
     }
 
     fn lower_type_and_layout<'ll>(&self, ctxt: &CodegenCtxt<'ll, 'tcx>) -> ll::AnyTypeEnum<'ll> {
-        if let type_ir::BackendRepr::Scalar(scalar) = self.repr && !matches!(self.ty, Ty(TyKind::Bool)){
+        if let layout::BackendRepr::Scalar(scalar) = self.repr && !matches!(self.ty, Ty(TyKind::Bool)){
             return scalar.llvm_type(ctxt);
         }
 
@@ -1633,30 +1629,30 @@ impl<'tcx> TyLayoutTuple<'tcx> {
                 for param in signature.params {
                     let layout = ctxt.tcx.layout_of(param.ty).unwrap();
                     match layout.repr {
-                        type_ir::BackendRepr::Scalar(scalar) => { 
+                        layout::BackendRepr::Scalar(scalar) => { 
                             param_tys.push(scalar.llvm_type(ctxt).force_into());
                         }
-                        type_ir::BackendRepr::ScalarPair(scalar1, scalar2) => {    
+                        layout::BackendRepr::ScalarPair(scalar1, scalar2) => {    
                             param_tys.push(scalar1.llvm_type(ctxt).force_into());
                             param_tys.push(scalar2.llvm_type(ctxt).force_into());
                         }
-                        type_ir::BackendRepr::Memory => {
+                        layout::BackendRepr::Memory => {
                             param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
                         }
                     }
                 }
                 return match result_layout.repr {
-                    type_ir::BackendRepr::Scalar(_) => {
+                    layout::BackendRepr::Scalar(_) => {
                         let ret_ty: ll::BasicTypeEnum<'ll> = result_layout.llvm_type(ctxt).force_into();
                         ll::AnyTypeEnum::FunctionType(ret_ty.fn_type(&param_tys, false))
                     }
-                    type_ir::BackendRepr::ScalarPair(scalar1, _) => {
+                    layout::BackendRepr::ScalarPair(scalar1, _) => {
                         // scalar1 is the result_ty, scalar2 passed as an out pointer argument
                         param_tys.push(ctxt.context.ptr_type(ll::AddressSpace::from(0)).into());
                         let ret_ty: ll::BasicTypeEnum<'ll> = scalar1.llvm_type(ctxt).force_into();
                         ll::AnyTypeEnum::FunctionType(ret_ty.fn_type(&param_tys, false))
                     }
-                    type_ir::BackendRepr::Memory => {
+                    layout::BackendRepr::Memory => {
                         if result_layout.size.in_bytes > 0 {
                             // memory values need to be passed passed as an out pointer argument
 
@@ -1678,8 +1674,8 @@ impl<'tcx> TyLayoutTuple<'tcx> {
         }
 
         match self.fields {
-            type_ir::Fields::Scalar => unreachable!(),
-            type_ir::Fields::Array { count, .. } => {
+            layout::Fields::Scalar => unreachable!(),
+            layout::Fields::Array { count, .. } => {
                 let Ty(TyKind::Array(base_ty, _)) = self.ty else {
                     unreachable!()
                 };
@@ -1687,7 +1683,7 @@ impl<'tcx> TyLayoutTuple<'tcx> {
                 let base_ty: ll::BasicTypeEnum<'ll> = base_layout.llvm_type(ctxt).force_into();
                 ll::AnyTypeEnum::ArrayType(base_ty.array_type(count as u32))
             }
-            type_ir::Fields::Struct { ref fields } =>
+            layout::Fields::Struct { ref fields } =>
                 self.lower_fields(fields.iter_enumerated().map(|(f, o)| (f, *o)), ctxt)
         }
     }
@@ -1697,7 +1693,7 @@ impl<'tcx> TyLayoutTuple<'tcx> {
         let field_tys = match self.ty {
             Ty(TyKind::String | TyKind::Slice(..)) => {
                 def = None;
-                let nuint = type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false).llvm_type(ctxt)
+                let nuint = layout::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false).llvm_type(ctxt)
                     .force_into();
 
                 let mut fields = vec![];
@@ -1707,7 +1703,7 @@ impl<'tcx> TyLayoutTuple<'tcx> {
             }
             Ty(TyKind::DynamicArray(..)) => {
                 def = None;
-                let nuint = type_ir::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false).llvm_type(ctxt).force_into();
+                let nuint = layout::Scalar::Int(type_ir::Integer::ISize.normalize(ctxt), false).llvm_type(ctxt).force_into();
 
                 let mut fields = vec![];
                 fields.push(ll::BasicTypeEnum::PointerType(ctxt.context.ptr_type(ll::AddressSpace::from(0)))); // void *items;
@@ -1750,85 +1746,85 @@ impl Scalar {
     fn llvm_type<'ll, 'tcx>(&self, ctxt: &CodegenCtxt<'ll, 'tcx>) -> ll::AnyTypeEnum<'ll> {
         let context = ctxt.context;
         match self {
-            type_ir::Scalar::Int(int, _) => {
+            layout::Scalar::Int(int, _) => {
                 let int_type = match int {
                     type_ir::Integer::I8 => context.i8_type(),
                     type_ir::Integer::I16 => context.i16_type(),
                     type_ir::Integer::I32 => context.i32_type(),
                     type_ir::Integer::I64 => context.i64_type(),
                     type_ir::Integer::ISize => {
-                        let normalized = type_ir::Scalar::Int(int.normalize(ctxt), false);
+                        let normalized = layout::Scalar::Int(int.normalize(ctxt), false);
                         return normalized.llvm_type(ctxt);
                     }
                 };
                 ll::AnyTypeEnum::IntType(int_type)
             }
-            type_ir::Scalar::Float(float) => {
+            layout::Scalar::Float(float) => {
                 let float_type = match float {
                     type_ir::Float::F32 => context.f32_type(),
                     type_ir::Float::F64 => context.f64_type(),
                 };
                 ll::AnyTypeEnum::FloatType(float_type)
             }
-            type_ir::Scalar::Pointer =>
+            layout::Scalar::Pointer =>
                 ll::AnyTypeEnum::PointerType(context.ptr_type(ll::AddressSpace::from(0)))
         }
     }
 }
 
-impl<'tcx> type_ir::Global<'tcx> {
-    fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
-        match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::Static { def, .. }) => {
-                let ast::Node::Item(item) = tcx.node_by_def_id(*def) else { unreachable!() };
-                item.get_name(tcx)
-            }
-            type_ir::Global(type_ir::GlobalKind::EnumVariant { def }) => {
-                let (_, variant) = tcx.enum_variant(*def);
-                variant.symbol
-            }
-            type_ir::Global(type_ir::GlobalKind::Indirect { allocation, .. }) => {
-                let id = allocation.as_ptr().addr();
-                symbol::Symbol::intern(&format!("_clyialloc_{id:016x}"))
-            }
-        }
-    }
-
-    fn is_function(&self) -> bool {
-        if let type_ir::Global(type_ir::GlobalKind::Function { .. }) = self {
-            return true;
-        }
-        false
-    }
-
-    fn definition(&self) -> Option<ast::DefId> {
-        if let type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::Static { def, .. }) = self {
-            return Some(*def);
-        }
-        None
-    }
-
-    fn args(&self) -> Option<&'tcx GenericArgs<'tcx>> {
-        if let type_ir::Global(type_ir::GlobalKind::Function { generics, .. }) = self {
-            return Some(generics);
-        }
-        None
-    }
-
-    fn initializer(&self) -> Option<Const<'tcx>> {
-        if let type_ir::Global(type_ir::GlobalKind::Static { initializer, .. }) = self {
-            return Some(*initializer);
-        }
-        None
-    }
-
-    fn ty(&self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
-        match self {
-            type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::EnumVariant { def, .. } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
-            type_ir::Global(type_ir::GlobalKind::Indirect { ty, .. }) => *ty
-        }
-    }
-}
+// impl<'tcx> type_ir::Global<'tcx> {
+//     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {
+//         match self {
+//             type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::Static { def, .. }) => {
+//                 let ast::Node::Item(item) = tcx.node_by_def_id(*def) else { unreachable!() };
+//                 item.get_name(tcx)
+//             }
+//             type_ir::Global(type_ir::GlobalKind::EnumVariant { def }) => {
+//                 let (_, variant) = tcx.enum_variant(*def);
+//                 variant.symbol
+//             }
+//             type_ir::Global(type_ir::GlobalKind::Indirect { allocation, .. }) => {
+//                 let id = allocation.as_ptr().addr();
+//                 symbol::Symbol::intern(&format!("_clyialloc_{id:016x}"))
+//             }
+//         }
+//     }
+// 
+//     fn is_function(&self) -> bool {
+//         if let type_ir::Global(type_ir::GlobalKind::Function { .. }) = self {
+//             return true;
+//         }
+//         false
+//     }
+// 
+//     fn definition(&self) -> Option<ast::DefId> {
+//         if let type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::Static { def, .. }) = self {
+//             return Some(*def);
+//         }
+//         None
+//     }
+// 
+//     fn args(&self) -> Option<&'tcx GenericArgs<'tcx>> {
+//         if let type_ir::Global(type_ir::GlobalKind::Function { generics, .. }) = self {
+//             return Some(generics);
+//         }
+//         None
+//     }
+// 
+//     fn initializer(&self) -> Option<Const<'tcx>> {
+//         if let type_ir::Global(type_ir::GlobalKind::Static { initializer, .. }) = self {
+//             return Some(*initializer);
+//         }
+//         None
+//     }
+// 
+//     fn ty(&self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
+//         match self {
+//             type_ir::Global(type_ir::GlobalKind::Function { def, .. } | type_ir::GlobalKind::EnumVariant { def, .. } | type_ir::GlobalKind::Static { def, .. }) => tcx.type_of(*def),
+//             type_ir::Global(type_ir::GlobalKind::Indirect { ty, .. }) => *ty
+//         }
+//     }
+// }
 
 impl<'tcx> ast::Item<'tcx> {
     fn get_name(&self, tcx: TyCtxt<'tcx>) -> symbol::Symbol {

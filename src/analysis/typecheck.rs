@@ -1,9 +1,8 @@
 use std::cell::Cell;
 
 use hashbrown::HashMap;
-use num_traits::ToPrimitive;
 
-use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, Instatiatable, Integer, Ty, TyKind}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, layout, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, Instatiatable, Integer, Ty, TyKind, Variant}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -378,7 +377,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         //      - or a signed value as expected, but an unsigned value was provided
         if let Some(expected @ Ty(type_ir::TyKind::Int(integer, signed))) = expected && *signed | !int.signed {
             let min_int = if *signed {
-                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(type_ir::Size::from_bits(128), |i| i.size(&self.tcx))
+                Integer::fit_signed((int.value as i128) * if int.signed { -1 } else { 1 }).map_or(layout::Size::from_bits(128), |i| i.size(&self.tcx))
             } else {
                 Integer::fit_unsigned(int.value).size(&self.tcx)
             };
@@ -884,13 +883,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 
                 let count = ty_init.initializers.len() as u64;
                 match kind {
-                    type_ir::TyKind::Array(_, capcity) => {
-                        let capacity = capcity.downcast_unsized::<dyn ToPrimitive>()
-                            .map(|p| p.to_u64())
-                            .flatten()
-                            .expect("array has capacity of usize");
-                        if count != 0 && count != 1 && count != capacity {
-                            Message::error(format!("expected array with {capacity} elements, found {count} elements"))
+                    type_ir::TyKind::Array(_, capacity) => {
+                        let capacity = capacity.try_to_target_usize(self.tcx);
+                        if count != 0 && count != 1 && Some(count) != capacity {
+                            Message::error(format!(
+                                    "expected array with {} number of elements, found {count} elements",
+                                    capacity
+                                        .map(|x| x.to_string())
+                                        .unwrap_or_else(|| "{unknown}".to_string())
+                                ))
                                 .at(span)
                                 .push(self.diagnostics());
                             self.last_error.set(Some(()));
@@ -1368,10 +1369,8 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         .push(self.diagnostics());
                     type_ir::GenericArg::from_ty(Ty::new_error(self.tcx))
                 }
-                (Some(ast::GenericArgumentKind::Expr(expr)), GenericParamKind::Const) => {
-                    let def_id = *expr.def_id.get().unwrap();
-                    type_ir::GenericArg::from_const(type_ir::Const::from_definition(self.tcx, def_id))
-                }
+                (Some(ast::GenericArgumentKind::Expr(expr)), GenericParamKind::Const) => 
+                    type_ir::GenericArg::from_const(self.lower_nested_const(*expr)),
                 (Some(ast::GenericArgumentKind::Ty(ty_expr)), GenericParamKind::Const) => {
                     Message::error("found type, expected const generic argument")
                         .at(ty_expr.span)
@@ -1476,10 +1475,9 @@ impl<'tcx> LoweringCtxt<'tcx> {
             match ty {
                 Ty(TyKind::Enum(enm)) => {    
                     let mut variant = None;
-                    for variant_id in &enm.variants {
-                        let (_, variant_def) = self.tcx.enum_variant(*variant_id);
-                        if variant_def.symbol == ident.symbol {
-                            variant = Some(variant_def);
+                    for v in &enm.variants {
+                        if v.name == ident.symbol {
+                            variant = Some(v);
                         }
                     }
 
@@ -1638,9 +1636,9 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         }
 
                         let cap = if let ast::ArrayCapacity::Discrete(expr) = &array.cap {
-                            type_ir::Const::from_definition(self.tcx, *expr.def_id.get().unwrap())
+                            self.lower_nested_const(*expr)
                         } else {
-                            self.tcx.intern_const(ConstKind::Infer)
+                            self.tcx.intern_const(ConstKind::Infer(std::marker::PhantomData))
                         };
 
                         if let type_ir::Const(type_ir::ConstKind::Err) = &cap {
@@ -1670,6 +1668,144 @@ impl<'tcx> LoweringCtxt<'tcx> {
             }
             ast::TypeExprKind::Err => Ty::new_error(self.tcx)
         }
+    }
+    
+    fn lower_const(&self, def_id: DefId) -> type_ir::Const<'tcx> {
+        let ty = self.tcx.type_of(def_id);
+        let node = self.tcx.node_by_def_id(def_id);
+
+        let body = node.body().expect("lower_const() node needs a body");
+        self.lower_const_expr(ty, body.body)
+    }
+
+    fn lower_nested_const(&self, cnst: &ast::NestedConst<'tcx>) -> type_ir::Const<'tcx> {
+        let ty = self.tcx.type_of(*cnst.def_id.get().unwrap());
+        self.lower_const_expr(ty, cnst.expr)
+    }
+
+    fn lower_const_expr(&self, ty: Ty<'tcx>, expr: &'tcx ast::Expr<'tcx>) -> type_ir::Const<'tcx> {
+        match self.try_val_from_simple_expr(ty, expr) {
+            Some(v) => v,
+            None => {
+                Message::error("Sry, propper const evaluation is not a priority".to_string())
+                    .at(expr.span)
+                    .push(self.diagnostics());
+                self.tcx.intern_const(ConstKind::Err)
+            }
+        }
+    }
+
+    fn try_val_from_simple_expr(&self, ty: Ty<'tcx>, expr: &'tcx ast::Expr) -> Option<type_ir::Const<'tcx>> {
+        if let ast::ExprKind::Literal(literal) = &expr.kind {
+            return match self.from_literal(ty, literal) {
+                Ok(cnst) => Some(cnst),
+                Err(msg) => {
+                    Message::error(msg)
+                        .at(expr.span)
+                        .push(self.tcx.diagnostics());
+                    Some(self.tcx.intern_const(ConstKind::Err))
+                }
+            };
+        } else if let ast::ExprKind::Path(name) = &expr.kind  {
+            match name.resolution() {
+                Some(ast::Resolution::Def(def_id, ast::DefinitionKind::Const)) => {
+                    let found_ty = self.tcx.type_of(*def_id);
+                    if found_ty != ty {
+                        Message::error(format!("mismatched types: expected {ty}, found {found_ty}"))
+                            .at(expr.span)
+                            .push(self.tcx.diagnostics());
+                        return Some(self.tcx.intern_const(ConstKind::Err));
+                    }
+                    return Some(self.lower_const(*def_id));
+                }
+                Some(ast::Resolution::Def(def_id, ast::DefinitionKind::ParamConst)) => {
+                    let ast::Node::GenericParam(param @ ast::GenericParam { kind: ast::GenericParamKind::Const(name, _), .. }) = self.tcx.node_by_def_id(*def_id) else {
+                        unreachable!();
+                    };
+
+                    let owner_node = self.tcx.owner_node(param.node_id);
+
+                    let generics = owner_node.generics();
+                    let index = generics
+                        .iter()
+                        .position(|p| p.node_id == param.node_id)
+                        .expect("`param` should be a generic param on its owner");
+
+                    return Some(self.tcx.intern_const(ConstKind::Param(name.symbol, index)));
+                }
+                _ => ()
+            }
+        }
+        None
+    }
+
+    fn int_to_val(tcx: TyCtxt<'tcx>, value: ast::Integer, ty: Ty<'tcx>) -> Result<ConstKind<'tcx>, String> {
+        let min_int = if value.signed {
+            let Some(int) = Integer::fit_signed(-(value.value as i128)) else {
+                return Err(format!("{} does not fit into signed long", value.value));
+            };
+            int
+        } else {
+            Integer::fit_unsigned(value.value)
+        };
+
+        if let Ty(TyKind::Int(integer, signed)) = ty && *signed | !value.signed {
+            let min_int = if *signed {
+                Integer::fit_signed((value.value as i128) * if value.signed { -1 } else { 1 }).map_or(layout::Size::from_bits(128), |i| i.size(&tcx))
+            } else {
+                Integer::fit_unsigned(value.value).size(&tcx)
+            };
+
+            if integer.size(&tcx) >= min_int {
+                let integer = integer.normalize(&tcx);
+                if value.signed {
+                    return Ok(ConstKind::Value(type_ir::ScalarInt::from_signed_integer(-(value.value as i64), integer)));
+                }
+                if *signed { 
+                    return Ok(ConstKind::Value(type_ir::ScalarInt::from_signed_integer(value.value as i64, integer)));
+                }
+                return Ok(ConstKind::Value(type_ir::ScalarInt::from_unsigned_integer(value.value, integer)));
+            }
+        }
+
+        Err(format!("mismatched types: expected {ty}, found {}", Ty::new_int(tcx, min_int, value.signed)))
+    }
+
+    fn literal_to_ty(&self, literal: &ast::Literal) -> Ty<'tcx> {
+        match literal {
+            ast::Literal::String(..) => 
+                self.tcx.basic_types.string,
+            ast::Literal::Boolean(..) =>
+                self.tcx.basic_types.bool,
+            ast::Literal::Char(..) =>
+                self.tcx.basic_types.char,
+            ast::Literal::Integer(..) =>
+                self.tcx.basic_types.int,
+            ast::Literal::Floating(..) =>
+                self.tcx.basic_types.double,
+            ast::Literal::Null => panic!("can't infer type from null")
+        }
+    }
+
+    fn from_literal(&self, ty: Ty<'tcx>, literal: &'tcx ast::Literal) -> Result<type_ir::Const<'tcx>, String> {
+        let inner = match (ty.0, literal) {
+            (TyKind::Bool, ast::Literal::Boolean(bool)) =>
+                ConstKind::Value(type_ir::ScalarInt::from_unsigned_integer(*bool as u64, Integer::I8)),
+            (TyKind::Char, ast::Literal::Char(char)) =>
+                ConstKind::Value(type_ir::ScalarInt::from_unsigned_integer(*char as u64, Integer::I32)),
+            (TyKind::Int(..), ast::Literal::Integer(int)) =>
+                Self::int_to_val(self.tcx, *int, ty)?,
+            (TyKind::Float(ty), ast::Literal::Floating(float)) =>
+                ConstKind::Value(type_ir::ScalarInt::from_float(*float, *ty)),
+            (TyKind::Refrence(..), ast::Literal::Null) =>
+                ConstKind::Value(type_ir::ScalarInt::from_size(&self.tcx, 0)),
+            (_, ast::Literal::Null) =>
+                return Err(format!("non refrence-type {ty} cannot be null")),
+            _ =>
+                return Err(format!("mismatched types: expected {ty}, found {}", self.literal_to_ty(literal))),
+        };
+
+        Ok(self.tcx.intern_const(inner))
     }
 }
 
@@ -1766,10 +1902,30 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     }
                 }
 
+                let mut prev_discr = None;
+                let mut offset = 0;
                 let variants = enm.variants
                     .iter()
-                    .map(|v| *v.def_id.get().unwrap())
-                    .collect::<Vec<_>>();
+                    .map(|&v| {
+                        let discriminant = match v.discriminant {
+                            Some(discr) => {
+                                let def = *discr.def_id.get().unwrap();
+                                prev_discr = Some(def);
+                                offset = 0;
+                                type_ir::Discriminant::Explicit { def }
+                            }
+                            None => {
+                                offset += 1;
+                                type_ir::Discriminant::Relative { offset }
+                            }
+                        };
+                        Variant {
+                            name: v.name.symbol,
+                            def: *v.def_id.get().unwrap(),
+                            discriminant
+                        }
+                    })
+                    .collect();
 
                 Ty::new_enum(tcx, type_ir::Enum::new(def_id, enm.ident.symbol, representation, variants))
             }
@@ -1819,7 +1975,17 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             let ctx = LoweringCtxt::new(tcx, LoweringMode::Unbound);
             ctx.lower_ty(field.ty)
         }
-        ast::Node::Variant(..) => tcx.enum_variant(def_id).0,
+        ast::Node::Variant(..) => {
+            let parent_node_id = tcx.parent_of(node.node_id());
+            let parent_node = tcx.get_node_by_id(parent_node_id);
+
+            let ast::Node::Item(enm @ ast::Item { kind: ast::ItemKind::Enum(_), .. }) = parent_node else {
+                panic!("non-enum owner for variant def")
+            };
+
+            let ty = tcx.type_of(*enm.def_id.get().unwrap());
+            ty
+        },
         ast::Node::NestedConst(nested) => {
             let parent_node_id = tcx.parent_of(nested.node_id);
             let parent_node = tcx.get_node_by_id(parent_node_id);
@@ -1956,34 +2122,9 @@ fn check_valid_intrinsic(
     true
 }
 
-pub fn enum_variant<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> (Ty<'tcx>, &'tcx type_ir::VariantDef<'tcx>) {
-    let node = tcx.node_by_def_id(def_id);
-    let ast::Node::Variant(variant) = node else {
-        panic!("non-variant definition in enum_variant")
-    };
-
-    let parent_node_id = tcx.parent_of(node.node_id());
-    let parent_node = tcx.get_node_by_id(parent_node_id);
-
-    let ast::Node::Item(enm @ ast::Item { kind: ast::ItemKind::Enum(_), .. }) = parent_node else {
-        panic!("non-enum owner for variant def")
-    };
-
-    let ty = tcx.type_of(*enm.def_id.get().unwrap());
-
-    let def_id = *variant.def_id.get().unwrap();
-    let discriminant = variant
-        .discriminant
-        .map(|cnst| type_ir::Const::from_definition(tcx, *cnst.def_id.get().unwrap()))
-        .map(|cnst| type_ir::VariantDescriminant::Uncalculated(cnst))
-        .unwrap_or_default();
-    let variant = tcx.arena.alloc(type_ir::VariantDef {
-        def: def_id,
-        symbol: variant.name.symbol,
-        discriminant: Cell::new(discriminant)
-    });
-
-    (ty, variant)
+pub fn constant_of<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> type_ir::Const<'tcx> {
+    let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
+    ctxt.lower_const(def_id)
 }
 
 pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
@@ -2092,3 +2233,18 @@ pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
         intrinsic: !has_errors && header.compiler_intrinsic.is_some()
     }
 }
+
+pub fn evaluate_ty_const<'tcx>(
+    _tcx: TyCtxt<'tcx>,
+    cnst: type_ir::Const<'tcx>
+) -> Result<layout::ConstValue<'tcx>, ()> {
+    use type_ir::ConstKind;
+
+    match cnst {
+        type_ir::Const(ConstKind::Value(value)) =>
+            Ok(layout::ConstValue::Scalar(layout::ScalarValue { data: value.data, size: value.size })),
+        type_ir::Const(ConstKind::Infer(..) | ConstKind::Err | ConstKind::Param(..)) => Err(())
+    }
+
+}
+

@@ -26,6 +26,7 @@ mod string_internals;
 mod monomorphization;
 mod pretty_print;
 mod inline_slice;
+mod layout;
 
 fn main() -> ExitCode {
     let options = match session::parse_argv_options(env::args()) {

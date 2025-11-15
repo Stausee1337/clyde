@@ -4,7 +4,7 @@ use std::{cell::OnceCell, fmt::Write, hash::Hash};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{context::TyCtxt, mapping, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{Const, FieldIdx, Global, Ty, TyKind}};
+use crate::{context::TyCtxt, layout::{self, Align, ScalarValue}, mapping, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{FieldIdx, Float, GenericArgs, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
 #[derive(Clone, clyde_macros::Recursible)]
@@ -199,16 +199,14 @@ impl<'tcx> std::fmt::Display for Place<'tcx> {
 #[derive(Clone, Copy, clyde_macros::Recursible)]
 pub enum Operand<'tcx> {
     Copy(#[non_recursible] RegisterId),
-    Const(Const<'tcx>),
-    Global(Global<'tcx>),
+    Const(layout::Const<'tcx>),
 }
 
 impl<'tcx> std::fmt::Display for Operand<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Operand::Copy(reg) => write!(f, "copy {reg:?}"),
-            Operand::Const(cnst) => write!(f, "const {cnst}"),
-            Operand::Global(global) => write!(f, "{global}"),
+            Operand::Const(cnst) => write!(f, "const {cnst:?}"),
        }
     }
 }
@@ -231,12 +229,11 @@ impl<'tcx> Operand<'tcx> {
 
 #[derive(Clone, clyde_macros::Recursible)]
 pub enum RValue<'tcx> {
-    Const(Const<'tcx>),
+    Const(layout::Const<'tcx>),
     Read(Place<'tcx>),
     Ref(Place<'tcx>),
     Invert(Operand<'tcx>),
     Negate(Operand<'tcx>),
-    Global(Global<'tcx>),
     BinaryOp {
         lhs: Operand<'tcx>,
         rhs: Operand<'tcx>,
@@ -262,7 +259,6 @@ impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
         match value {
             Operand::Copy(reg) => RValue::Read(Place::register(reg)),
             Operand::Const(cnst) => RValue::Const(cnst),
-            Operand::Global(global) => RValue::Global(global)
         }
     }
 }
@@ -275,7 +271,6 @@ impl<'tcx> std::fmt::Display for RValue<'tcx> {
             RValue::Ref(place) => write!(f, "&{place}"),
             RValue::Invert(operand) => write!(f, "Inv({operand})"),
             RValue::Negate(operand) => write!(f, "Neg({operand})"),
-            RValue::Global(global) => write!(f, "{global}"),
             RValue::BinaryOp { op, lhs, rhs } => write!(f, "{op:?}({lhs}, {rhs})"),
             RValue::Cast { value, ty } => write!(f, "{value} as {ty}"),
             RValue::Call { callee, args: args1 } => {
@@ -286,7 +281,7 @@ impl<'tcx> std::fmt::Display for RValue<'tcx> {
                 let args = args.join(", ");
                 write!(f, "{callee}({args})")
             },
-            RValue::Const(cnst) => write!(f, "const {cnst}"),
+            RValue::Const(cnst) => write!(f, "const {cnst:?}"),
             RValue::ExplicitInit { ty, initializers } => {
                 let mut args = vec![];
                 for (idx, operand) in initializers {
@@ -639,7 +634,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             LogicalOp::And => (else_block, then_block, false),
         };
 
-        let constant = Const::from_bool(self.tcx, constant);
+        let constant = layout::Const::from_boolean(self.tcx, constant);
         self.emit_into(
             short_circuit,
             Statement {
@@ -1085,7 +1080,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 self.emit_into(block,
                     Statement {
                         place: Some(Place::register(reg)),
-                        rhs: RValue::Global(Global::from_definition(self.tcx, *def_id)),
+                        rhs: RValue::Const(self.map_const(*def_id)),
                         span: expr.span
                     }
                 );
@@ -1184,13 +1179,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
         match &expr.kind {
             ast::ExprKind::Literal(literal) => {
                 let ty = self.typecheck.associations[&expr.node_id];
-                if let Ty(TyKind::String) = ty {
-                    let ast::Literal::String(str) = literal else { unreachable!() };
-                    let global = Global::from_array_with_ty(self.tcx, str.as_bytes(), self.tcx.basic_types.byte, ty);
-                    (block, Operand::Global(global))
-                } else {
-                    (block, Operand::Const(Const::from_literal(self.tcx, ty, literal).unwrap()))
-                }
+                (block, Operand::Const(map_const_from_literal(self.tcx, ty, literal)))
             }
             ast::ExprKind::Path(path) if let Some(ast::Resolution::Local(local)) = path.resolution() => {
                 // FIXME: remove duplication with Place and Temporaray handling
@@ -1213,14 +1202,12 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 (block, Operand::Copy(reg))
             }
             ast::ExprKind::Path(path) => match path.resolution() {
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Const)) =>
-                    (block, Operand::Const(Const::from_definition(self.tcx, *def_id))),
-                Some(ast::Resolution::Def(def_id, DefinitionKind::Variant)) =>
-                    (block, Operand::Global(Global::from_definition(self.tcx, *def_id))),
-                Some(ast::Resolution::Def(_, DefinitionKind::Function)) => {
-                    let func = self.typecheck.associations[&expr.node_id];
-                    (block, Operand::Global(Global::from_fn_with_generics(self.tcx, func)))
-                },
+                Some(ast::Resolution::Def(
+                        def_id,
+                        DefinitionKind::Const |
+                        DefinitionKind::Variant |
+                        DefinitionKind::Function)) =>
+                    (block, Operand::Const(self.map_const(*def_id))),
                 Some(ast::Resolution::Def(_, DefinitionKind::Static)) => {
                     // FIXME: remove duplicaiton
                     let register;
@@ -1289,6 +1276,80 @@ impl<'tcx> TranslationCtxt<'tcx> {
             local_registers: self.registers
         })
     }
+
+    fn map_const(&self, def_id: DefId) -> layout::Const<'tcx> {
+        let ty = self.tcx.type_of(def_id);
+        let def_kind = self.tcx.def_kind(def_id);
+
+        match def_kind {
+            DefinitionKind::Variant => layout::Const::Unevaluated {
+                def: def_id,
+                args: GenericArgs::empty(),
+                ty,
+            },
+            DefinitionKind::Const | DefinitionKind::Static => layout::Const::Unevaluated {
+                def: def_id,
+                args: GenericArgs::empty(),
+                ty,
+            },
+            DefinitionKind::Function => layout::Const::Value {
+                value: layout::ConstValue::ZeroSized,
+                ty,
+            },
+
+            _ => unreachable!()
+        }
+    }
+}
+
+pub fn map_const_from_literal<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: Ty<'tcx>,
+    literal: &'tcx ast::Literal
+) -> layout::Const<'tcx> {
+    let value = match literal {
+        ast::Literal::Char(c) =>
+            layout::ConstValue::Scalar(ScalarValue::from_char(*c)),
+        ast::Literal::Boolean(b) =>
+            layout::ConstValue::Scalar(ScalarValue::from_boolean(*b)),
+        ast::Literal::String(s) => {
+            let data = tcx.arena.alloc_slice_copy(s.as_bytes());
+            layout::ConstValue::Memory { data, align: Align::ONE }
+        },
+        ast::Literal::Integer(i) => {
+            let Ty(TyKind::Int(int, signed)) = ty else {
+                unreachable!()
+            };
+
+            let scalar = if !*signed && !i.signed {
+                let size = int.size(&tcx);
+                let value = size.truncate(i.value);
+                layout::ScalarValue::from_unsigned(value, size)
+            } else {
+                let size = int.size(&tcx);
+                let value = size.truncate(
+                    if i.signed { -(i.value as i64) as u64 } else { i.value }
+                );
+
+                layout::ScalarValue::from_unsigned(value, size)
+            };
+            layout::ConstValue::Scalar(scalar)
+        }
+        ast::Literal::Floating(f) => {
+            let Ty(TyKind::Float(float)) = ty else {
+                unreachable!()
+            };
+
+            let size = float.size();
+
+            let value: u64 = unsafe { std::mem::transmute(*f) };
+            layout::ConstValue::Scalar(layout::ScalarValue::from_unsigned(value, size))
+        }
+        ast::Literal::Null =>
+            layout::ConstValue::Scalar(ScalarValue::from_target_usize(&tcx, 0)),
+    };
+
+    layout::Const::Value { value, ty }
 }
 
 pub fn build_ir(tcx: TyCtxt<'_>, def_id: DefId) -> Result<&'_ Body<'_>, ()> {

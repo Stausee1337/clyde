@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use inkwell::targets::{self as ll, TargetTriple};
 
-use crate::type_ir::{Align, Endianness, Size};
+use crate::layout::{Align, Endianness, Size};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
