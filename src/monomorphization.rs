@@ -101,8 +101,11 @@ impl<'tcx> Collector<'tcx> {
     }
 
     fn collect_operand(&mut self, operand: &'tcx intermediate::Operand<'tcx>) {
-        if let intermediate::Operand::Const(cnst) = operand {
-            self.handle_const(*cnst);
+        match operand {
+            intermediate::Operand::Const(cnst) =>
+                self.handle_const(*cnst),
+            intermediate::Operand::Copy(place) =>
+                self.collect_place(place),
         }
     }
 
@@ -111,13 +114,13 @@ impl<'tcx> Collector<'tcx> {
             self.collect_place(place);
         }
         match &statement.rhs {
-            intermediate::RValue::Ref(place) | intermediate::RValue::Read(place) =>
+            intermediate::RValue::Ref(place) =>
                 self.collect_place(place),
             intermediate::RValue::Invert(operand) | intermediate::RValue::Negate(operand) |
             intermediate::RValue::Cast { value: operand, .. }=>
                 self.collect_operand(operand),
-            intermediate::RValue::Const(cnst) =>
-                self.handle_const(*cnst),
+            intermediate::RValue::Use(op) =>
+                self.collect_operand(op),
             intermediate::RValue::BinaryOp { lhs, rhs, .. } => {
                 self.collect_operand(lhs);
                 self.collect_operand(rhs);

@@ -486,12 +486,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
 
     fn lower_operand(&mut self, operand: intermediate::Operand<'tcx>) -> Value<'ll, 'tcx> {
         match operand {
-            intermediate::Operand::Copy(reg) => {
-                match self.reg_translations[reg] {
-                    LocalKind::Value(value) => value,
-                    LocalKind::Place { place, layout: ty } => self.load_value(place, ty),
-                    LocalKind::Dangling => panic!("tried to resolve a LocalKind::Dangling")
-                }
+            intermediate::Operand::Copy(ir_place) => {
+                let (cg_place, ty) = self.lower_place(ir_place);
+                self.load_value(cg_place, ty)
             },
             intermediate::Operand::Const(cnst) => self.lower_const_value(cnst),
         }
@@ -518,13 +515,8 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 };
                 deferred.store_or_init(value, self);
             }
-            intermediate::RValue::Read(ir_place) => {
-                let (cg_place, ty) = self.lower_place(ir_place);
-                let value = self.load_value(cg_place, ty);
-                deferred.store_or_init(value, self);
-            }
-            intermediate::RValue::Const(cnst) => {
-                let value = self.lower_const_value(cnst);
+            intermediate::RValue::Use(operand) => {
+                let value = self.lower_operand(operand);
                 deferred.store_or_init(value, self);
             }
             intermediate::RValue::Call { callee, ref args } => {
@@ -1239,10 +1231,13 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
     }
 
     fn collect_placebound_regs(body: &'tcx intermediate::Body<'tcx>) -> HashSet<intermediate::RegisterId> {
+        // NOTE: (for people confused why Operand::Copy makes something placebound) LLVM cannot copy
+        // values, so the only way to do it is to load and store from a Place.
+
         let mut placebounds = HashSet::new();
         for block in &body.basic_blocks {
             for statement in &block.statements { 
-                if let intermediate::RValue::Read(place) | intermediate::RValue::Ref(place) = statement.rhs &&
+                if let intermediate::RValue::Use(intermediate::Operand::Copy(place)) | intermediate::RValue::Ref(place) = statement.rhs &&
                     let Some(reg) = get_reg(place) {
                     placebounds.insert(reg);
                 }

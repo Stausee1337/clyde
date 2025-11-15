@@ -198,7 +198,7 @@ impl<'tcx> std::fmt::Display for Place<'tcx> {
 
 #[derive(Clone, Copy, clyde_macros::Recursible)]
 pub enum Operand<'tcx> {
-    Copy(#[non_recursible] RegisterId),
+    Copy(Place<'tcx>),
     Const(layout::Const<'tcx>),
 }
 
@@ -229,8 +229,7 @@ impl<'tcx> Operand<'tcx> {
 
 #[derive(Clone, clyde_macros::Recursible)]
 pub enum RValue<'tcx> {
-    Const(layout::Const<'tcx>),
-    Read(Place<'tcx>),
+    Use(Operand<'tcx>),
     Ref(Place<'tcx>),
     Invert(Operand<'tcx>),
     Negate(Operand<'tcx>),
@@ -254,20 +253,12 @@ pub enum RValue<'tcx> {
     }
 }
 
-impl<'tcx> From<Operand<'tcx>> for RValue<'tcx> {
-    fn from(value: Operand<'tcx>) -> Self {
-        match value {
-            Operand::Copy(reg) => RValue::Read(Place::register(reg)),
-            Operand::Const(cnst) => RValue::Const(cnst),
-        }
-    }
-}
 
 impl<'tcx> std::fmt::Display for RValue<'tcx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // RValue::Use(operand) => write!(f, "{operand:?}"),
-            RValue::Read(place) => write!(f, "{place}"),
+            RValue::Use(operand) => write!(f, "{operand}"),
+            // RValue::Read(place) => write!(f, "{place}"),
             RValue::Ref(place) => write!(f, "&{place}"),
             RValue::Invert(operand) => write!(f, "Inv({operand})"),
             RValue::Negate(operand) => write!(f, "Neg({operand})"),
@@ -281,7 +272,7 @@ impl<'tcx> std::fmt::Display for RValue<'tcx> {
                 let args = args.join(", ");
                 write!(f, "{callee}({args})")
             },
-            RValue::Const(cnst) => write!(f, "const {cnst:?}"),
+            // RValue::Const(cnst) => write!(f, "const {cnst:?}"),
             RValue::ExplicitInit { ty, initializers } => {
                 let mut args = vec![];
                 for (idx, operand) in initializers {
@@ -639,7 +630,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             short_circuit,
             Statement {
                 place: dest,
-                rhs: Operand::Const(constant).into(),
+                rhs: RValue::Use(Operand::Const(constant)),
                 span: lhs.span
             }
         );
@@ -663,7 +654,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     block,
                     Statement {
                         place: dest,
-                        rhs: RValue::Read(place),
+                        rhs: RValue::Use(Operand::Copy(place)),
                         span: expr.span
                     }
                 );
@@ -678,7 +669,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     block,
                     Statement {
                         place: dest,
-                        rhs: operand.into(),
+                        rhs: RValue::Use(operand),
                         span: expr.span
                     }
                 );
@@ -751,7 +742,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                             block,
                             Statement {
                                 place: Some(dest2),
-                                rhs: rhs.into(),
+                                rhs: RValue::Use(rhs),
                                 span: expr.span
                             }
                         );
@@ -760,7 +751,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                             block,
                             Statement {
                                 place: dest,
-                                rhs: RValue::Read(dest2),
+                                rhs: RValue::Use(Operand::Copy(dest2)),
                                 span: expr.span
                             }
                         );
@@ -786,18 +777,18 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 (block, rhs) = self.expr_as_operand(block, assign.rhs);
 
                 let lhs = if let Some(reg) = dest2.as_register() {
-                    Operand::Copy(reg)
+                    Operand::Copy(Place::register(reg))
                 } else {
                     let reg = self.tmp_register(self.typecheck.associations[&expr.node_id]);
                     self.emit_into(
                         block,
                         Statement {
                             place: Some(Place::register(reg)),
-                            rhs: RValue::Read(dest2),
+                            rhs: RValue::Use(Operand::Copy(dest2)),
                             span: Span::NULL
                         }
                     );
-                    Operand::Copy(reg)
+                    Operand::Copy(Place::register(reg))
                 };
 
                 self.emit_into(
@@ -816,7 +807,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     block,
                     Statement {
                         place: dest,
-                        rhs: RValue::Read(dest2),
+                        rhs: RValue::Use(Operand::Copy(dest2)),
                         span: expr.span
                     }
                 );
@@ -1018,7 +1009,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     block,
                     Statement {
                         place: dest,
-                        rhs: RValue::Read(place),
+                        rhs: RValue::Use(Operand::Copy(place)),
                         span: expr.span
                     }
                 );
@@ -1080,7 +1071,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                 self.emit_into(block,
                     Statement {
                         place: Some(Place::register(reg)),
-                        rhs: RValue::Const(self.map_const(*def_id)),
+                        rhs: RValue::Use(Operand::Const(self.map_const(*def_id))),
                         span: expr.span
                     }
                 );
@@ -1192,14 +1183,14 @@ impl<'tcx> TranslationCtxt<'tcx> {
                         block,
                         Statement {
                             place: Some(Place::register(tmp)),
-                            rhs: RValue::Read(Place::register(reg)),
+                            rhs: RValue::Use(Operand::Copy(Place::register(reg))),
                             span: Span::NULL
                         }
                     );
                     reg = tmp;
                 }
 
-                (block, Operand::Copy(reg))
+                (block, Operand::Copy(Place::register(reg)))
             }
             ast::ExprKind::Path(path) => match path.resolution() {
                 Some(ast::Resolution::Def(
@@ -1212,7 +1203,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
                     // FIXME: remove duplicaiton
                     let register;
                     (block, register) = self.as_register(block, expr);
-                    (block, Operand::Copy(register))
+                    (block, Operand::Copy(Place::register(register)))
                 }
                 Some(ast::Resolution::Def(..) | ast::Resolution::Primitive(_)) => panic!("unexpected type-like resolution"),
                 Some(ast::Resolution::Err) => panic!("ill-resolved name at IR stage"),
@@ -1222,7 +1213,7 @@ impl<'tcx> TranslationCtxt<'tcx> {
             _ => {
                 let register;
                 (block, register) = self.as_register(block, expr);
-                (block, Operand::Copy(register))
+                (block, Operand::Copy(Place::register(register)))
             }
         }
     }
