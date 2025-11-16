@@ -1,6 +1,6 @@
 use std::fmt::{Write, Formatter, Result as PrintResult, Error as PrintError};
 
-use crate::{analysis::resolve, context::TyCtxt, syntax::ast, type_ir::{self, Const, Float, GenericArg, GenericArgKind, Instance, Ty, TyKind}};
+use crate::{analysis::resolve, context::TyCtxt, syntax::ast, type_ir::{self, Const, DebruijnIdx, Float, GenericArg, GenericArgKind, Instance, Ty, TyKind}};
 
 
 pub struct PrettyPrinter<'tcx> {
@@ -33,30 +33,33 @@ impl<'tcx> PrettyPrinter<'tcx> {
         f(&mut printer)
     }
 
-    fn print_parent_path_recursively(&mut self, def_id: ast::DefId, surface: bool) -> PrintResult {
-        let node = self.tcx.node_by_def_id(def_id);
+    fn print_path_recursively(
+        &mut self,
+        args: &'tcx type_ir::GenericArgs,
+        params: &'tcx [type_ir::GenericParam],
+        def: ast::DefId,
+        debruijn_level: DebruijnIdx,
+    ) -> PrintResult {
+        let node = self.tcx.node_by_def_id(def);
         let ident = node.ident().unwrap();
 
-        if let resolve::DefParent::Definition(parent) = self.tcx.resolutions.declarations[def_id].parent {
-            self.print_parent_path_recursively(parent, false)?;
+        if let resolve::DefParent::Definition(parent) = self.tcx.resolutions.declarations[def].parent {
+            self.print_path_recursively(args, params, parent, debruijn_level + 1)?;
             self.write_str("::")?;
         }
 
         self.write_str(ident.symbol.get())?;
-        if let ast::Node::Item(item) = node && !surface {
-            let generics = node.generics();
-            if generics.len() > 0 {
+        if let ast::Node::Item(item) = node {
+            if params.len() > 0 {
                 self.write_char('<')?;
-                for (idx, param) in generics.iter().enumerate() {
-                    let ident = match &param.kind {
-                        ast::GenericParamKind::Type(name) => name,
-                        ast::GenericParamKind::Const(name, _) => {
-                            self.write_str("const ")?;
-                            name
-                        }
-                    };
-                    self.write_str(ident.symbol.get())?;
-                    if idx != generics.len() - 1 {        
+                for (idx, _param) in params.iter().enumerate().filter(|(_idx, p)| p.debruijn == debruijn_level) {
+                    let arg = args[idx];
+                    // if let type_ir::GenericParamKind::Const = param.kind {
+                    //     self.write_str("const ")?;
+                    // }
+                    arg.print(self)?;
+                    // self.write_str(param.name.get())?;
+                    if idx != params.len() - 1 {        
                         self.write_str(", ")?;
                     }
                 }
@@ -64,7 +67,7 @@ impl<'tcx> PrettyPrinter<'tcx> {
             }
             
             if let ast::ItemKind::Function(..) = item.kind {
-                let sig = self.tcx.fn_sig(def_id);
+                let sig = self.tcx.fn_sig(def);
                 self.write_char('(')?; //)
                 for (idx, param) in sig.params.iter().enumerate() {
                     param.ty.print(self)?;
@@ -78,22 +81,15 @@ impl<'tcx> PrettyPrinter<'tcx> {
         Ok(())
     }
 
-    pub fn print_def_path(&mut self, def_id: ast::DefId) -> PrintResult {
-        self.print_parent_path_recursively(def_id, true)
-    }
+    pub fn print_instance(&mut self, instance: Instance<'tcx>) -> PrintResult {
+        let node = self.tcx.node_by_def_id(instance.def);
 
-    fn print_generics(&mut self, generics: &[GenericArg<'tcx>]) -> PrintResult {
-        if generics.len() > 0 {
-            self.write_str("<")?;
-            for (idx, arg) in generics.iter().enumerate() {
-                arg.print(self)?;
-                if idx != generics.len() - 1 {
-                    self.write_str(", ")?;
-                }
-            }
-            self.write_str(">")?;
-        }
-        Ok(())
+        let params: &'tcx [type_ir::GenericParam] = match node {
+            ast::Node::Item(..) =>
+                &self.tcx.generics_of(instance.def).params,
+            _ => &[]
+        };
+        self.print_path_recursively(instance.args, &params, instance.def, DebruijnIdx::from_raw(0))
     }
 }
 
@@ -129,20 +125,18 @@ impl<'tcx> Print<'tcx> for Ty<'tcx> {
             TyKind::String => p.write_str("string"),
             TyKind::Float(Float::F32) => p.write_str("float"),
             TyKind::Float(Float::F64) => p.write_str("double"),
-            TyKind::Adt(adt, generics) => {
-                p.print_def_path(adt.def())?;
-                p.print_generics(generics)
+            TyKind::Adt(adt, args) => { 
+                p.print_instance(Instance { def: adt.def(), args })
             },
-            TyKind::Enum(enm) => p.print_def_path(enm.def),
+            TyKind::Enum(enm) =>
+                p.print_instance(Instance { def: enm.def, args: type_ir::GenericArgs::empty() }),
             TyKind::Refrence(ty) => write!(p, "{ty}*"),
             TyKind::Slice(ty) => write!(p, "{ty}[]"),
             TyKind::Array(ty, cap) => write!(p, "{ty}[{cap}]"),
             TyKind::DynamicArray(ty) => write!(p, "{ty}[..]"),
             // TODO: query function name and display it here
-            TyKind::Function(def_id, generics) => {
-                p.print_def_path(*def_id)?;
-                p.print_generics(generics)
-            },
+            &TyKind::Function(def, args) =>
+                p.print_instance(Instance { def, args }),
             TyKind::Range(ty, _) => {
                 p.write_str("Range<")?;
                 ty.print(p)?;
@@ -192,8 +186,7 @@ impl<'tcx> Print<'tcx> for Const<'tcx> {
 
 impl<'tcx> Print<'tcx> for Instance<'tcx> {
     fn print(&self, p: &mut PrettyPrinter<'tcx>) -> PrintResult {
-        p.print_def_path(self.def)?;
-        p.print_generics(self.args)
+        p.print_instance(*self)
     }
 }
 

@@ -66,20 +66,6 @@ impl<'ast> Node<'ast> {
         }
     }
 
-    pub fn generics(self) -> &'ast [&'ast GenericParam<'ast>] {
-        let Node::Item(item) = self else {
-            panic!("node.generics() called for {self:?}");
-        };
-
-        match item.kind {
-            ItemKind::Function(func) => func.sig.generics,
-            ItemKind::Struct(strct) => strct.generics,
-            ItemKind::Alias(alias) => alias.generics,
-            _ => &[]
-        }
-
-    }
-
     pub fn ident(self) -> Option<Ident> {
         Some(match self {
             Node::Item(item) => item.ident(),
@@ -90,20 +76,21 @@ impl<'ast> Node<'ast> {
         })
     }
 
-    /*pub fn span(self) -> Span {
-        match self {
-            Node::Expr(expr) => expr.span,
-            Node::NestedConst(nconst) => nconst.span,
-            Node::Item(item) => item.span,
-            Node::SourceFile(file) => file.span,
-            Node::Stmt(stmt) => stmt.span,
-            Node::TypeExpr(expr) => expr.span,
-            Node::FieldDef(field) => field.span,
-            Node::Variant(variant) => variant.span,
-            Node::Param(param) => param.span,
-            Node::GenericParam(param) => param.span,
-        }
-    }*/
+    pub fn def_id(self) -> Option<DefId> {
+        let def_id = match self {
+            Node::Expr(_) => return None,
+            Node::NestedConst(nconst) => &nconst.def_id,
+            Node::Item(item) => &item.def_id,
+            Node::SourceFile(_) => return None,
+            Node::Stmt(_) => return None,
+            Node::TypeExpr(_) => return None,
+            Node::FieldDef(field) => &field.def_id,
+            Node::Variant(variant) => &variant.def_id,
+            Node::Param(_) => return None,
+            Node::GenericParam(param) => &param.def_id,
+        };
+        Some(*def_id.get().unwrap())
+    }
 }
 
 #[derive(Debug)]

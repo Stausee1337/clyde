@@ -80,6 +80,7 @@ impl Session {
             constant_of: typecheck::constant_of,
             typecheck: typecheck::typecheck,
             fn_sig: typecheck::fn_sig,
+            generics_of: typecheck::generics_of,
             build_ir: intermediate::build_ir,
             layout_of: layout::layout_of,
             parent_map: resolve::parent_map,

@@ -178,6 +178,7 @@ define_queries! {
     fn constant_of(id: ast::DefId) -> type_ir::Const<'tcx>;
     fn typecheck(id: ast::DefId) -> &'tcx typecheck::TypecheckResults<'tcx>;
     fn fn_sig(id: ast::DefId) -> type_ir::Signature<'tcx>;
+    fn generics_of(id: ast::DefId) -> &'tcx type_ir::Generics;
     fn build_ir(id: ast::DefId) -> Result<&'tcx intermediate::Body<'tcx>, ()>;
     fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
     #[handle_cycle_error]

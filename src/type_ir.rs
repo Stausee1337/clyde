@@ -3,21 +3,19 @@ use std::{hash::Hash, marker::PhantomData, ops::Deref, ptr::NonNull};
 
 use index_vec::IndexVec;
 
-use crate::{context::{self, FromCycleError, Internable, InternerExt, Interners, Lift, TyCtxt}, inline_slice::InlineSlice, layout::Size, mapping::{self, Mapper, Recursible}, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId, NodeId}, symbol::{sym, Symbol}}, target::DataLayoutExt};
+use crate::{context::{self, FromCycleError, Internable, InternerExt, Interners, Lift, TyCtxt}, inline_slice::InlineSlice, layout::Size, mapping::{self, Mapper, Recursible}, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{DefId, NodeId}, symbol::{sym, Symbol}}, target::DataLayoutExt};
 
 impl DefId {
     pub fn normalized_generics<'tcx>(&self, tcx: TyCtxt<'tcx>) -> &'tcx GenericArgs<'tcx> {
-        let node = tcx.node_by_def_id(*self);
-        let generics = node.generics();
+        let generics = tcx.generics_of(*self);
 
         let mut generic_args = vec![];
-        for param in generics {
-            let def_id = *param.def_id.get().unwrap();
+        for param in &generics.params {
             let generic_arg = match param.kind {
-                ast::GenericParamKind::Type(..) =>
-                    GenericArg::from_ty(tcx.type_of(def_id)),
-                ast::GenericParamKind::Const(..) => 
-                    GenericArg::from_const(tcx.constant_of(def_id)),
+                GenericParamKind::Ty =>
+                    GenericArg::from_ty(tcx.type_of(param.def)),
+                GenericParamKind::Const => 
+                    GenericArg::from_const(tcx.constant_of(param.def)),
             };
             generic_args.push(generic_arg);
         }
@@ -35,6 +33,70 @@ impl<'tcx, T: mapping::Recursible<'tcx>> Instatiatable<'tcx> for T {
         let mut handler = mapping::InstantiationMapper::new(tcx, generic_args);
         self.map_recurse(&mut handler)
     }
+}
+
+index_vec::define_index_type! {
+    pub struct DebruijnIdx = u32;
+    IMPL_RAW_CONVERSIONS = true;
+}
+
+#[derive(Debug)]
+pub struct Generics {
+    pub parent: DefId,
+    pub params: Vec<GenericParam>,
+    pub has_env_params: bool
+}
+
+impl Generics {
+    pub fn new_from_params<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        parent: DefId,
+        params: Vec<GenericParam>
+    ) -> &'tcx Generics {
+        tcx.arena.alloc(Generics {
+            parent,
+            params,
+            has_env_params: false
+        })
+    }
+
+    pub fn create_new_with_params<'tcx>(
+        &'tcx self,
+        tcx: TyCtxt<'tcx>,
+        parent: DefId,
+        new_params: Vec<GenericParam>
+    ) -> &'tcx Generics {
+        let mut params = self.params
+            .iter()
+            .map(|param| {
+                let mut param = *param;
+                param.debruijn += 1;
+                param
+            })
+            .collect::<Vec<_>>();
+        params.extend(new_params);
+
+        tcx.arena.alloc(Generics {
+            parent,
+            params,
+            has_env_params: true
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenericParam {
+    pub def: DefId,
+    pub name: Symbol,
+    pub index: u32,
+    pub debruijn: DebruijnIdx,
+    pub kind: GenericParamKind
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericParamKind {
+    Ty,
+    Const
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -440,8 +502,9 @@ impl<'tcx> Eq for Enum<'tcx> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ParamTy {
-    pub index: usize,
-    pub symbol: Symbol
+    pub index: u32,
+    pub symbol: Symbol,
+    pub debruijn: DebruijnIdx
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
@@ -549,10 +612,11 @@ impl<'tcx> Ty<'tcx> {
         tcx.intern_ty(TyKind::Tuple(tys))
     }
 
-    pub fn new_param(tcx: TyCtxt<'tcx>, symbol: Symbol, index: usize) -> Ty<'tcx> {
+    pub fn new_param(tcx: TyCtxt<'tcx>, symbol: Symbol, index: u32, debruijn: DebruijnIdx) -> Ty<'tcx> {
         tcx.intern_ty(TyKind::Param(ParamTy {
             symbol,
-            index
+            index,
+            debruijn
         }))
     }
 

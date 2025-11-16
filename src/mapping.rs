@@ -155,7 +155,7 @@ impl<'tcx> Mapper<'tcx> for InstantiationMapper<'tcx> {
     fn map_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
         match ty {
             Ty(TyKind::Param(param_ty)) => {
-                let GenericArgKind::Ty(ty) = self.generics[param_ty.index].kind() else {
+                let GenericArgKind::Ty(ty) = self.generics[param_ty.index as usize].kind() else {
                     unreachable!("insufficient generic arg validataion before instantiation")
                 };
                 ty

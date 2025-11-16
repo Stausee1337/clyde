@@ -644,6 +644,7 @@ impl<'r, 'tcx> Visitor<'tcx> for EarlyCollectionPass<'r, 'tcx> {
                     }
                     ast::AliasKind::Type(ty) => {
                         let site = self.define(DefinitionKind::TypeAlias, alias.ident, item.node_id, item.scope);
+                        let _ = item.def_id.set(site);
                         self.with_rib(DefParentOrInfer::DefParent(DefParent::Definition(site)), |this| {
                             node_visitor::visit_slice(&alias.generics, |generic| this.visit_generic_param(generic));
                             this.visit_ty_expr(ty);

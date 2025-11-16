@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use hashbrown::HashMap;
 
-use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, layout, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, Instatiatable, Integer, Ty, TyKind, Variant}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, layout, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, GenericParamKind, Instatiatable, Integer, Ty, TyKind, Variant}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -1718,17 +1718,18 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     }
                     return Some(self.lower_const(*def_id));
                 }
-                Some(ast::Resolution::Def(def_id, ast::DefinitionKind::ParamConst)) => {
-                    let ast::Node::GenericParam(param @ ast::GenericParam { kind: ast::GenericParamKind::Const(name, _), .. }) = self.tcx.node_by_def_id(*def_id) else {
+                Some(&ast::Resolution::Def(def_id, ast::DefinitionKind::ParamConst)) => {
+                    let ast::Node::GenericParam(param @ ast::GenericParam { kind: ast::GenericParamKind::Const(name, _), .. }) = self.tcx.node_by_def_id(def_id) else {
                         unreachable!();
                     };
 
                     let owner_node = self.tcx.owner_node(param.node_id);
 
-                    let generics = owner_node.generics();
+                    let generics = self.tcx.generics_of(owner_node.def_id().unwrap());
                     let index = generics
+                        .params
                         .iter()
-                        .position(|p| p.node_id == param.node_id)
+                        .position(|p| p.def == def_id)
                         .expect("`param` should be a generic param on its owner");
 
                     return Some(self.tcx.intern_const(ConstKind::Param(name.symbol, index)));
@@ -1810,37 +1811,32 @@ impl<'tcx> LoweringCtxt<'tcx> {
 }
 
 struct GenericParamsIterator<'tcx> {
-    ast_params: &'tcx [&'tcx ast::GenericParam<'tcx>],
+    params: &'tcx [type_ir::GenericParam],
     current_param: CurrentParam<'tcx>
 }
 
 #[derive(Debug, Clone, Copy)]
 enum CurrentParam<'tcx> {
     NotStarted,
-    Param(&'tcx ast::GenericParam<'tcx>, usize),
+    Param(&'tcx type_ir::GenericParam, usize),
     Ended,
-}
-
-#[derive(Clone, Copy)]
-enum GenericParamKind {
-    Ty, Const
 }
 
 impl<'tcx> GenericParamsIterator<'tcx> {
     fn advance(&mut self) {
         let new = match self.current_param {
             CurrentParam::NotStarted => {
-                if self.ast_params.is_empty() {
+                if self.params.is_empty() {
                     CurrentParam::Ended
                 } else {
-                    CurrentParam::Param(self.ast_params[0], 1)
+                    CurrentParam::Param(&self.params[0], 1)
                 }
             }
             CurrentParam::Param(_, idx) => {
-                if idx >= self.ast_params.len() {
+                if idx >= self.params.len() {
                     CurrentParam::Ended
                 } else {
-                    CurrentParam::Param(self.ast_params[idx], idx + 1)
+                    CurrentParam::Param(&self.params[idx], idx + 1)
                 }
             }
             p @ CurrentParam::Ended => p,
@@ -1850,29 +1846,24 @@ impl<'tcx> GenericParamsIterator<'tcx> {
 
     fn current(&self) -> Option<GenericParamKind> {
         match self.current_param {
-            CurrentParam::Param(param, _) => match param.kind {
-                ast::GenericParamKind::Type(..) => Some(GenericParamKind::Ty),
-                ast::GenericParamKind::Const(..) => Some(GenericParamKind::Const),
-            }
+            CurrentParam::Param(param, _) => Some(param.kind),
             _ => None
         }
     }
 
     fn expected_count(&self) -> usize {
-        self.ast_params.len()
+        self.params.len()
     }
 }
 
 fn generic_iterator<'tcx>(def_id: DefId, tcx: TyCtxt<'tcx>) -> Option<GenericParamsIterator<'tcx>> {
-    let ast_params;
-    let node = tcx.node_by_def_id(def_id);
-    ast_params = node.generics();
-    if ast_params.is_empty() {
+    let generics = tcx.generics_of(def_id);
+    if generics.params.is_empty() {
         return None;
     }
 
     let iter = GenericParamsIterator {
-        ast_params,
+        params: &generics.params,
         current_param: CurrentParam::NotStarted
     };
 
@@ -1956,14 +1947,16 @@ pub fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             match param.kind {
                 ast::GenericParamKind::Type(ty) => {
                     let owner_node = tcx.owner_node(param.node_id);
+                    // println!("{owner_node:?}");
 
-                    let generics = owner_node.generics();
-                    let index = generics
+                    let generics = tcx.generics_of(owner_node.def_id().unwrap());
+                    let param = generics
+                        .params
                         .iter()
-                        .position(|p| p.node_id == param.node_id)
+                        .find(|p| p.def == def_id)
                         .expect("`param` should be a generic param on its owner");
 
-                    Ty::new_param(tcx, ty.symbol, index)
+                    Ty::new_param(tcx, ty.symbol, param.index, param.debruijn)
                 }
                 ast::GenericParamKind::Const(_, ty) => {
                     let ctx = LoweringCtxt::new(tcx, LoweringMode::Unbound);
@@ -2246,5 +2239,48 @@ pub fn evaluate_ty_const<'tcx>(
         type_ir::Const(ConstKind::Infer(..) | ConstKind::Err | ConstKind::Param(..)) => Err(())
     }
 
+}
+
+pub fn generics_of<'tcx>(tcx: TyCtxt<'tcx>, def: ast::DefId) -> &'tcx type_ir::Generics {
+    let node = tcx.node_by_def_id(def);
+
+    let ast::Node::Item(item) = node else {
+        panic!("tcx.generics_of(node) called for {node:?}");
+    };
+
+    let ast_generics = match item.kind {
+        ast::ItemKind::Function(func) => func.sig.generics,
+        ast::ItemKind::Struct(strct) => strct.generics,
+        ast::ItemKind::Alias(alias) => alias.generics,
+        _ => &[]
+    };
+
+    let params = ast_generics
+        .iter()
+        .enumerate()
+        .map(|(idx, &param)| {
+            let (name, kind) = match param.kind {
+                ast::GenericParamKind::Type(ident) =>
+                    (ident.symbol, type_ir::GenericParamKind::Ty),
+                ast::GenericParamKind::Const(ident, _) =>
+                    (ident.symbol, type_ir::GenericParamKind::Const),
+            };
+
+            type_ir::GenericParam {
+                def: *param.def_id.get().unwrap(),
+                index: idx as u32,
+                debruijn: type_ir::DebruijnIdx::from_raw(0),
+                name, kind
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let owner_node = tcx.owner_node(node.node_id());
+    if let ast::Node::SourceFile(..) = owner_node {
+        return type_ir::Generics::new_from_params(tcx, def, params);
+    }
+
+    let generics = tcx.generics_of(owner_node.def_id().unwrap());
+    generics.create_new_with_params(tcx, def, params)
 }
 
