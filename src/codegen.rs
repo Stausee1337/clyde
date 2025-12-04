@@ -524,7 +524,9 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                 // calls
 
                 let instance = self.extract_function(callee);
-                let sig = self.tcx.fn_sig(instance.def).instantiate(instance.args, self.tcx);
+                // TODO: should this be done at monomorphization?
+                let generics = self.tcx.generics_of(instance.def);
+                let sig = self.tcx.fn_sig(instance.def).instantiate(instance.args, generics, self.tcx);
 
                 if sig.intrinsic {
                     let value = self.build_intrinsic_call(sig.name, args); 
@@ -1613,10 +1615,11 @@ impl<'tcx> TyLayoutTuple<'tcx> {
             // TODO: is never == void ok here?
             Ty(TyKind::Void | TyKind::Never) => 
                 return ll::AnyTypeEnum::VoidType(ctxt.context.void_type()),
-            Ty(TyKind::Function(def, generics)) => {
+            Ty(&TyKind::Function(def, gargs)) => {
+                let generics = ctxt.tcx.generics_of(def);
                 let signature = ctxt.tcx
-                    .fn_sig(*def)
-                    .instantiate(generics, ctxt.tcx);
+                    .fn_sig(def)
+                    .instantiate(gargs, generics, ctxt.tcx);
 
                 let result_layout = ctxt.tcx.layout_of(signature.returns).unwrap();
 
@@ -1706,11 +1709,12 @@ impl<'tcx> TyLayoutTuple<'tcx> {
                 fields.push(nuint);                                                                          // nuint capacity;
                 fields
             }
-            Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)), generics)) => {
+            Ty(TyKind::Adt(AdtDef(AdtKind::Struct(strct)), args)) => {
+                let generics = ctxt.tcx.generics_of(strct.def);
                 def = Some(strct.def);
                 strct.fields()
                     .map(|(_, data)| {
-                        let ty = ctxt.tcx.type_of(data.def).instantiate(generics, ctxt.tcx);
+                        let ty = ctxt.tcx.type_of(data.def).instantiate(args, generics, ctxt.tcx);
                         let layout = ctxt.tcx.layout_of(ty).unwrap();
                         layout.llvm_type(ctxt).force_into()
                     })

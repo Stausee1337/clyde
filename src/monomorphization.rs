@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use hashbrown::{HashMap, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Body}, context::TyCtxt, layout, syntax::{ast, symbol::Symbol}, type_ir::{ Const, GenericArgs, Instatiatable}};
+use crate::{analysis::intermediate::{self, Body}, context::TyCtxt, layout, syntax::{ast, symbol::Symbol}, type_ir::{ Const, GenericArgs, Instance, Instatiatable}};
 
 pub struct CodegenUnit<'tcx> {
     pub items: Vec<Item<'tcx>>,
@@ -173,14 +173,12 @@ impl<'tcx> Collector<'tcx> {
 
             let mut generic_args: &'tcx GenericArgs<'tcx> = GenericArgs::empty();
             let kind = match dependency {
-                DependencyKind::Function(_, generics) => {
-                    let body = self.tcx.build_ir(element)
-                        .expect("valid body should exist for mono item");
-                    let body = self.tcx.instantiate_body((body, generics));
+                DependencyKind::Function(def, args) => {
+                    let body = self.tcx.instantiate_body(Instance { def, args });
 
                     self.collect_in_body(body);
 
-                    generic_args = generics;
+                    generic_args = args;
                     ItemKind::Function(body)
                 }
                 DependencyKind::Global(_, initializer) => ItemKind::Global(initializer)
@@ -243,11 +241,10 @@ pub fn monomorph_items<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<CodegenUnit<'tcx>> {
     collector.collect()
 }
 
-pub fn instantiate_body<'tcx>(tcx: TyCtxt<'tcx>, key: (&'tcx Body<'tcx>, &'tcx GenericArgs<'tcx>)) -> &'tcx Body<'tcx> {
-    let (body, generics) = key; 
-    let body = body
-        .clone()
-        .instantiate(generics, tcx);
+pub fn instantiate_body<'tcx>(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> &'tcx Body<'tcx> {
+    let body = tcx.build_ir(instance.def).unwrap();
+    let generics = tcx.generics_of(instance.def);
+    let body = body.clone().instantiate(instance.args, generics, tcx);
     tcx.arena.alloc(body)
 }
 

@@ -653,12 +653,15 @@ impl<'tcx> LayoutCtxt<'tcx> {
                 self.layout_for_float(*float),
             Ty(TyKind::Enum(enm)) => 
                 self.layout_for_enum(enm)?,
-            Ty(TyKind::Adt(adt, generics)) => {
+            Ty(&TyKind::Adt(adt, args)) => {
                 match adt {
                     AdtDef(AdtKind::Struct(strct)) => {
+                        let generics = self.tcx.generics_of(strct.def);
                         let mut fields = IndexVec::new();
                         for field in strct.fields.iter() {
-                            let tuple = match self.tcx.layout_of(self.tcx.type_of(field.def).instantiate(*generics, self.tcx)) {
+                            let ity = self.tcx.type_of(field.def)
+                                .instantiate(args, generics, self.tcx);
+                            let tuple = match self.tcx.layout_of(ity) {
                                 Ok(tuple) => tuple,
                                 err @ Err(LayoutError::Cyclic) => {
                                     let ast::Node::Item(item) = self.tcx.node_by_def_id(strct.def) else { unreachable!() };

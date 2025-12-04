@@ -25,12 +25,12 @@ impl DefId {
 }
 
 pub trait Instatiatable<'tcx> {
-    fn instantiate(self, generic_args: &'tcx GenericArgs<'tcx>, tcx: TyCtxt<'tcx>) -> Self;
+    fn instantiate(self, args: &'tcx GenericArgs<'tcx>, generics: &'tcx Generics, tcx: TyCtxt<'tcx>) -> Self;
 }
 
 impl<'tcx, T: mapping::Recursible<'tcx>> Instatiatable<'tcx> for T {
-    fn instantiate(self, generic_args: &'tcx GenericArgs<'tcx>, tcx: TyCtxt<'tcx>) -> Self {
-        let mut handler = mapping::InstantiationMapper::new(tcx, generic_args);
+    fn instantiate(self, args: &'tcx GenericArgs<'tcx>, generics: &'tcx Generics, tcx: TyCtxt<'tcx>) -> Self {
+        let mut handler = mapping::InstantiationMapper::new(tcx, args, generics);
         self.map_recurse(&mut handler)
     }
 }
@@ -44,6 +44,7 @@ index_vec::define_index_type! {
 pub struct Generics {
     pub parent: DefId,
     pub params: Vec<GenericParam>,
+    pub max_level: DebruijnIdx,
     pub has_env_params: bool
 }
 
@@ -56,6 +57,7 @@ impl Generics {
         tcx.arena.alloc(Generics {
             parent,
             params,
+            max_level: DebruijnIdx::from_raw(0),
             has_env_params: false
         })
     }
@@ -64,21 +66,16 @@ impl Generics {
         &'tcx self,
         tcx: TyCtxt<'tcx>,
         parent: DefId,
-        new_params: Vec<GenericParam>
+        new_params: Vec<GenericParam>,
+        max_level: DebruijnIdx,
     ) -> &'tcx Generics {
-        let mut params = self.params
-            .iter()
-            .map(|param| {
-                let mut param = *param;
-                param.debruijn += 1;
-                param
-            })
-            .collect::<Vec<_>>();
+        let mut params = self.params.clone();
         params.extend(new_params);
 
         tcx.arena.alloc(Generics {
             parent,
             params,
+            max_level,
             has_env_params: true
         })
     }
@@ -207,7 +204,7 @@ impl<'tcx> Internable for &'tcx GenericArgs<'tcx> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Instance<'tcx> {
     pub def: DefId,
     pub args: &'tcx GenericArgs<'tcx>
@@ -413,10 +410,17 @@ impl ScalarInt {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamConst {
+    pub index: u32,
+    pub symbol: Symbol,
+    pub debruijn: DebruijnIdx
+}
+
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum ConstKind<'tcx> {
     Value(ScalarInt),
-    Param(Symbol, usize),
+    Param(ParamConst),
     Infer(PhantomData<&'tcx ()>),
     Err
 }

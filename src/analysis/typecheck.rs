@@ -2,7 +2,7 @@ use std::cell::Cell;
 
 use hashbrown::HashMap;
 
-use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, layout, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, GenericParamKind, Instatiatable, Integer, Ty, TyKind, Variant}};
+use crate::{context::TyCtxt, diagnostics::{DiagnosticsCtxt, Message}, layout, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}, symbol::sym}, type_ir::{self, AdtDef, AdtKind, ConstKind, GenericParamKind, Generics, Instatiatable, Integer, ParamConst, Ty, TyKind, Variant}};
 
 #[derive(Clone, Copy)]
 enum Expectation<'tcx> {
@@ -689,14 +689,15 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         if let Ty(type_ir::TyKind::Never | type_ir::TyKind::Err) = ty {
             return ty;
         }
-        let Ty(type_ir::TyKind::Function(fn_def, generics)) = ty else {
+        let Ty(&type_ir::TyKind::Function(fn_def, gargs)) = ty else {
             Message::error(format!("expected function, found {ty}"))
                 .at(call.callable.span)
                 .push(self.diagnostics());
             return Ty::new_error(self.tcx);
         }; 
 
-        let signature = self.tcx.fn_sig(*fn_def);
+        let signature = self.tcx.fn_sig(fn_def);
+        let generics = self.tcx.generics_of(fn_def);
 
         let mut arg_count = 0;
         for (idx, arg) in call.args.iter().enumerate() {
@@ -704,7 +705,10 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                 ast::FunctionArgument::Direct(expr) => {
                     arg_count += 1;
                     if let Some(param) = signature.params.get(idx) {
-                        self.check_expr_with_expectation(expr, Expectation::Coerce(param.ty.instantiate(generics, self.tcx)));
+                        self.check_expr_with_expectation(
+                            expr,
+                            Expectation::Coerce(param.ty.instantiate(gargs, generics, self.tcx))
+                        );
                     }
                 }
                 ast::FunctionArgument::Keyword(..) =>
@@ -721,7 +725,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             self.last_error.set(Some(()));
         }
 
-        signature.returns.instantiate(generics, self.tcx)
+        signature.returns.instantiate(gargs, generics, self.tcx)
     }
 
     fn check_expr_subscript(&mut self, subscript: &'tcx ast::Subscript<'tcx>) -> Ty<'tcx> {
@@ -802,12 +806,13 @@ impl<'tcx> TypecheckCtxt<'tcx> {
             ast::FieldIdent::Tuple { value, span } =>
                 return self.check_expr_ftuple(ty, *value as usize, *span),
         };
-        let Ty(type_ir::TyKind::Adt(adt, generics)) = self.autoderef(ty, -1).unwrap_or(ty) else {
+        let Ty(type_ir::TyKind::Adt(adt, args)) = self.autoderef(ty, -1).unwrap_or(ty) else {
             Message::error(format!("fields are only found on structs, not {ty}"))
                 .at(field.expr.span)
                 .push(self.diagnostics());
             return Ty::new_error(self.tcx);
         };
+        let generics = self.tcx.generics_of(adt.def());
 
         let field = match adt {
             AdtDef(AdtKind::Struct(strct)) =>
@@ -830,7 +835,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
         };
 
         self.field_indices.insert(node_id, idx);
-        self.tcx.type_of(field.def).instantiate(generics, self.tcx)
+        self.tcx.type_of(field.def).instantiate(args, generics, self.tcx)
     }
  
     fn check_expr_init(
@@ -913,14 +918,16 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                     .push(self.diagnostics());
                 self.last_error.set(Some(()));
             }
-            Ty(TyKind::Adt(adt, generics)) => match adt {
+            Ty(TyKind::Adt(adt, args)) => match adt {
                 AdtDef(type_ir::AdtKind::Struct(strct)) => {
                     // FIXME: Don't build reverse field lookup every time
                     // we need to lookup fields
-                    // TODO: refactor into ctxt function
+                    // TODO: refactor into query?
                     let fields: HashMap<_, _> = strct.fields()
                         .map(|(idx, fdef)| (fdef.symbol, (idx, fdef)))
                         .collect();
+
+                    let generics = self.tcx.generics_of(adt.def());
 
                     for init in ty_init.initializers {
                         match init {
@@ -931,7 +938,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                         .push(self.diagnostics());
                                     continue;
                                 };
-                                let fty = self.tcx.type_of(fdef.def).instantiate(generics, self.tcx);
+                                let fty = self.tcx.type_of(fdef.def).instantiate(args, generics, self.tcx);
                                 self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
                                 self.field_indices.insert(expr.node_id, *idx);
                             }
@@ -1323,7 +1330,12 @@ impl<'tcx> LoweringCtxt<'tcx> {
         }
     }
 
-    fn path_segment_generics_instantiate(&self, ty: &mut Ty<'tcx>, item_id: Option<DefId>, segment: &'tcx ast::PathSegment<'tcx>) {
+    fn path_segment_generics_instantiate(
+        &self,
+        ty: &mut Ty<'tcx>,
+        item_id: Option<DefId>,
+        segment: &'tcx ast::PathSegment<'tcx>
+    ) {
         let generics = item_id.map(|item_id| generic_iterator(item_id, self.tcx)).flatten();
 
         let num_args = segment.generic_args.len();
@@ -1415,8 +1427,10 @@ impl<'tcx> LoweringCtxt<'tcx> {
                 .push(self.diagnostics());
         }
 
-        let generic_args = self.tcx.make_args(&ir_args);
-        *ty = ty.instantiate(generic_args, self.tcx);
+        println!("{:?}", *ty);
+
+        let gargs = self.tcx.make_args(&ir_args);
+        *ty = ty.instantiate(gargs, generics.generics, self.tcx);
     }
 
     fn lower_path_in_context(&self, path: &'tcx ast::Path<'tcx>, resolution_kind: ResolutionKind) -> Ty<'tcx> {
@@ -1719,20 +1733,24 @@ impl<'tcx> LoweringCtxt<'tcx> {
                     return Some(self.lower_const(*def_id));
                 }
                 Some(&ast::Resolution::Def(def_id, ast::DefinitionKind::ParamConst)) => {
-                    let ast::Node::GenericParam(param @ ast::GenericParam { kind: ast::GenericParamKind::Const(name, _), .. }) = self.tcx.node_by_def_id(def_id) else {
+                    let ast::Node::GenericParam(param @ ast::GenericParam { kind: ast::GenericParamKind::Const(..), .. }) = self.tcx.node_by_def_id(def_id) else {
                         unreachable!();
                     };
 
                     let owner_node = self.tcx.owner_node(param.node_id);
 
                     let generics = self.tcx.generics_of(owner_node.def_id().unwrap());
-                    let index = generics
+                    let param = generics
                         .params
                         .iter()
-                        .position(|p| p.def == def_id)
+                        .find(|p| p.def == def_id)
                         .expect("`param` should be a generic param on its owner");
 
-                    return Some(self.tcx.intern_const(ConstKind::Param(name.symbol, index)));
+                    return Some(self.tcx.intern_const(ConstKind::Param(ParamConst {
+                        symbol: param.name,
+                        index: param.index,
+                        debruijn: param.debruijn
+                    })));
                 }
                 _ => ()
             }
@@ -1811,48 +1829,29 @@ impl<'tcx> LoweringCtxt<'tcx> {
 }
 
 struct GenericParamsIterator<'tcx> {
-    params: &'tcx [type_ir::GenericParam],
-    current_param: CurrentParam<'tcx>
-}
-
-#[derive(Debug, Clone, Copy)]
-enum CurrentParam<'tcx> {
-    NotStarted,
-    Param(&'tcx type_ir::GenericParam, usize),
-    Ended,
+    generics: &'tcx Generics,
+    current_param: isize
 }
 
 impl<'tcx> GenericParamsIterator<'tcx> {
     fn advance(&mut self) {
-        let new = match self.current_param {
-            CurrentParam::NotStarted => {
-                if self.params.is_empty() {
-                    CurrentParam::Ended
-                } else {
-                    CurrentParam::Param(&self.params[0], 1)
-                }
-            }
-            CurrentParam::Param(_, idx) => {
-                if idx >= self.params.len() {
-                    CurrentParam::Ended
-                } else {
-                    CurrentParam::Param(&self.params[idx], idx + 1)
-                }
-            }
-            p @ CurrentParam::Ended => p,
-        };
-        self.current_param = new;
-    }
-
-    fn current(&self) -> Option<GenericParamKind> {
-        match self.current_param {
-            CurrentParam::Param(param, _) => Some(param.kind),
-            _ => None
+        if self.current_param < (self.generics.params.len() as isize) {
+            self.current_param += 1;
         }
     }
 
+    fn current(&self) -> Option<GenericParamKind> {
+        if (self.current_param as usize) < self.generics.params.len() {
+            return Some(self.generics.params[self.current_param as usize].kind);
+        }
+        None
+    }
+
     fn expected_count(&self) -> usize {
-        self.params.len()
+        self.generics.params
+            .iter()
+            .filter(|p| p.debruijn == self.generics.max_level)
+            .count()
     }
 }
 
@@ -1862,9 +1861,14 @@ fn generic_iterator<'tcx>(def_id: DefId, tcx: TyCtxt<'tcx>) -> Option<GenericPar
         return None;
     }
 
+    let start = generics.params
+        .iter()
+        .position(|p| p.debruijn == generics.max_level)
+        .unwrap_or(generics.params.len()) as isize;
+
     let iter = GenericParamsIterator {
-        params: &generics.params,
-        current_param: CurrentParam::NotStarted
+        generics,
+        current_param: start - 1,
     };
 
     return Some(iter);
@@ -2255,6 +2259,15 @@ pub fn generics_of<'tcx>(tcx: TyCtxt<'tcx>, def: ast::DefId) -> &'tcx type_ir::G
         _ => &[]
     };
 
+    let owner_node = tcx.owner_node(node.node_id());
+    let generics = match owner_node {
+        ast::Node::SourceFile(..) => None,
+        _ => Some(tcx.generics_of(owner_node.def_id().unwrap()))
+    };
+
+    let level = generics.map(|g| g.max_level + 1).unwrap_or(type_ir::DebruijnIdx::from_raw(0));
+
+
     let params = ast_generics
         .iter()
         .enumerate()
@@ -2269,18 +2282,16 @@ pub fn generics_of<'tcx>(tcx: TyCtxt<'tcx>, def: ast::DefId) -> &'tcx type_ir::G
             type_ir::GenericParam {
                 def: *param.def_id.get().unwrap(),
                 index: idx as u32,
-                debruijn: type_ir::DebruijnIdx::from_raw(0),
+                debruijn: level,
                 name, kind
             }
         })
         .collect::<Vec<_>>();
 
-    let owner_node = tcx.owner_node(node.node_id());
-    if let ast::Node::SourceFile(..) = owner_node {
+    let Some(generics)  = generics else {
         return type_ir::Generics::new_from_params(tcx, def, params);
-    }
+    };
+    generics.create_new_with_params(tcx, def, params, level)
 
-    let generics = tcx.generics_of(owner_node.def_id().unwrap());
-    generics.create_new_with_params(tcx, def, params)
 }
 

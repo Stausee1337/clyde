@@ -183,7 +183,7 @@ define_queries! {
     fn parent_map(owner: ast::OwnerId) -> &'tcx resolve::ParentMap;
     #[handle_cycle_error]
     fn layout_of(ty: type_ir::Ty<'tcx>) -> Result<layout::TyLayoutTuple<'tcx>, layout::LayoutError>;
-    fn instantiate_body(key: (&'tcx intermediate::Body<'tcx>, &'tcx type_ir::GenericArgs<'tcx>)) -> &'tcx intermediate::Body<'tcx>;
+    fn instantiate_body(instance: type_ir::Instance<'tcx>) -> &'tcx intermediate::Body<'tcx>;
     fn evaluate_ty_const(cnst: type_ir::Const<'tcx>) -> Result<layout::ConstValue<'tcx>, ()>;
 }
 

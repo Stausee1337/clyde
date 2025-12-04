@@ -1,6 +1,6 @@
 use std::cell::OnceCell;
 
-use crate::{context::TyCtxt, type_ir::{Const, ConstKind, GenericArg, GenericArgKind, Ty, TyKind}};
+use crate::{context::TyCtxt, type_ir::{Const, ConstKind, GenericArg, GenericArgKind, GenericArgs, Generics, Ty, TyKind}};
 
 
 pub trait Mapper<'tcx>: Sized {
@@ -135,15 +135,14 @@ impl<'tcx, I: index_vec::Idx, T: Recursible<'tcx>> Recursible<'tcx> for index_ve
 
 pub struct InstantiationMapper<'tcx> {
     tcx: TyCtxt<'tcx>,
-    generics: &'tcx [GenericArg<'tcx>]
+    args: &'tcx GenericArgs<'tcx>,
+    generics: &'tcx Generics
 }
 
 impl<'tcx> InstantiationMapper<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, generics: &'tcx [GenericArg<'tcx>]) -> Self {
-        Self {
-            tcx,
-            generics
-        }
+    pub fn new(tcx: TyCtxt<'tcx>, args: &'tcx GenericArgs<'tcx>, generics: &'tcx Generics) -> Self {
+        debug_assert_eq!(args.len(), generics.params.len());
+        Self { tcx, args, generics }
     }
 }
 
@@ -155,7 +154,11 @@ impl<'tcx> Mapper<'tcx> for InstantiationMapper<'tcx> {
     fn map_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
         match ty {
             Ty(TyKind::Param(param_ty)) => {
-                let GenericArgKind::Ty(ty) = self.generics[param_ty.index as usize].kind() else {
+                let idx = self.generics.params
+                    .iter()
+                    .position(|p| p.index == param_ty.index && p.debruijn == param_ty.debruijn)
+                    .unwrap();
+                let GenericArgKind::Ty(ty) = self.args[idx].kind() else {
                     unreachable!("insufficient generic arg validataion before instantiation")
                 };
                 ty
@@ -165,10 +168,14 @@ impl<'tcx> Mapper<'tcx> for InstantiationMapper<'tcx> {
     }
 
     fn map_const(&mut self, cnst: Const<'tcx>) -> Const<'tcx> {
-        let Const(ConstKind::Param(_, index)) = cnst else {
+        let Const(ConstKind::Param(param_const)) = cnst else {
             return cnst;
         };
-        let GenericArgKind::Const(cnst) = self.generics[*index].kind() else {
+        let idx = self.generics.params
+            .iter()
+            .position(|p| p.index == param_const.index && p.debruijn == param_const.debruijn)
+            .unwrap();
+        let GenericArgKind::Const(cnst) = self.args[idx].kind() else {
             unreachable!("insufficient generic arg validataion before instantiation")
         };
         cnst

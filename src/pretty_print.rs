@@ -44,7 +44,10 @@ impl<'tcx> PrettyPrinter<'tcx> {
         let ident = node.ident().unwrap();
 
         if let resolve::DefParent::Definition(parent) = self.tcx.resolutions.declarations[def].parent {
-            self.print_path_recursively(args, params, parent, debruijn_level + 1)?;
+            // FIXME: If a path has non-generic segments, I'm unsure if we're allowed to sub every
+            // time here
+            let next_level = debruijn_level.raw().saturating_sub(1);
+            self.print_path_recursively(args, params, parent, type_ir::DebruijnIdx::from_raw(next_level))?;
             self.write_str("::")?;
         }
 
@@ -84,12 +87,16 @@ impl<'tcx> PrettyPrinter<'tcx> {
     pub fn print_instance(&mut self, instance: Instance<'tcx>) -> PrintResult {
         let node = self.tcx.node_by_def_id(instance.def);
 
-        let params: &'tcx [type_ir::GenericParam] = match node {
-            ast::Node::Item(..) =>
-                &self.tcx.generics_of(instance.def).params,
-            _ => &[]
+        let (params, level): (&'tcx [type_ir::GenericParam], DebruijnIdx) = match node {
+            ast::Node::Item(..) => {
+                let generics = self.tcx.generics_of(instance.def);
+                (&generics.params, generics.max_level)
+            }
+            _ => (&[], DebruijnIdx::from_raw(0))
         };
-        self.print_path_recursively(instance.args, &params, instance.def, DebruijnIdx::from_raw(0))
+
+        debug_assert_eq!(instance.args.len(), params.len(), "{node:?}");
+        self.print_path_recursively(instance.args, &params, instance.def, level)
     }
 }
 
@@ -178,7 +185,7 @@ impl<'tcx> Print<'tcx> for Const<'tcx> {
                 type_ir::ScalarKind::Float => write!(p, "{}", value.as_float())
             }
             Const(type_ir::ConstKind::Infer(..)) => write!(p, "_"),
-            Const(type_ir::ConstKind::Param(symbol, _)) => write!(p, "{symbol}"),
+            Const(type_ir::ConstKind::Param(param)) => write!(p, "{}", param.symbol),
             Const(type_ir::ConstKind::Err) => write!(p, "<error>")
         }
     }

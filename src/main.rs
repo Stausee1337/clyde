@@ -6,6 +6,7 @@
 #![feature(never_type)]
 #![feature(iter_chain)]
 #![feature(extern_types)]
+#![feature(iterator_try_collect)]
 
 use std::{env, process::ExitCode};
 

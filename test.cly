@@ -1,4 +1,4 @@
-clyde :: #include "./clyde.cly";
+// clyde :: #include "./clyde.cly";
 // #include "Window";
 // 
 // FT_Uint      :: #type uint;
@@ -88,7 +88,7 @@ nuint len<T>(T[] slice) {
     return parts.1;
 }
 
-tuple<T*, nuint> slice_to_raw_parts<T>(T[] slice) #compiler_intrinsic;
+(T*, nuint) slice_to_raw_parts<T>(T[] slice) #compiler_intrinsic;
 string string_from_raw_parts(byte *data, nuint len) #compiler_intrinsic;
 
 string int2str(int value) {
@@ -99,6 +99,13 @@ string int2str(int value) {
     return string_from_raw_parts(cast(byte*)buffer, len);
 }
 
+uint outer<Foo>() {
+    uint TEST ::= 12;
+
+    return TEST;
+}
+
+// Instance { def }
 // Sized<const nuint SIZE> :: #type byte[SIZE];
 
 /*string from_raw_parts(byte *data, nuint len) {

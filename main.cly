@@ -1,4 +1,24 @@
 
+void test<T>() {
+    void inner<U>() {
+        // Generic { symbol: Symbol(U), index: 0, debruijn: 0 }
+        // Generic { symbol: Symbol(T), index: 0, debruijn: 1 }
+    }
+
+    // generics:
+    //      GenericParam { symbol: Symbol(T) }
+    //      GenericParam { symbol: Symbol(U) }
+    // -> Order by descending `debruijn` then by ascending `index`
+    inner<int>();
+}
+
+void test2<const int START>() {
+
+    enum Test {
+        FI ::= START
+    }
+}
+
 enum OpenMode {
     Reading;
     Writing;
