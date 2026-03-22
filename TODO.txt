@@ -53,4 +53,24 @@ Unodered (Ideas for implementations):
     - Default initialization and Discriminats
 - Dead Code dectection and warnings
 
+Note on UFC resoval:
+
+e.g.
+void SomeType::my_function(Self* self, int x) {
+
+}
+
+void test(SomeType type) {
+    // here the call to `my_function` needs to be resolved
+    type.my_function(42);
+}
+
+Since these UFC declarations can get quite complicated,
+instead of treating the type `SomeType` as a bucket, and resolving
+`my_function` witin that, we should instead consider UFC-functions
+as a kind of overload (at the resolve.rs pass). So we look in the
+`my_function` bucket within the current scope, and the fact it is a
+member function (method; aka non-static) and it needs to be on `SomeType`
+is simply a constraint, within overload resolution.
+
 
