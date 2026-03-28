@@ -1,8 +1,8 @@
 
-use std::{cell::{Cell, OnceCell, RefCell}, env, ffi::OsStr, path::{Path, PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
+use std::{cell::{Cell, OnceCell, RefCell}, env, ffi::OsStr, path::{PathBuf}, process::ExitCode, rc::Rc, str::FromStr};
 
 use index_vec::IndexVec;
-use crate::{analysis::{intermediate, resolve, typecheck}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, files, layout, monomorphization, syntax::{ast::AstInfo, parser}, target::Target, type_ir};
+use crate::{analysis::{intermediate, resolve, typecheck}, context::{GlobalCtxt, Providers, TyCtxt}, diagnostics::DiagnosticsCtxt, files, layout, syntax::{ast::AstInfo, parser}, target::Target};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -84,7 +84,7 @@ impl Session {
             build_ir: intermediate::build_ir,
             layout_of: layout::layout_of,
             parent_map: resolve::parent_map,
-            instantiate_body: monomorphization::instantiate_body,
+            instantiate_body: |_tcx, _| { panic!("not implemented") },
             evaluate_ty_const: typecheck::evaluate_ty_const
         };
         let arena = bumpalo::Bump::new();
@@ -136,7 +136,7 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
 
     let program = if args.is_empty() { "clydec".to_string() } else { args.remove(0) };
     let program = PathBuf::from_str(program.as_str()).unwrap();
-    let program = get_filename(&program).unwrap_or_else(|| "clydec");
+    let program = program.file_name().unwrap_or_else(|| OsStr::new("clydec"));
 
     let working_dir = env::current_dir().map_err(|error| {
         eprintln!("ERROR: Could not get current working directory {error}");
@@ -183,13 +183,13 @@ pub fn parse_argv_options(args: env::Args) -> Result<Options, ExitCode> {
     if matches.opt_present("h") || matches.opt_present("help") {
         eprint!(
             "{}",
-            parser.usage(format!("Usage: {program} [OPTIONS] INPUT").as_str())
+            parser.usage(format!("Usage: {} [OPTIONS] INPUT", program.display()).as_str())
         );
         return Err(ExitCode::SUCCESS);
     }
 
     if matches.opt_present("v") || matches.opt_present("version") {
-        eprintln!("{program} version {VERSION}");
+        eprintln!("{} version {VERSION}", program.display());
         return Err(ExitCode::SUCCESS);
     }
 
@@ -289,16 +289,6 @@ fn matches_to_config(matches: &getopts::Matches) -> Result<Cfg, ExitCode> {
         run_output: matches.opt_present("R") || matches.opt_present("run"),
         opt_level: opt_level.into_inner().unwrap_or_default()
     })
-}
-
-unsafe fn osstr_as_str(osstr: &OsStr) -> &str {
-    // let bytes = osstr.as_bytes();
-    let bytes = osstr.as_encoded_bytes();
-    std::str::from_utf8_unchecked(bytes)
-}
-
-fn get_filename(path: &Path) -> Option<&str> {
-    Some(unsafe { osstr_as_str(path.file_name()?) })
 }
 
 thread_local! {

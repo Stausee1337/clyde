@@ -490,11 +490,6 @@ impl DirectiveTrees {
 }
 
 impl<'ast> ast::Path<'ast> {
-    fn from_ident(parser: &Parser<'_, 'ast>, ident: ast::Ident) -> Self {
-        let segment = parser.alloc(ast::PathSegment::from_ident(ident));
-        Self::from_segments(std::slice::from_ref(segment))
-    }
-
     fn as_ty_expr(self, parser: &mut Parser<'_, 'ast>) -> &'ast ast::TypeExpr<'ast> {
         if self.is_invisible() {
             let ast::GenericArgumentKind::Ty(ty) = self.segments[0].generic_args[0].kind else {
@@ -628,7 +623,7 @@ impl<'src, 'ast> Parser<'src, 'ast> {
         token.matches(self.cursor.current())
     }
 
-    fn bump_if(&mut self, token: impl Tokenish) -> Option<Token> {
+    fn bump_if(&mut self, token: impl Tokenish) -> Option<Token<'src>> {
         let current = self.cursor.current();
         if token.matches(current) {
             self.cursor.advance();
@@ -1192,26 +1187,6 @@ impl<'src, 'ast> Parser<'src, 'ast> {
 
         self.cursor.sync(fake_cursor);
         ParseTry::Sure(path)
-    }
-
-    fn parse_path(&mut self, mode: PathMode) -> PRes<ast::Path<'ast>> {
-        match self.maybe_parse_path(mode) {
-            ParseTry::Sure(path) => Ok(path),
-            ParseTry::Doubt(path, cursor) => {
-                self.cursor.sync(cursor);
-                Ok(path)
-            }
-            ParseTry::Never(cursor) => {
-                let start = self.cursor.span();
-                self.cursor.sync(cursor);
-                let end = self.cursor.span();
-                let span = Span::interpolate(start, end);
-                Message::error("invalid path")
-                    .at(span)
-                    .push(self.diagnostics);
-                Err(span)
-            }
-        }
     }
 
     fn parse_tuple_ty(&mut self) -> &'ast ast::TypeExpr<'ast> {

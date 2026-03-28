@@ -1,6 +1,6 @@
 use index_vec::IndexVec;
 
-use crate::{context::{self, FromCycleError, TyCtxt}, diagnostics::Message, pretty_print::{PrettyPrinter, Print}, syntax::{ast::{self, DefId}, lexer::Span}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{AdtDef, AdtKind, Discriminant, Enum, FieldIdx, Float, GenericArgs, Instance, Instatiatable, Integer, Ty, TyKind}};
+use crate::{context::{self, FromCycleError, TyCtxt}, diagnostics::Message, syntax::{ast::{self, DefId}, lexer::Span}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{AdtDef, AdtKind, Discriminant, Enum, FieldIdx, Float, GenericArgs, Instance, Instatiatable, Integer, Ty, TyKind}};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(packed)]

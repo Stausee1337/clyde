@@ -141,14 +141,14 @@ impl<'tcx> GenericArg<'tcx> {
     #[inline]
     unsafe fn unpack<T>(self) -> &'tcx T {
         let addr = self.ptr.addr().get() & !Self::ENCODING_MASK;
-        std::mem::transmute(addr as *const T)
+        unsafe { std::mem::transmute(addr as *const T) }
     }
 
     #[inline]
     unsafe fn pack<T>(refrence: &T, encoded: usize) -> NonNull<()> {
         assert!(std::mem::align_of::<T>() >= 4);
         let addr = (refrence as *const T).addr();
-        NonNull::new_unchecked((addr | encoded) as *mut ())
+        unsafe { NonNull::new_unchecked((addr | encoded) as *mut ()) }
     }
 }
 
@@ -374,8 +374,8 @@ impl ScalarInt {
 
     pub fn from_float(data: f64, kind: Float) -> Self {
         let (data, size) = match kind {
-            Float::F32 => (unsafe { std::mem::transmute(data as f64) }, 4),
-            Float::F64 => (unsafe { std::mem::transmute(data) }, 8),
+            Float::F32 => (f64::to_bits(data as f64), 4),
+            Float::F64 => (f64::to_bits(data), 8),
         };
 
         ScalarInt { size, data, kind: ScalarKind::Float }
@@ -406,7 +406,7 @@ impl ScalarInt {
     }
 
     pub fn as_float(&self) -> f64 {
-        unsafe { std::mem::transmute(self.data) }
+        f64::from_bits(self.data)
     }
 }
 

@@ -179,7 +179,7 @@ impl<'tcx> Print<'tcx> for GenericArg<'tcx> {
 impl<'tcx> Print<'tcx> for Const<'tcx> {
     fn print(&self, p: &mut PrettyPrinter<'tcx>) -> PrintResult {
         match self {
-            Const(&type_ir::ConstKind::Value(value)) => match value.kind {
+            &Const(type_ir::ConstKind::Value(value)) => match value.kind {
                 type_ir::ScalarKind::Signed => write!(p, "{}", value.as_signed()),
                 type_ir::ScalarKind::Unsigned => write!(p, "{}", value.as_unsigned()),
                 type_ir::ScalarKind::Float => write!(p, "{}", value.as_float())

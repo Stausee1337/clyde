@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fs, io::{self, Read}, path::{Path, PathBuf}, process::abort, rc::Rc};
+use std::{cell::RefCell, ffi::OsStr, fs, io::{self, Read}, path::{Path, PathBuf}, process::abort, rc::Rc};
 
 #[cfg(target_family = "unix")]
 use rustix::mm::{mmap_anonymous, mprotect, ProtFlags, MapFlags, MprotectFlags};
@@ -59,8 +59,8 @@ impl File {
         &self.path
     }
 
-    pub fn str_path(&self) -> &str {
-        FileCacher::decode_path(&self.path)
+    pub fn str_path(&self) -> &OsStr {
+        self.path.as_os_str()
     }
 
     pub fn relative_start(&self) -> u32 {
@@ -130,38 +130,40 @@ struct MultibyteChar {
 }
 
 unsafe fn analyze_unicode(unicode: &[u8]) -> (Vec<RelativePosition>, Vec<MultibyteChar>) {
-    let start = unicode.as_ptr();
-    let length = unicode.len() as u32;
-    let mut bytes = unicode.iter();
+    unsafe {
+        let start = unicode.as_ptr();
+        let length = unicode.len() as u32;
+        let mut bytes = unicode.iter();
 
-    let (mut lines, mut multibyte_chars) = (vec![RelativePosition(0)], vec![]);
+        let (mut lines, mut multibyte_chars) = (vec![RelativePosition(0)], vec![]);
 
-    let mut offset = 0;
-    while let Some(char) = next_code_point(&mut bytes) {
-        let char = char::from_u32_unchecked(char);
+        let mut offset = 0;
+        while let Some(char) = next_code_point(&mut bytes) {
+            let char = char::from_u32_unchecked(char);
 
-        let char_len = char.len_utf8();
-        if char_len >= 2 {
-            multibyte_chars.push(MultibyteChar {
-                pos: RelativePosition(offset),
-                len: char_len as u8
-            });
-        } else if char == '\n' && offset < length - 1 {
-            // \n (unix)
-            lines.push(RelativePosition(offset + 1)); // push the beginning of the line
-        } else if char == '\r' && offset < length - 2 && bytes.as_slice()[0] == b'\n' {
-            // \r\n (windows)
-            bytes.next(); // advance over '\n'
-            lines.push(RelativePosition(offset + 2)); // push the beginning of the line
-        } else if char == '\r' && offset < length - 1 {
-            // \r (osx)
-            lines.push(RelativePosition(offset + 1)); // push the beginning of the line
+            let char_len = char.len_utf8();
+            if char_len >= 2 {
+                multibyte_chars.push(MultibyteChar {
+                    pos: RelativePosition(offset),
+                    len: char_len as u8
+                });
+            } else if char == '\n' && offset < length - 1 {
+                // \n (unix)
+                lines.push(RelativePosition(offset + 1)); // push the beginning of the line
+            } else if char == '\r' && offset < length - 2 && bytes.as_slice()[0] == b'\n' {
+                // \r\n (windows)
+                bytes.next(); // advance over '\n'
+                lines.push(RelativePosition(offset + 2)); // push the beginning of the line
+            } else if char == '\r' && offset < length - 1 {
+                // \r (osx)
+                lines.push(RelativePosition(offset + 1)); // push the beginning of the line
+            }
+
+            offset = bytes.as_slice().as_ptr().offset_from(start) as u32;
         }
 
-        offset = bytes.as_slice().as_ptr().offset_from(start) as u32;
+        (lines, multibyte_chars)
     }
-
-    (lines, multibyte_chars)
 }
 
 pub struct FileCacher {
@@ -218,12 +220,6 @@ impl FileCacher {
         let idx = files.partition_point(|source| source.byte_span.start <= needle) - 1;
         files[idx].clone()
     }
-
-    fn decode_path(path: &Path) -> &str {
-        let osstr = path.as_os_str();
-        let bytes = osstr.as_encoded_bytes();
-        unsafe { std::str::from_utf8_unchecked(bytes) }
-    }
 }
 
 struct ContinuousSourceStorage {
@@ -245,7 +241,7 @@ impl ContinuousSourceStorage {
                 ProtFlags::empty(),
                 MapFlags::PRIVATE
             )
-            .map_err(|err| {
+            .map_err::<!, _>(|err| {
                 eprintln!("Memory Allocation Failure: {}", err.to_string());
                 abort();
             })
@@ -283,45 +279,47 @@ impl ContinuousSourceStorage {
     }
 
     unsafe fn grow(&mut self, added_size: usize) {
-        let mut new_size = self.allocated_bytes;
-        let target = new_size + added_size;
-        loop {
-            if new_size >= target {
-                break;
+        unsafe {
+            let mut new_size = self.allocated_bytes;
+            let target = new_size + added_size;
+            loop {
+                if new_size >= target {
+                    break;
+                }
+                let dsize = Self::PAGE_SIZE - (new_size & (Self::PAGE_SIZE - 1));
+                new_size += dsize;
             }
-            let dsize = Self::PAGE_SIZE - (new_size & (Self::PAGE_SIZE - 1));
-            new_size += dsize;
-        }
-        let page_diff = self.current_end.offset_from(self.start) as usize;
-        let len = new_size - page_diff;
-        let new_end = self.current_end.add(len);
-        if new_end >= self.start.add(Self::STORAGE_SIZE) {
-            eprintln!("Memory Allocation Failure: Attempt to allocate to many files (> 4 GiB) in one thread");
-            abort();
-        }
-        #[cfg(target_family = "unix")]
-        {
-            mprotect(
-                self.current_end as *mut _, len,
-                MprotectFlags::WRITE | MprotectFlags::READ
-            )
-            .map_err(|err| {
-                eprintln!("Memory Allocation Failure: {}", err.to_string());
+            let page_diff = self.current_end.offset_from(self.start) as usize;
+            let len = new_size - page_diff;
+            let new_end = self.current_end.add(len);
+            if new_end >= self.start.add(Self::STORAGE_SIZE) {
+                eprintln!("Memory Allocation Failure: Attempt to allocate to many files (> 4 GiB) in one thread");
                 abort();
-            })
-            .unwrap_unchecked();
+            }
+            #[cfg(target_family = "unix")]
+            {
+                mprotect(
+                    self.current_end as *mut _, len,
+                    MprotectFlags::WRITE | MprotectFlags::READ
+                )
+                    .map_err::<!, _>(|err| {
+                        eprintln!("Memory Allocation Failure: {}", err.to_string());
+                        abort();
+                    })
+                .unwrap_unchecked();
+            }
+            #[cfg(target_family = "windows")]
+            {
+                assert!(len % Self::PAGE_SIZE == 0);
+                VirtualAlloc(
+                    Some(self.current_end as *const _),
+                    len,
+                    MEM_COMMIT,
+                    PAGE_READWRITE
+                );
+            }
+            self.current_end = new_end;
         }
-        #[cfg(target_family = "windows")]
-        {
-            assert!(len % Self::PAGE_SIZE == 0);
-            VirtualAlloc(
-                Some(self.current_end as *const _),
-                len,
-                MEM_COMMIT,
-                PAGE_READWRITE
-            );
-        }
-        self.current_end = new_end;
     }
 
     fn new_buffer(&mut self, size: usize) -> (&'static mut [u8], usize) {

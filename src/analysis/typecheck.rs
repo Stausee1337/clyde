@@ -942,7 +942,7 @@ impl<'tcx> TypecheckCtxt<'tcx> {
                                 self.check_expr_with_expectation(expr, Expectation::Coerce(fty));
                                 self.field_indices.insert(expr.node_id, *idx);
                             }
-                            ast::TypeInitKind::Direct(expr) if let ast::ExprKind::Path(path) = &expr.kind => {
+                            ast::TypeInitKind::Direct(expr) if let ast::ExprKind::Path(..) = &expr.kind => {
                                 todo!("struct init quality of live improvement");
                                 /*let Some((idx, fdef)) = fields.get(&path) else {
                                     Message::error(format!("can't find field `{}` on struct {ty}", name.ident.symbol.get()))
@@ -2124,7 +2124,7 @@ pub fn constant_of<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> type_ir::Const<'tc
     ctxt.lower_const(def_id)
 }
 
-pub fn fn_sig(tcx: TyCtxt<'_>, def_id: DefId) -> type_ir::Signature {
+pub fn fn_sig<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> type_ir::Signature<'tcx> {
     let node = tcx.node_by_def_id(def_id);
     let ctxt = LoweringCtxt::new(tcx, LoweringMode::Unbound);
 

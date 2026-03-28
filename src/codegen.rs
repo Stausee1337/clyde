@@ -4,7 +4,7 @@ use index_vec::IndexVec;
 use ll::{BasicType, BasicValue};
 use hashbrown::{HashMap, HashSet, hash_map::Entry};
 
-use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, layout::{self, Scalar, TyLayoutTuple}, monomorphization, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Instatiatable, Ty, TyKind}};
+use crate::{analysis::intermediate::{self, Mutability, RegisterId}, context::{ModuleInfo, TyCtxt}, layout::{self, Scalar, TyLayoutTuple}, session::OptimizationLevel, syntax::{ast, symbol::{self, sym}}, target::{DataLayoutExt, TargetDataLayout}, type_ir::{self, AdtDef, AdtKind, Instatiatable, Ty, TyKind}};
 use clyde_macros::base_case_handler;
 
 macro_rules! ensure {
@@ -359,7 +359,7 @@ impl<'a, 'll, 'tcx> CodeBuilder<'a, 'll, 'tcx> {
                         };
                     }
                     ll::AnyTypeEnum::FloatType(float_ty) => {
-                        let value: f64 = unsafe { std::mem::transmute(value.data) };
+                        let value: f64 = f64::from_bits(value.data);
                         let value = float_ty.const_float(value).as_basic_value_enum();
                         return Value {
                             kind: ValueKind::Immediate(value),
@@ -1871,7 +1871,7 @@ pub fn run_codegen(tcx: TyCtxt) -> CodegenResults {
 
     let mut ctxt = CodegenCtxt::new(tcx, &arena);
 
-    monomorphization::monomorph_items(tcx);
+    // monomorphization::monomorph_items(tcx);
 
 
     ctxt.push_dependency(entry, None, None);

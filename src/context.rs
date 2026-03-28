@@ -59,7 +59,7 @@ fn enter<'tcx, F: FnOnce() -> R, R>(ctxt: &TyCtxt<'tcx>, f: F) -> R {
 }
 
 unsafe fn unerase<'a, 'tcx>(ctxt: *const ()) -> &'a TyCtxt<'tcx> {
-    &*(ctxt as *const TyCtxt<'tcx>)
+    unsafe { &*(ctxt as *const TyCtxt<'tcx>) }
 }
 
 pub fn with_tcx<F, R>(f: F) -> R

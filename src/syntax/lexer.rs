@@ -1,4 +1,4 @@
-use std::{fmt::Write, marker::PhantomData, ops::{Deref, DerefMut}};
+use std::{fmt::Write, marker::PhantomData};
 
 use crate::{diagnostics::{DiagnosticsCtxt, Message}, files::{File, Utf8Error}, string_internals};
 use super::symbol::Symbol;
@@ -984,7 +984,7 @@ pub fn tokenize<'a>(source_file: &'a File, diagnostics: &DiagnosticsCtxt) -> Res
     let contents = match source_file.contents() {
         Ok(contents) => contents,
         Err(Utf8Error) => {
-            eprintln!("ERROR: couldn't read {}: stream contains invalid UTF-8", source_file.str_path());
+            eprintln!("ERROR: couldn't read {}: stream contains invalid UTF-8", source_file.str_path().display());
             return Err(());
         }
     };

@@ -4,7 +4,7 @@ use std::{cell::OnceCell, fmt::Write, hash::Hash};
 use hashbrown::HashMap;
 use index_vec::IndexVec;
 
-use crate::{context::TyCtxt, layout::{self, Align, ScalarValue}, mapping, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{FieldIdx, Float, GenericArgs, Ty, TyKind}};
+use crate::{context::TyCtxt, layout::{self, Align, ScalarValue}, mapping, pretty_print::Print, syntax::{ast::{self, DefId, DefinitionKind, NodeId}, lexer::{self, Span}}, type_ir::{FieldIdx, GenericArgs, Ty, TyKind}};
 use super::typecheck::TypecheckResults;
 
 #[derive(Clone, clyde_macros::Recursible)]
@@ -1332,7 +1332,7 @@ pub fn map_const_from_literal<'tcx>(
 
             let size = float.size();
 
-            let value: u64 = unsafe { std::mem::transmute(*f) };
+            let value: u64 = f64::to_bits(*f);
             layout::ConstValue::Scalar(layout::ScalarValue::from_unsigned(value, size))
         }
         ast::Literal::Null =>
