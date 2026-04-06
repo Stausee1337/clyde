@@ -83,8 +83,16 @@ ImplicitItemDeclBase => "#type" FullPath
                 | TraitItemDecl;
 ```
 
-**TODO: runtime syntatical elements (`RSE`) like `#run`, `#if` or `#scope`,
-which can appear on the file level and in every struct, enum, trait, etc.**
+**TODO: add items that start with a directive like `#run`, `#if`, `#scope`,
+`#static` which can appear on the file level and in every struct, enum, trait,
+etc.**
+
+**NOTE TO SELF: `#run` (along with maybe some others) can also be used after
+an item declaration. E.g.: 
+`OPTIMAL_PACKING const :: #run compute_optimal_constant();`**
+
+**NOTE TO SELF: some of these items might be called runtime syntatical elements
+(`RSE`)**
 
 ### Structs
 
@@ -215,7 +223,7 @@ Theres also empty traits, which require the `is_statisfied()` method
 to be implemented manually.
 ```clyde
 Integer :: trait;
-Integer::is_satisfied :: (type: *compiler::Type) bool {
+Integer::is_satisfied :: (type: *compiler::Type) bool #const {
     if type == {
         case i8 | i16 | i32 | i64 | int |
             u8 | u16 | u32 | u64 | uint => return true;
@@ -331,6 +339,21 @@ operator * :: (vec: Vector2, factor: f32) Vector2 #symmetric {
 vec1 := Vector2 { x = 42, y = 69 };
 vec2 := vec1 * 1337; // Always works, since implemented
 vec2 := 1337 * vec1; // Also works, due to `#symmetric`
+```
+
+Support for binary and unary operators is implicit via parameter count.
+```
+// This implements the binary `v1 - v2` subtraction operation, since the 
+// operator takes two arguments
+operator - :: (a: Vector2, b: Vector2) Vector2 {
+    return Vector2 { x = a.x - b.x, y = a.y - b.y };
+}
+
+// This implemets the unary `-v1` negation operation, since the operator only
+// takes one argument
+operator - :: (using _: Vector2) Vector2 {
+    return Vector2 { x = -x, y = -y };
+}
 ```
 
 Pseudogrammar:
