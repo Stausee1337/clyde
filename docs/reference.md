@@ -21,7 +21,7 @@ Planned features include:
  - methods (or instance functions using UFCS)
 
 Clyde will NOT have:
- - inheritance (like rust)
+ - inheritance
  - borrow checker
  - garbage collector
 
@@ -59,7 +59,7 @@ IntMap :: <V: type> #type HashMap<i32, V>; // Generic alias to `HashMap<int,?>`
 
 Pseudogrammar:
 ```grammar
-Item => ImplicitItem | ConstItem | ModuleImport;
+Item => ImplicitItem | ConstItem | OperatorItem | ModuleImport;
 LimitedItem => ImplicitItemLimited | ConstItemLimited;
 
 ImplicitItem => FullPath ItemDeclConstrainedOrNot Generics? ImplicitItemDecl;
@@ -74,7 +74,6 @@ ItemDeclConstrainedOrNot => "::" | ":" Type ":";
 
 ImplicitItemDecl => ModuleImport 
                 | FunctionDecl
-                | OperatorDecl
                 | ImplicitItemDeclBase;
 
 ImplicitItemDeclBase => "#type" FullPath
@@ -92,7 +91,22 @@ which can appear on the file level and in every struct, enum, trait, etc.**
 Structs consist of a sequence of named struct fields. E.g. like this
 ```clyde
 Test :: struct { x: i32; y: u32; } // This code defines a `struct` named `Test`
-with fields `x` and `y` of type `i32` and `u32` respectively
+// with fields `x` and `y` of type `i32` and `u32` respectively
+```
+
+Inside a structs body, inner items can be declared: like enums, unions and
+other structs. Though no functions, which are always implmented on the
+top-level of a file. E.g.:
+```clyde
+HashMap :: <K: type, V: type>struct {
+    Entry :: union {
+        VACANT;
+        OCCUPIED => {
+            key:   K;
+            value: V;
+        }
+    }
+}
 ```
 
 Pseudogrammar:
@@ -179,7 +193,7 @@ FlatUnion => "union" "#flat" StructBody;
 
 ### Traits
 Traits, currently, are very similar to rust traits. They provide a generally
-effective of specifying a protocol other types need to conform to. They are
+effective way of specifying a protocol other types need to conform to. They are
 always used with the *generics system*, and in this language (other than in
 rust) they are really there to not have you write a lot of verbose and hard to
 read `#where` queries.
@@ -213,7 +227,8 @@ Integer::is_satisfied :: (type: *compiler::Type) bool {
 Pseudogrammar:
 ```grammar
 TraitItemDecl => BodyTraitDecl | EmptyTraitDecl;
-BodyTraitDecl => "trait" "#explicit"? "{" IncompleteItem* "}";
+BodyTraitDecl => "trait" (":" TraitRequirements)? "#explicit"?
+        "{" (IncompleteItem | IncompleteOperatorItem)* "}";
 EmptyTraitDecl => "trait" ";";
 
 IncompleteItem => IncompleteImplicitItem
@@ -221,12 +236,18 @@ IncompleteItem => IncompleteImplicitItem
             | LimitedItem
             | IncompleteFunctionDecl;
 
+TraitRequirements => TraitRequirement ("," TraitRequirements)?;
+
 IncompleteItemConstraint => ":" Type;
 
 IncompleteImplicitItem => Ident IncompleteItemConstraint;
 IncompleteConstItem => Ident s"const" IncomplteItemConstraint;
 
 IncompleteFunctionDecl => Generics? FunctionSignature WhereClause? ";";
+
+IncompleteOperatorItem => "operator" OverloadableOperator
+                    "::" Generics? IncompleteOperatorDecl;
+IncompleteOperatorDecl =>FunctionSignature OperatorDirective* WhereCaluse? ";";
 ```
 
 ### Functions
@@ -241,14 +262,27 @@ This is a classical `main` function, representing the programs entrypoint. It
 declares no parameters, and has implicit return type `void`. In its body the
 function `println` is called with one argument.
 
+Function parameters are declared `name: type` and delimited by a `,`. Arguments
+can be prefixed with a `using` keyword, exporting the types fields into the
+functions scope. The result type is written immediately behind the closing
+paren `)` with an optional error type delmited by a `!`. E.g.:
+```clyde
+// This function declares one parameter `s` of type `string`, returns an i32
+// in the success and an `IntParseError` in the error case.
+parse_int :: (s: string) i32!IntParseError {
+    // ...
+}
+```
+
+**TODO: explain #inline, #expand, #const**
+
 ```grammar
 FunctionDecl => FunctionSignature FunctionDirective*
             WhereCaluse? (";" | Block);
 
 FunctionSignature => "(" FunctionParameters? ")" FunctionResultSignature?;
 
-FunctionParameters => FunctionParameter (FunctionParametersContinue | ",")?;
-FunctionParametersContinue => "," FunctionParameters;
+FunctionParameters => FunctionParameter ("," FunctionParameters)?;
 FunctionParameter => "using"? Ident ":" Type;
 
 FunctionResultSignature => Type ("!" Type)?;
@@ -256,7 +290,8 @@ FunctionResultSignature => Type ("!" Type)?;
 FunctionDirective => "#compiler"
                 | "#expand"
                 | "#link"
-                | ExternCCallDirective;
+                | ExternCCallDirective
+                | FunctionDirectiveBase;
 
 FunctionDirectiveBase => "#inline" | "#const";
 
@@ -272,6 +307,7 @@ Buffer :: struct {
     data:   *u8;
 }
 
+// Overloading the `==` opeartor between two `Buffer`s
 operator == :: (using _: *Buffer, other: *Buffer) bool {
     return length == other.length && cmp_ptr_data(data, other.data, length);
 }
@@ -292,13 +328,23 @@ operator * :: (vec: Vector2, factor: f32) Vector2 #symmetric {
     };
 }
 
-vec1 := Vector2 { .x = 42, .y = 69 };
+vec1 := Vector2 { x = 42, y = 69 };
 vec2 := vec1 * 1337; // Always works, since implemented
 vec2 := 1337 * vec1; // Also works, due to `#symmetric`
 ```
 
 Pseudogrammar:
 ```grammar
+OperatorItem => "operator" OverloadableOperator "::" Generics? OperatorDecl;
+
+OverloadableOperator => "==" | "!=" | "<" | "<=" | ">" | ">="
+                    | "|" | "^" | "&"
+                    | "<<" | ">>"
+                    | "+" | "-" | "*" | "/" | "%"
+                    | "|=" | "&=" | "^="
+                    | "<<=" | ">>="
+                    | "+=" | "-=" | "*=" | "/=" | "%=";
+
 OperatorDecl => FunctionSignature OperatorDirective* WhereCaluse? Block;
 OperatorDirective => "#symmetric" | FunctionDirectiveBase;
 ```
