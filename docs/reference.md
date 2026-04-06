@@ -49,7 +49,7 @@ The items path is uniquly sperated by is declaration either by a `KEYWORD`,
 `DIRECTIVE`, or `<` directly *after* or by a contextual `IDENTIFIER`
 directly *before* the `::`. E.g.:
 
-```
+```clyde
 CAPACITY const :: 3; // Defines a const `CAPACITY` of value `3`
 WIDTH const: u16: 15; // Defines const `WIDTH` with explicit type `u16`
 
@@ -72,7 +72,11 @@ ConstItemLimited => Ident s"const"
 
 ItemDeclConstrainedOrNot => "::" | ":" Type ":";
 
-ImplicitItemDecl => ModuleImport | FunctionDecl | ImplicitItemDeclBase;
+ImplicitItemDecl => ModuleImport 
+                | FunctionDecl
+                | OperatorDecl
+                | ImplicitItemDeclBase;
+
 ImplicitItemDeclBase => "#type" FullPath
                 | StrucTypemExpr
                 | EnumTypeExpr
@@ -104,7 +108,7 @@ current structs context. The fields type needs to be a kind of product type.
 ### Enums
 
 This is an example enum. I think enmus are pretty self-explanatory. E.g.:
-```
+```clyde
 Color :: enum : i8 {
     TRANSPARENT :: -1;
     BLACK; WHITE; GRAY;
@@ -119,13 +123,11 @@ Color :: enum : i8 {
 
 Pseudogrammar:
 ```grammar
-EnumTypeExpr => "enum" EnumTypeRepr? EnumDirectives~ "{" EnumDiscrimant* "}";
+EnumTypeExpr => "enum" EnumTypeRepr? EnumDirective* "{" EnumDiscrimant* "}";
 EnumTypeRepr => ":" Type;
-EnumDirectives => "#bitflags" | "#incomplete";
+EnumDirective => "#bitflags" | "#incomplete";
 EnumDiscriminant => Ident ("::" Expr)? ";";
 ```
-
-**NOTE TO SELF: `~` in the grammar means, parsed as list with unique elements**
 
 ### Unions
 Unions are tagged unions by default, which means they function similar to rust
@@ -133,7 +135,7 @@ enums and serve the same purpose, though they can revert back to their plain
 C functionality.
 
 This is a typical tagged union:
-```
+```clyde
 WindowEvent :: union {
     WINDOW_OPEN;
     WINDOW_CLOSE_REQUEST;
@@ -152,7 +154,7 @@ tag defines fields, an error will be created, since an enum can be used. It is
 the main mechanism for polymorphism next to *discrimnated unions* and *traits*.
 
 A C-style union can be achived providing the `#flat` modifier:
-```
+```clyde
 Color :: union #flat {
     rgba: u32;
     using _: struct {
@@ -182,22 +184,37 @@ always used with the *generics system*, and in this language (other than in
 rust) they are really there to not have you write a lot of verbose and hard to
 read `#where` queries.
 
-```
+```clyde
 Formatable :: trait {
     format :: (self: *Self, fmt: *var Formatter) void!FormatError;
 }
 ```
-This is a very common trait. Every type `T` is regarded as `Formatable` as soon 
+This is a very common trait. Every type `T` is regarded as `Formatable` as soon
 as it has a method `format` with a signature corresponding to the one shown in
-trait. For every such type `T` the compile-time method
-`Formattable::is_statisfied(T)` returns `true`
+trait. For every such type `T` the compile-time method 
+`Formattable::is_satisfied(T)` returns `true`.
 
 The `#explicit` direcitve requires the implentor type `T` to do
 `#run implements_for(T, Trait)` in order to impement the trait `Trait`.
 
+Theres also empty traits, which require the `is_statisfied()` method
+to be implemented manually.
+```clyde
+Integer :: trait;
+Integer::is_satisfied :: (type: *compiler::Type) bool {
+    if type == {
+        case i8 | i16 | i32 | i64 | int |
+            u8 | u16 | u32 | u64 | uint => return true;
+        case => return false;
+    }
+}
+```
+
 Pseudogrammar:
 ```grammar
-TraitItemDecl => "trait" "#explicit"? "{" IncompleteItem* "}";
+TraitItemDecl => BodyTraitDecl | EmptyTraitDecl;
+BodyTraitDecl => "trait" "#explicit"? "{" IncompleteItem* "}";
+EmptyTraitDecl => "trait" ";";
 
 IncompleteItem => IncompleteImplicitItem
             | IncompleteConstItem
@@ -209,6 +226,80 @@ IncompleteItemConstraint => ":" Type;
 IncompleteImplicitItem => Ident IncompleteItemConstraint;
 IncompleteConstItem => Ident s"const" IncomplteItemConstraint;
 
-IncompleteFunctionDecl => FunctionSignature ";";
+IncompleteFunctionDecl => Generics? FunctionSignature WhereClause? ";";
+```
+
+### Functions
+Functions are functions and they function like functions function.
+```clyde
+main :: () {
+    println("Hello, Clyde!");
+}
+```
+
+This is a classical `main` function, representing the programs entrypoint. It
+declares no parameters, and has implicit return type `void`. In its body the
+function `println` is called with one argument.
+
+```grammar
+FunctionDecl => FunctionSignature FunctionDirective*
+            WhereCaluse? (";" | Block);
+
+FunctionSignature => "(" FunctionParameters? ")" FunctionResultSignature?;
+
+FunctionParameters => FunctionParameter (FunctionParametersContinue | ",")?;
+FunctionParametersContinue => "," FunctionParameters;
+FunctionParameter => "using"? Ident ":" Type;
+
+FunctionResultSignature => Type ("!" Type)?;
+
+FunctionDirective => "#compiler"
+                | "#expand"
+                | "#link"
+                | ExternCCallDirective;
+
+FunctionDirectiveBase => "#inline" | "#const";
+
+ExternCCallDirective => "#c_call" ExternCCallDirectiveTree?;
+ExternCCallDirectiveTree => "(" s"link_name" "=" StringLit  ")";
+```
+
+### Operators
+Operators can be overloaded in clyde. This can look something like this:
+```clyde
+Buffer :: struct {
+    length: uint;
+    data:   *u8;
+}
+
+operator == :: (using _: *Buffer, other: *Buffer) bool {
+    return length == other.length && cmp_ptr_data(data, other.data, length);
+}
+```
+
+Some operators should be marked with `#symmetic` to allow for easier usage
+between types. E.g.:
+```clyde
+Vector2 :: struct {
+    x: f32;
+    y: f32;
+}
+
+operator * :: (vec: Vector2, factor: f32) Vector2 #symmetric {
+    return Vector2 {
+        x = vec.x * factor,
+        y = vec.y * factor
+    };
+}
+
+vec1 := Vector2 { .x = 42, .y = 69 };
+vec2 := vec1 * 1337; // Always works, since implemented
+vec2 := 1337 * vec1; // Also works, due to `#symmetric`
+```
+
+Pseudogrammar:
+```grammar
+OperatorDecl => FunctionSignature OperatorDirective* WhereCaluse? Block;
+OperatorDirective => "#symmetric" | FunctionDirectiveBase;
 ```
 
