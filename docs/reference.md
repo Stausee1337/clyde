@@ -25,18 +25,17 @@ Clyde will NOT have:
  - borrow checker
  - garbage collector
 
-## Syntax Overview
 
-### File
+## File
 
-Every `File` consists of a sequence of `Item`s.
+Every `Module` consists of a sequence of `Item`s.
 
 Pseudogrammar:
 ```grammar
-File => Item*;
+Module => Item*;
 ```
 
-### Items
+## Items
 
 An `Item` always starts with a identifying `Path` and then is serparted by `::`
 from the actual declaration. E.g.:
@@ -284,6 +283,8 @@ parse_int :: (s: string) i32!IntParseError {
 
 **TODO: explain #inline, #expand, #const**
 
+**NOTE: functions might accept offsets of a field within a struct like in C++**
+
 ```grammar
 FunctionDecl => FunctionSignature FunctionDirective*
             WhereCaluse? (";" | Block);
@@ -370,5 +371,53 @@ OverloadableOperator => "==" | "!=" | "<" | "<=" | ">" | ">="
 
 OperatorDecl => FunctionSignature OperatorDirective* WhereCaluse? Block;
 OperatorDirective => "#symmetric" | FunctionDirectiveBase;
+```
+
+### Generics
+Generics define a list of generic parameters that need to be supllied by type/
+cosnt arguments. There are `type` and `const` parameters:
+```clyde
+f1 :: <T: type>(); // this function declares a `type` param `T`
+f2 :: <T: Displayable>(); // this function declares a type parm `T` restricted
+// by the trait `Displayble`
+f3 :: <SIZE const: uint>(); // this function declares a `const` param `SIZE` of
+// type `uint`
+```
+
+Pseudogrammar:
+```grammar
+Generics => "<" GenericParams ">";
+GenericParams => (GenericParam ",")* GenericParam;
+GenericParam => TypeParam | ConstParam;
+
+TypeParam => Ident ":" Type;
+ConstParam => Ident s"const" ":" Type;
+```
+
+### Where Clause
+A where clause defines a pice of code executed at compile time before generic
+instantiation of the item. It such allows the user to limit which arguments to
+the generic parameters are valid, before the item is instantiated.
+
+```clyde
+// This matrix ensures that it has both `COLS` and `ROWS` using a where clause.
+Matrix :: <COLS const: uint, ROWS: uint>struct
+    #where { COLS > 0 && ROWS > 0 }
+{
+    data: [ROWS][COLS]f32;
+}
+
+// This operator ensure that the type `T` is an integer by calling 
+// `is_integer(T)` in its where clause.
+operator + :: <T: type>(using self: *BigInt, other: T) BigInt
+    #where { is_integer(T) }
+{
+    // ...
+}
+```
+
+Pseudogrammar:
+```grammar
+WhereClause => "#where" Block;
 ```
 
